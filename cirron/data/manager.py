@@ -5,19 +5,19 @@ logger = logging.getLogger(__name__)
 
 
 class DataManager:
-    """Manages data operations for Cirra.
+    """Manages data operations for Cirron.
     
-    The DataManager handles fetching and processing datas from Cirra,
+    The DataManager handles fetching and processing datas from Cirron,
     providing consistent access patterns regardless of the underlying data format.
     """
     
-    def __init__(self, cirra_instance: 'Cirra'):
+    def __init__(self, cirron_instance: 'Cirron'):
         """Initialize the data manager.
         
         Args:
-            cirra_instance: Parent Cirra instance for context and configuration
+            cirron_instance: Parent Cirron instance for context and configuration
         """
-        self._cirra = cirra_instance
+        self._cirron = cirron_instance
     
     def get_data(
         self, 
@@ -94,7 +94,7 @@ class DataManager:
         Returns:
             Raw data content
         """
-        # TODO: Implement actual data fetching from Cirra
+        # TODO: Implement actual data fetching from Cirron
         # For now, return mock data
         logger.debug(f"Fetching data content from {metadata['location']}")
         

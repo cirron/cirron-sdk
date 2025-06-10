@@ -5,19 +5,19 @@ logger = logging.getLogger(__name__)
 
 
 class DeployManager:
-    """Manages deployment operations for Cirra.
+    """Manages deployment operations for Cirron.
     
-    The DeployManager handles the deployment of models to Cirra environments,
+    The DeployManager handles the deployment of models to Cirron environments,
     including containerization and resource allocation.
     """
     
-    def __init__(self, cirra_instance: 'Cirra'):
+    def __init__(self, cirron_instance: 'Cirron'):
         """Initialize the deploy manager.
         
         Args:
-            cirra_instance: Parent Cirra instance for context and configuration
+            cirron_instance: Parent Cirron instance for context and configuration
         """
-        self._cirra = cirra_instance
+        self._cirron = cirron_instance
     
     def deploy_model(
         self, 
@@ -25,10 +25,10 @@ class DeployManager:
         environment: str = "production", 
         **kwargs
     ) -> Dict[str, Any]:
-        """Deploy a model to Cirra.
+        """Deploy a model to Cirron.
         
         Args:
-            model: Model to deploy (should be a Cirra-wrapped model)
+            model: Model to deploy (should be a Cirron-wrapped model)
             environment: Deployment environment (e.g., "development", "staging", "production")
             **kwargs: Additional deployment options
             
@@ -37,9 +37,9 @@ class DeployManager:
         """
         logger.info(f"Deploying model to {environment} environment")
         
-        # Validate that the model is a Cirra-wrapped model
-        if not hasattr(model, '_cirra_metadata'):
-            raise ValueError("Model must be wrapped with Cirra to deploy")
+        # Validate that the model is a Cirron-wrapped model
+        if not hasattr(model, '_cirron_metadata'):
+            raise ValueError("Model must be wrapped with Cirron to deploy")
         
         # In a real implementation, this would package the model, create a container,
         # and deploy it to the specified environment
@@ -49,9 +49,9 @@ class DeployManager:
             "id": "dep_123456789",
             "status": "deploying",
             "environment": environment,
-            "model_version": model._cirra_metadata.get("version", "unversioned"),
+            "model_version": model._cirron_metadata.get("version", "unversioned"),
             "created_at": self._get_current_time(),
-            "endpoint": f"https://api.cirra.app/models/{environment}/model-{model._cirra_metadata.get('version', 'latest')}",
+            "endpoint": f"https://api.cirron.app/models/{environment}/model-{model._cirron_metadata.get('version', 'latest')}",
             "resources": {
                 "cpu": kwargs.get("cpu", "1"),
                 "memory": kwargs.get("memory", "2Gi"),

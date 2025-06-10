@@ -8,12 +8,12 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
-# Import Cirra
-import cirra
+# Import Cirron
+import cirron
 
-# Initialize Cirra with a project name
-print("Initializing Cirra SDK...")
-ca = cirra.Cirra(project="test_project")
+# Initialize Cirron with a project name
+print("Initializing Cirron SDK...")
+ca = cirron.Cirron(project="test_project")
 
 # ==============================
 # Test 1: Data Loading
@@ -35,7 +35,7 @@ def simple_model(X):
     """A very simple model that predicts based on the first feature."""
     return X[:, 0] > 0.5
 
-# Wrap the model with Cirra
+# Wrap the model with Cirron
 wrapped_model = ca.Model(
     simple_model, 
     track_metrics=["accuracy", "precision"],
@@ -94,7 +94,7 @@ print(f"Predictions preview: {y_pred_class[:5]}")
 # Test 4: Framework Detection
 # ==============================
 print("\n=== Testing Framework Detection ===")
-from cirra.utils.framework_detection import detect_active_framework
+from cirron.utils.framework_detection import detect_active_framework
 
 active_framework = detect_active_framework()
 print(f"Detected active framework: {active_framework}")
