@@ -5,17 +5,17 @@ from .model.manager import ModelManager
 from .deploy.manager import DeployManager
 
 
-class Cirra:
-    """Main entry point for the Cirra SDK.
+class Cirron:
+    """Main entry point for the Cirron SDK.
     
-    The Cirra class provides a simple interface to access all functionality
+    The Cirron class provides a simple interface to access all functionality
     of the SDK, including data management, model wrapping, and deployment.
     
     Examples:
-        >>> import cirra
-        >>> ca = cirra.Cirra()
-        >>> data = ca.data("my_data")
-        >>> model = ca.Model(my_model_function)
+        >>> import cirron
+        >>> ci = cirron.Cirron()
+        >>> data = ci.data("my_data")
+        >>> model = ci.Model(my_model_function)
     """
     
     def __init__(
@@ -24,10 +24,10 @@ class Cirra:
         project: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None
     ):
-        """Initialize the Cirra SDK.
+        """Initialize the Cirron SDK.
         
         Args:
-            api_key: API key for authentication with Cirra services
+            api_key: API key for authentication with Cirron services
             project: Project identifier to organize resources
             config: Additional configuration options
         """
@@ -85,10 +85,10 @@ class Cirra:
         This method can be used either as a function or as a decorator:
         
         As a function:
-            >>> model = ca.Model(my_pytorch_model)
+            >>> model = ci.Model(my_pytorch_model)
         
         As a decorator:
-            >>> @ca.Model(track_metrics=["accuracy"])
+            >>> @ci.Model(track_metrics=["accuracy"])
             >>> def my_model(x):
             >>>     return x * 2
             
@@ -114,10 +114,10 @@ class Cirra:
         environment: str = "production", 
         **kwargs
     ) -> Dict[str, Any]:
-        """Deploy a model to Cirra.
+        """Deploy a model to Cirron.
         
         Args:
-            model: Model to deploy (should be a Cirra-wrapped model)
+            model: Model to deploy (should be a Cirron-wrapped model)
             environment: Deployment environment (e.g., "development", "staging", "production")
             **kwargs: Additional deployment options
             
