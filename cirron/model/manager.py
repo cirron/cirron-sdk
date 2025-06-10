@@ -7,19 +7,19 @@ logger = logging.getLogger(__name__)
 
 
 class ModelManager:
-    """Manages model operations for Cirra.
+    """Manages model operations for Cirron.
     
-    The ModelManager handles wrapping ML models with Cirra functionality,
+    The ModelManager handles wrapping ML models with Cirron functionality,
     enabling tracking, versioning, and deployment.
     """
     
-    def __init__(self, cirra_instance: 'Cirra'):
+    def __init__(self, cirron_instance: 'Cirron'):
         """Initialize the model manager.
         
         Args:
-            cirra_instance: Parent Cirra instance for context and configuration
+            cirron_instance: Parent Cirron instance for context and configuration
         """
-        self._cirra = cirra_instance
+        self._cirron = cirron_instance
     
     def wrap_model(
         self, 
@@ -28,7 +28,7 @@ class ModelManager:
         version: Optional[str] = None,
         **kwargs
     ) -> Any:
-        """Wrap a model with Cirra functionality.
+        """Wrap a model with Cirron functionality.
         
         Args:
             model_obj: Model object, class, or function to wrap
@@ -130,8 +130,8 @@ class ModelManager:
             logger.debug("Initializing wrapped model")
             # Call original init
             original_init(self, *args, **kwargs)
-            # Add Cirra metadata
-            self._cirra_metadata = {
+            # Add Cirron metadata
+            self._cirron_metadata = {
                 'framework': framework,
                 'track_metrics': track_metrics or [],
                 'version': version or 'unversioned',
@@ -183,7 +183,7 @@ class ModelManager:
         
         # Create a new class that inherits from the original
         class_name = model_class.__name__
-        wrapped_class_name = f"Cirra{class_name}"
+        wrapped_class_name = f"Cirron{class_name}"
         
         # Create the wrapped class
         wrapped_class = type(
@@ -246,8 +246,8 @@ class ModelManager:
                 elapsed = time.time() - start_time
                 logger.debug(f"Function completed in {elapsed:.4f} seconds")
         
-        # Add Cirra metadata to the function
-        wrapped_func._cirra_metadata = {
+        # Add Cirron metadata to the function
+        wrapped_func._cirron_metadata = {
             'framework': framework,
             'track_metrics': track_metrics or [],
             'version': version or 'unversioned',
@@ -278,8 +278,8 @@ class ModelManager:
         Returns:
             Wrapped model instance
         """
-        # Add Cirra metadata
-        model_instance._cirra_metadata = {
+        # Add Cirron metadata
+        model_instance._cirron_metadata = {
             'framework': framework,
             'track_metrics': track_metrics or [],
             'version': version or 'unversioned',
@@ -328,7 +328,7 @@ class ModelManager:
         framework: str, 
         track_metrics: Optional[List[str]] = None
     ) -> None:
-        """Register a model with Cirra's tracking system.
+        """Register a model with Cirron's tracking system.
         
         Args:
             model: Wrapped model

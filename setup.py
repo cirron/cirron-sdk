@@ -1,11 +1,11 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="cirra",
+    name="cirron",
     version="0.0.1",
-    description="SDK for ML engineers to integrate with Cirra",
+    description="SDK for ML engineers to integrate with Cirron",
     author="Devin Lynch",
-    author_email="devin@cirra.com",
+    author_email="dx@cirron.com",
     packages=find_packages(),
     python_requires=">=3.7",
     install_requires=[

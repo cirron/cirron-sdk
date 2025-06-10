@@ -8,12 +8,12 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
-# Import Cirra
-import cirra
+# Import Cirron
+import cirron
 
-# Initialize Cirra with a project name
-print("Initializing Cirra SDK...")
-ca = cirra.Cirra(project="test_project")
+# Initialize Cirron with a project name
+print("Initializing Cirron SDK...")
+ca = cirron.Cirron(project="test_project")
 
 # ==============================
 # Test 1: Data Loading
