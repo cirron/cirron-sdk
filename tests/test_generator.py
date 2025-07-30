@@ -64,7 +64,7 @@ model_config_tf = {
 try:
     # Create model using config
     tf_model = ci.Model(model_config_tf)
-    print(f"✓ Created TensorFlow model: {tf_model}")
+    print(f"[SUCCESS] Created TensorFlow model: {tf_model}")
     
     # Display model summary
     print("\nModel Summary:")
@@ -72,10 +72,10 @@ try:
     
     # Test model compilation
     tf_model.compile(learning_rate=0.001)
-    print("✓ Model compiled successfully")
+    print("[SUCCESS] Model compiled successfully")
     
 except Exception as e:
-    print(f"✗ TensorFlow test failed: {str(e)}")
+    print(f"[ERROR] TensorFlow test failed: {str(e)}")
 
 # ==============================
 # Test 2: Config-based PyTorch Model  
@@ -124,7 +124,7 @@ model_config_pytorch = {
 
 try:
     pytorch_model = ci.Model(model_config_pytorch)
-    print(f"✓ Created PyTorch model: {pytorch_model}")
+    print(f"[SUCCESS] Created PyTorch model: {pytorch_model}")
     
     # Display model summary
     print("\nModel Summary:")
@@ -132,10 +132,10 @@ try:
     
     # Test compilation (PyTorch style)
     pytorch_model.compile(optimizer="adam", loss="crossentropy")
-    print("✓ Model compiled successfully")
+    print("[SUCCESS] Model compiled successfully")
     
 except Exception as e:
-    print(f"✗ PyTorch test failed: {str(e)}")
+    print(f"[ERROR] PyTorch test failed: {str(e)}")
 
 # ==============================
 # Test 3: Config-based Scikit-learn Model
@@ -160,16 +160,16 @@ model_config_sklearn = {
 
 try:
     sklearn_model = ci.Model(model_config_sklearn)
-    print(f"✓ Created Scikit-learn model: {sklearn_model}")
+    print(f"[SUCCESS] Created Scikit-learn model: {sklearn_model}")
     
     # Display model summary
     print("\nModel Summary:")
     print(sklearn_model.summary())
     
-    print("✓ Model ready for training")
+    print("[SUCCESS] Model ready for training")
     
 except Exception as e:
-    print(f"✗ Scikit-learn test failed: {str(e)}")
+    print(f"[ERROR] Scikit-learn test failed: {str(e)}")
 
 # ==============================
 # Test 4: Data Configuration
@@ -209,14 +209,14 @@ data_config = {
 try:
     # Create model with data configuration
     model_with_data = ci.Model(model_config_tf, data=data_config, train=True)
-    print(f"✓ Created model with data config: {model_with_data}")
+    print(f"[SUCCESS] Created model with data config: {model_with_data}")
     
     # Test training configuration
     model_with_data.train_on_data(epochs=5, batch_size=64)
-    print("✓ Training configuration set")
+    print("[SUCCESS] Training configuration set")
     
 except Exception as e:
-    print(f"✗ Data configuration test failed: {str(e)}")
+    print(f"[ERROR] Data configuration test failed: {str(e)}")
 
 # ==============================
 # Test 5: Deployment
@@ -230,14 +230,14 @@ try:
         nodes=2,
         environment="development"
     )
-    print(f"✓ Model deployed: {deployment_info}")
+    print(f"[SUCCESS] Model deployed: {deployment_info}")
     
     # Test using convenience function
     deployment_info2 = cr.deploy(sklearn_model, compute="t3.medium", nodes=1)
-    print(f"✓ Model deployed using convenience function: {deployment_info2}")
+    print(f"[SUCCESS] Model deployed using convenience function: {deployment_info2}")
     
 except Exception as e:
-    print(f"✗ Deployment test failed: {str(e)}")
+    print(f"[ERROR] Deployment test failed: {str(e)}")
 
 # ==============================
 # Test 6: API Generator (if available)
@@ -263,14 +263,14 @@ api_model_config = {
 
 try:
     api_model = ci.Model(api_model_config)
-    print(f"✓ Created API-generated model: {api_model}")
+    print(f"[SUCCESS] Created API-generated model: {api_model}")
     
     # Display model summary
     print("\nModel Summary:")
     print(api_model.summary())
     
 except Exception as e:
-    print(f"✗ API generator test failed (expected if API not available): {str(e)}")
+    print(f"[ERROR] API generator test failed (expected if API not available): {str(e)}")
 
 # ==============================
 # Test 7: Model Serialization
@@ -280,17 +280,17 @@ print("\n=== Test 7: Model Serialization ===")
 try:
     # Test converting model to dict and JSON
     model_dict = tf_model.to_dict()
-    print(f"✓ Model converted to dict: {len(str(model_dict))} characters")
+    print(f"[SUCCESS] Model converted to dict: {len(str(model_dict))} characters")
     
     model_json = tf_model.to_json()
-    print(f"✓ Model converted to JSON: {len(model_json)} characters")
+    print(f"[SUCCESS] Model converted to JSON: {len(model_json)} characters")
     
     # Test model representations
-    print(f"✓ Model repr: {repr(tf_model)}")
-    print(f"✓ Model str: {str(tf_model)}")
+    print(f"[SUCCESS] Model repr: {repr(tf_model)}")
+    print(f"[SUCCESS] Model str: {str(tf_model)}")
     
 except Exception as e:
-    print(f"✗ Serialization test failed: {str(e)}")
+    print(f"[ERROR] Serialization test failed: {str(e)}")
 
 # ==============================
 # Test 8: Backward Compatibility
@@ -307,14 +307,14 @@ try:
         return x * 2 + 1
     
     wrapped_model = ci.Model(simple_predictor, track_metrics=["mse"])
-    print(f"✓ Traditional model wrapping works: {wrapped_model}")
+    print(f"[SUCCESS] Traditional model wrapping works: {wrapped_model}")
     
     # Test prediction
     result = wrapped_model([1, 2, 3])
-    print(f"✓ Traditional model prediction: {result}")
+    print(f"[SUCCESS] Traditional model prediction: {result}")
     
 except Exception as e:
-    print(f"✗ Backward compatibility test failed: {str(e)}")
+    print(f"[ERROR] Backward compatibility test failed: {str(e)}")
 
 print("\n" + "=" * 80)
 print("ENHANCED SDK TEST COMPLETED")
@@ -329,6 +329,6 @@ print(f"Available frameworks: {available_frameworks}")
 
 for framework in ["tensorflow", "pytorch", "sklearn"]:
     supported = ModelGeneratorFactory.is_framework_supported(framework)
-    print(f"✓ {framework}: {'Supported' if supported else 'Not Supported'}")
+    print(f"[SUCCESS] {framework}: {'Supported' if supported else 'Not Supported'}")
 
-print("\nTest completed successfully! 🎉")
+print("\nTest completed successfully! [SUCCESS]")

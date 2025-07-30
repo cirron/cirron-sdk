@@ -27,6 +27,10 @@ class DecoratorMetadata:
     deploy_ready: bool = False
     deployment_config: Dict[str, Any] = field(default_factory=dict)
     
+    # Experiment parameters
+    experiment_parameters: List[str] = field(default_factory=list)
+    experiment_defaults: Dict[str, Any] = field(default_factory=dict)
+    
     # Timestamps
     created_at: datetime.datetime = field(default_factory=datetime.datetime.now)
     updated_at: datetime.datetime = field(default_factory=datetime.datetime.now)
@@ -64,6 +68,8 @@ class DecoratorMetadata:
             "git_commit": self.git_commit,
             "deploy_ready": self.deploy_ready,
             "deployment_config": self.deployment_config,
+            "experiment_parameters": self.experiment_parameters,
+            "experiment_defaults": self.experiment_defaults,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
             "custom_metadata": self.custom_metadata,

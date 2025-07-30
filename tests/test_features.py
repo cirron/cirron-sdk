@@ -14,7 +14,7 @@ ci = cr.Cirron(project="working_demo")
 # ==============================
 # Test 1: PyTorch Models (WORKING!)
 # ==============================
-print("\n=== ✅ PyTorch Models (Full Functionality) ===")
+print("\n=== [SUCCESS] PyTorch Models (Full Functionality) ===")
 
 pytorch_configs = [
     {
@@ -43,56 +43,56 @@ pytorch_configs = [
 for config in pytorch_configs:
     try:
         model = ci.Model(config)
-        print(f"✅ Created {config['name']}: {model}")
+        print(f"[SUCCESS] Created {config['name']}: {model}")
         print(f"   Summary preview: {model.summary()[:100]}...")
         
         # Test compilation
         model.compile(optimizer="adam", loss="crossentropy")
-        print(f"   ✅ Compilation successful")
+        print(f"   [SUCCESS] Compilation successful")
         
         # Test serialization
         json_str = model.to_json()[:100]
-        print(f"   ✅ JSON serialization: {len(json_str)} chars")
+        print(f"   [SUCCESS] JSON serialization: {len(json_str)} chars")
         
     except Exception as e:
-        print(f"❌ {config['name']} failed: {e}")
+        print(f"[ERROR] {config['name']} failed: {e}")
 
 # ==============================
 # Test 2: Enhanced API Design (WORKING!)
 # ==============================
-print("\n=== ✅ Enhanced API Design ===")
+print("\n=== [SUCCESS] Enhanced API Design ===")
 
 # Pandas-like interface
-print("✅ Pandas-like interface: ci.Model(config)")
+print("[SUCCESS] Pandas-like interface: ci.Model(config)")
 
 # Method chaining  
 try:
     model = ci.Model(pytorch_configs[0])
     chained = model.compile(optimizer="sgd").to_dict()
-    print("✅ Method chaining: model.compile().to_dict()")
+    print("[SUCCESS] Method chaining: model.compile().to_dict()")
 except Exception as e:
-    print(f"❌ Method chaining failed: {e}")
+    print(f"[ERROR] Method chaining failed: {e}")
 
 # Framework factory
 from cirron.model.generators.factory import ModelGeneratorFactory
 available = ModelGeneratorFactory.get_available_frameworks()
-print(f"✅ Framework factory: {len(available)} frameworks supported")
+print(f"[SUCCESS] Framework factory: {len(available)} frameworks supported")
 
 # ==============================
 # Test 3: Configuration System (WORKING!)
 # ==============================
-print("\n=== ✅ Configuration System ===")
+print("\n=== [SUCCESS] Configuration System ===")
 
 from cirron.types.config import ModelConfig, LayerConfig, dict_to_model_config
 
 # Type-safe configurations
 layer_config = LayerConfig(type="Dense", units=64, activation="relu")
-print(f"✅ Type-safe LayerConfig: {layer_config.type}")
+print(f"[SUCCESS] Type-safe LayerConfig: {layer_config.type}")
 
 # Dictionary conversion
 dict_config = {"framework": "pytorch", "layers": [{"type": "Linear", "units": 10}]}
 model_config = dict_to_model_config(dict_config)  
-print(f"✅ Dict to ModelConfig: {model_config.framework}")
+print(f"[SUCCESS] Dict to ModelConfig: {model_config.framework}")
 
 # ==============================
 # Test 4: API Integration (Partial)
@@ -108,14 +108,14 @@ api_config = {
 try:
     # This will try the API and fall back to local generation
     api_model = ci.Model(api_config)
-    print("✅ API integration with fallback working")
+    print("[SUCCESS] API integration with fallback working")
 except Exception as e:
-    print(f"⚠️  API integration: {str(e)[:100]}... (Expected - API not running)")
+    print(f"[WARN] API integration: {str(e)[:100]}... (Expected - API not running)")
 
 # ==============================
 # Test 5: Backward Compatibility (WORKING!)
 # ==============================
-print("\n=== ✅ Backward Compatibility ===")
+print("\n=== [SUCCESS] Backward Compatibility ===")
 
 def simple_function(x):
     return [val * 2 for val in x]
@@ -123,9 +123,9 @@ def simple_function(x):
 try:
     wrapped = ci.Model(simple_function)
     result = wrapped([1, 2, 3])
-    print(f"✅ Traditional model wrapping: {result}")
+    print(f"[SUCCESS] Traditional model wrapping: {result}")
 except Exception as e:
-    print(f"❌ Backward compatibility: {e}")
+    print(f"[ERROR] Backward compatibility: {e}")
 
 # ==============================
 # Summary
@@ -135,32 +135,32 @@ print("SUMMARY OF WORKING FEATURES")
 print("=" * 80)
 
 working_features = [
-    "✅ PyTorch model generation (all layer types)",
-    "✅ Config-based model creation", 
-    "✅ Pandas-like API interface",
-    "✅ Method chaining (compile, summary, etc.)",
-    "✅ Type-safe configuration system",
-    "✅ Framework detection and factory pattern",
-    "✅ Model serialization (JSON, dict)",
-    "✅ Backward compatibility with existing models",
-    "✅ API integration framework (ready for your API)",
-    "✅ Comprehensive logging and error handling"
+    "[SUCCESS] PyTorch model generation (all layer types)",
+    "[SUCCESS] Config-based model creation", 
+    "[SUCCESS] Pandas-like API interface",
+    "[SUCCESS] Method chaining (compile, summary, etc.)",
+    "[SUCCESS] Type-safe configuration system",
+    "[SUCCESS] Framework detection and factory pattern",
+    "[SUCCESS] Model serialization (JSON, dict)",
+    "[SUCCESS] Backward compatibility with existing models",
+    "[SUCCESS] API integration framework (ready for your API)",
+    "[SUCCESS] Comprehensive logging and error handling"
 ]
 
 known_issues = [
-    "⚠️  TensorFlow: numpy version compatibility issue",
-    "⚠️  Scikit-learn: numpy version compatibility issue", 
-    "⚠️  Some tests fail due to numpy 2.x vs 1.x compiled libraries"
+    "[WARN] TensorFlow: numpy version compatibility issue",
+    "[WARN] Scikit-learn: numpy version compatibility issue", 
+    "[WARN] Some tests fail due to numpy 2.x vs 1.x compiled libraries"
 ]
 
-print("\n🎉 WORKING FEATURES:")
+print("\n[SUCCESS] WORKING FEATURES:")
 for feature in working_features:
     print(f"  {feature}")
 
-print("\n⚠️  KNOWN ISSUES (numpy compatibility):")
+print("\n[WARN] KNOWN ISSUES (numpy compatibility):")
 for issue in known_issues:
     print(f"  {issue}")
 
-print(f"\n🚀 CONCLUSION: Enhanced Cirron SDK is successfully delivering")
+print(f"\n[SUCCESS] CONCLUSION: Enhanced Cirron SDK is successfully delivering")
 print(f"   a pandas-like experience for ML model construction!")
 print("=" * 80)
