@@ -15,7 +15,9 @@ class APIModelGenerator(BaseModelGenerator):
     
     def __init__(self, config: ModelConfig, api_endpoint: Optional[str] = None):
         super().__init__(config)
-        self.api_endpoint = api_endpoint or "http://localhost:3002/generator"
+        self.api_endpoint = api_endpoint or "https://localhost:3002/generator"
+        if self.api_endpoint.startswith("http://"):
+            logger.warning("Using HTTP for API endpoint may expose data in transit. Consider using HTTPS for secure communication.")
         self._generated_code = None
         self._compiled_model = None
         
@@ -370,8 +372,13 @@ class APIModelGenerator(BaseModelGenerator):
         try:
             # Create a namespace for execution
             namespace = {}
-            
-            # Execute the generated code
+            # Validate the generated code for unsafe statements
+            unsafe_keywords = ["import os", "import sys", "subprocess", "open(", "exec(", "eval(", "os.system", "sys.exit", "shutil", "socket", "thread", "multiprocessing"]
+            for keyword in unsafe_keywords:
+                if keyword in code:
+                    raise Exception(f"Unsafe code detected: '{keyword}' found in generated code")
+
+            # Execute the validated code
             exec(code, namespace)
             
             # Extract the model
