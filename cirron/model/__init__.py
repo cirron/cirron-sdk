@@ -1,4 +1,4 @@
 from .manager import ModelManager
-from .model import CirronModel, Model, deploy, train
+from .model import CirronModel, Model
 
-__all__ = ["ModelManager", "CirronModel", "Model", "deploy", "train"]
+__all__ = ["ModelManager", "CirronModel", "Model"]
