@@ -2,6 +2,7 @@ from typing import Any, Callable, Dict, List, Optional, Type, Union
 import functools
 import inspect
 import logging
+import random
 import time
 import datetime
 from ..utils.framework_detection import detect_framework
@@ -578,7 +579,9 @@ def _track_metrics(
 
 def experiments(
     parameters: List[str],
-    defaults: Optional[Dict[str, Any]] = None
+    defaults: Optional[Dict[str, Any]] = None,
+    log_level: Optional[str] = None,
+    sample_rate: float = 0.01
 ) -> Callable:
     """Decorator for enabling dynamic runtime experiment parameters.
     
@@ -588,25 +591,31 @@ def experiments(
     Args:
         parameters: List of parameter names to extract from kwargs
         defaults: Optional default values for parameters
+        log_level: Logging level ('DEBUG', 'INFO', 'WARNING', None to disable)
+        sample_rate: Fraction of calls to log (0.01 = 1%, 1.0 = 100%)
     
     Returns:
         Decorated model with experiment parameter support
         
     Examples:
-        @cirron.experiments(['temperature', 'top_k', 'threshold'])
+        # High-throughput production (minimal logging)
+        @cirron.experiments(['temperature', 'top_k'], log_level=None)
         class LLMModel:
             def predict(self, text, **kwargs):
-                # Parameters automatically available in kwargs
                 temperature = kwargs.get('temperature', 0.7)
-                top_k = kwargs.get('top_k', 50)
-                return self.generate(text, temperature=temperature, top_k=top_k)
+                return self.generate(text, temperature=temperature)
         
-        # Usage in serving
-        model = LLMModel()
-        result = model.predict("Hello", temperature=0.9, top_k=20)
+        # Development/debugging (full logging)
+        @cirron.experiments(['threshold'], log_level='DEBUG', sample_rate=1.0)
+        class SentimentModel:
+            def predict(self, text, **kwargs):
+                threshold = kwargs.get('threshold', 0.5)
+                return "positive" if confidence > threshold else "negative"
         
-        # API payload example:
-        # {"text": "Hello", "temperature": 0.9, "top_k": 20, "threshold": 0.8}
+        # Production monitoring (sampled logging)
+        @cirron.experiments(['batch_size'], log_level='INFO', sample_rate=0.01)
+        def batch_processor(data, **kwargs):
+            return process_with_batch_size(data, kwargs.get('batch_size', 32))
     """
     def decorator(obj: Any) -> Any:
         # Get or create metadata
@@ -627,11 +636,11 @@ def experiments(
         # Apply wrapper if not already wrapped
         if not hasattr(obj, '_cirron_wrapped'):
             if inspect.isclass(obj):
-                wrapped_obj = _wrap_class_with_experiments(obj, metadata, parameters, defaults)
+                wrapped_obj = _wrap_class_with_experiments(obj, metadata, parameters, defaults, log_level, sample_rate)
             elif inspect.isfunction(obj) or inspect.ismethod(obj):
-                wrapped_obj = _wrap_function_with_experiments(obj, metadata, parameters, defaults)
+                wrapped_obj = _wrap_function_with_experiments(obj, metadata, parameters, defaults, log_level, sample_rate)
             else:
-                wrapped_obj = _wrap_instance_with_experiments(obj, metadata, parameters, defaults)
+                wrapped_obj = _wrap_instance_with_experiments(obj, metadata, parameters, defaults, log_level, sample_rate)
             
             # Register with global registry
             registry.register(wrapped_obj, metadata)
@@ -654,8 +663,38 @@ def experiments(
     return decorator
 
 
+def _extract_and_log_experiment_kwargs(
+    parameters: List[str], 
+    defaults: Dict[str, Any], 
+    kwargs: dict, 
+    method_name: str,
+    log_level: Optional[str],
+    sample_rate: float
+) -> Dict[str, Any]:
+    """Extract experiment parameters from kwargs and log them with performance awareness."""
+    experiment_kwargs = {}
+    for param in parameters:
+        if param in kwargs:
+            experiment_kwargs[param] = kwargs[param]
+        elif param in defaults:
+            experiment_kwargs[param] = defaults[param]
+    
+    # Performance-aware logging
+    if experiment_kwargs and log_level and random.random() < sample_rate:
+        log_msg = f"Experiment parameters for {method_name}: {experiment_kwargs}"
+        if log_level.upper() == 'DEBUG':
+            logger.debug(log_msg)
+        elif log_level.upper() == 'INFO':
+            logger.info(log_msg)
+        elif log_level.upper() == 'WARNING':
+            logger.warning(log_msg)
+    
+    return experiment_kwargs
+
+
 def _wrap_class_with_experiments(cls: Type, metadata: DecoratorMetadata, 
-                                 parameters: List[str], defaults: Dict[str, Any]) -> Type:
+                                 parameters: List[str], defaults: Dict[str, Any],
+                                 log_level: Optional[str], sample_rate: float) -> Type:
     """Wrap a class with experiment parameter support."""
     original_init = cls.__init__
     original_methods = {}
@@ -678,17 +717,10 @@ def _wrap_class_with_experiments(cls: Type, metadata: DecoratorMetadata,
     for method_name, original_method in original_methods.items():
         def create_wrapper(method_name, original_method):
             def wrapper(self, *args, **kwargs):
-                # Extract experiment parameters from kwargs
-                experiment_kwargs = {}
-                for param in parameters:
-                    if param in kwargs:
-                        experiment_kwargs[param] = kwargs[param]
-                    elif param in defaults:
-                        experiment_kwargs[param] = defaults[param]
-                
-                # Log experiment parameters
-                if experiment_kwargs:
-                    logger.info(f"Experiment parameters for {method_name}: {experiment_kwargs}")
+                # Extract and log experiment parameters using shared helper
+                _extract_and_log_experiment_kwargs(
+                    parameters, defaults, kwargs, method_name, log_level, sample_rate
+                )
                 
                 # Call original method with experiment parameters available
                 return original_method(self, *args, **kwargs)
@@ -727,21 +759,15 @@ def _wrap_class_with_experiments(cls: Type, metadata: DecoratorMetadata,
 
 
 def _wrap_function_with_experiments(func: Callable, metadata: DecoratorMetadata,
-                                   parameters: List[str], defaults: Dict[str, Any]) -> Callable:
+                                   parameters: List[str], defaults: Dict[str, Any],
+                                   log_level: Optional[str], sample_rate: float) -> Callable:
     """Wrap a function with experiment parameter support."""
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        # Extract experiment parameters from kwargs
-        experiment_kwargs = {}
-        for param in parameters:
-            if param in kwargs:
-                experiment_kwargs[param] = kwargs[param]
-            elif param in defaults:
-                experiment_kwargs[param] = defaults[param]
-        
-        # Log experiment parameters
-        if experiment_kwargs:
-            logger.info(f"Experiment parameters for {func.__name__}: {experiment_kwargs}")
+        # Extract and log experiment parameters using shared helper
+        _extract_and_log_experiment_kwargs(
+            parameters, defaults, kwargs, func.__name__, log_level, sample_rate
+        )
         
         # Call original function with experiment parameters available
         return func(*args, **kwargs)
@@ -770,7 +796,8 @@ def _wrap_function_with_experiments(func: Callable, metadata: DecoratorMetadata,
 
 
 def _wrap_instance_with_experiments(obj: Any, metadata: DecoratorMetadata,
-                                   parameters: List[str], defaults: Dict[str, Any]) -> Any:
+                                   parameters: List[str], defaults: Dict[str, Any],
+                                   log_level: Optional[str], sample_rate: float) -> Any:
     """Wrap an instance with experiment parameter support."""
     # Store original methods
     methods_to_wrap = ["predict", "generate", "inference", "forward", "__call__"]
@@ -781,17 +808,10 @@ def _wrap_instance_with_experiments(obj: Any, metadata: DecoratorMetadata,
             
             def create_wrapper(original_method, method_name):
                 def wrapper(*args, **kwargs):
-                    # Extract experiment parameters from kwargs
-                    experiment_kwargs = {}
-                    for param in parameters:
-                        if param in kwargs:
-                            experiment_kwargs[param] = kwargs[param]
-                        elif param in defaults:
-                            experiment_kwargs[param] = defaults[param]
-                    
-                    # Log experiment parameters
-                    if experiment_kwargs:
-                        logger.info(f"Experiment parameters for {method_name}: {experiment_kwargs}")
+                    # Extract and log experiment parameters using shared helper
+                    _extract_and_log_experiment_kwargs(
+                        parameters, defaults, kwargs, method_name, log_level, sample_rate
+                    )
                     
                     # Call original method with experiment parameters available
                     return original_method(*args, **kwargs)
