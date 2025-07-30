@@ -2,7 +2,9 @@ from typing import Optional, Dict, Any, Union, Callable, Type
 
 from .data.manager import DataManager
 from .model.manager import ModelManager
+from .model import CirronModel
 from .deploy.manager import DeployManager
+from .types.config import ModelConfig, DataConfig, dict_to_model_config
 
 
 class Cirron:
@@ -77,36 +79,57 @@ class Cirron:
     
     def Model(
         self, 
-        model_obj: Optional[Union[Callable, Type, object]] = None, 
+        model_config: Optional[Union[Dict[str, Any], ModelConfig, Callable, Type, object]] = None,
+        data: Optional[Union[Dict[str, Any], DataConfig]] = None,
+        train: bool = False,
+        framework: Optional[str] = None,
         **kwargs
     ) -> Any:
         """Create or wrap a model.
         
-        This method can be used either as a function or as a decorator:
+        This method supports multiple usage patterns:
         
-        As a function:
+        1. Config-based model creation (NEW):
+            >>> model_config = {"framework": "tensorflow", "layers": [...]}
+            >>> model = ci.Model(model_config)
+        
+        2. Traditional model wrapping:
             >>> model = ci.Model(my_pytorch_model)
         
-        As a decorator:
+        3. As a decorator:
             >>> @ci.Model(track_metrics=["accuracy"])
             >>> def my_model(x):
             >>>     return x * 2
             
         Args:
-            model_obj: Model object, class, or function to wrap
-            **kwargs: Configuration options for the model wrapper
+            model_config: Model configuration dict/object or existing model to wrap
+            data: Data configuration for training/deployment
+            train: Whether this model is for training
+            framework: Override framework detection
+            **kwargs: Additional configuration options
             
         Returns:
-            Wrapped model object
+            CirronModel or wrapped model object
         """
-        if model_obj is None:
+        # Handle different input types
+        if model_config is None:
             # Used as a decorator with arguments
             def decorator(obj):
                 return self._model_manager.wrap_model(obj, **kwargs)
             return decorator
+        elif isinstance(model_config, dict) or isinstance(model_config, ModelConfig):
+            # Config-based model creation (new enhanced functionality)
+            return CirronModel(
+                model_config=model_config,
+                data=data,
+                train=train,
+                framework=framework,
+                cirron_instance=self,
+                **kwargs
+            )
         else:
-            # Used as a function
-            return self._model_manager.wrap_model(model_obj, **kwargs)
+            # Traditional model wrapping
+            return self._model_manager.wrap_model(model_config, **kwargs)
     
     def deploy(
         self, 
