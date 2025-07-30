@@ -126,13 +126,16 @@ class TensorFlowModelGenerator(BaseModelGenerator):
         # Set default compilation parameters
         compile_params = {
             'optimizer': 'adam',
-            'loss': 'sparse_categorical_crossentropy',
+            'loss': None,  # Require explicit specification or infer based on model
             'metrics': ['accuracy']
         }
-        
+
         # Update with provided parameters
         compile_params.update(kwargs)
-        
+
+        if compile_params['loss'] is None:
+            raise ValueError("You must specify a 'loss' function appropriate for your model architecture when compiling.")
+
         logger.info(f"Compiling model with: {compile_params}")
         self.model.compile(**compile_params)
     
