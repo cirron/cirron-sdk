@@ -171,8 +171,8 @@ def demonstrate_decorators():
     print(f"   Last call duration: {call_history[-1]['duration']:.4f}s")
     
     print("\n" + "=" * 60)
-    print("✓ Cirron decorator system demonstration complete!")
-    print("✓ All decorators are working correctly with:")
+    print("[SUCCESS] Cirron decorator system demonstration complete!")
+    print("[SUCCESS] All decorators are working correctly with:")
     print("  - Automatic framework detection")
     print("  - Performance tracking and metrics")
     print("  - Version and experiment management")
