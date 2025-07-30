@@ -17,6 +17,14 @@ class LayerConfig:
     pool_size: Optional[Union[int, tuple]] = None
     strides: Optional[Union[int, tuple]] = None
     padding: Optional[str] = None
+    # For wrapper layers like Bidirectional
+    layer: Optional[Union[Dict[str, Any], 'LayerConfig']] = None
+    # For Embedding layer
+    input_dim: Optional[int] = None
+    output_dim: Optional[int] = None
+    input_length: Optional[int] = None
+    # For Dropout layer
+    rate: Optional[float] = None
     # Additional parameters as key-value pairs
     params: Dict[str, Any] = field(default_factory=dict)
 
@@ -135,6 +143,8 @@ class TrainingConfig:
 
 def dict_to_layer_config(layer_dict: Dict[str, Any]) -> LayerConfig:
     """Convert dictionary to LayerConfig."""
+    layer_copy = layer_dict.copy()
+    
     known_fields = {
         "type",
         "units",
@@ -147,13 +157,22 @@ def dict_to_layer_config(layer_dict: Dict[str, Any]) -> LayerConfig:
         "pool_size",
         "strides",
         "padding",
+        "layer",  # For Bidirectional wrapper layers
+        "input_dim",  # For Embedding layer
+        "output_dim",  # For Embedding layer  
+        "input_length",  # For Embedding layer
+        "rate",  # For Dropout layer
     }
 
+    # Handle nested layer configuration for wrapper layers like Bidirectional
+    if "layer" in layer_copy and isinstance(layer_copy["layer"], dict):
+        layer_copy["layer"] = dict_to_layer_config(layer_copy["layer"])
+
     # Extract known fields
-    kwargs = {k: v for k, v in layer_dict.items() if k in known_fields}
+    kwargs = {k: v for k, v in layer_copy.items() if k in known_fields}
 
     # Put unknown fields in params
-    params = {k: v for k, v in layer_dict.items() if k not in known_fields}
+    params = {k: v for k, v in layer_copy.items() if k not in known_fields}
 
     return LayerConfig(**kwargs, params=params)
 

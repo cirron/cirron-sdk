@@ -41,6 +41,28 @@ class TensorFlowModelGenerator(BaseModelGenerator):
             layer = self._create_layer(layer_config, is_first_layer=(i == 0))
             model.add(layer)
 
+        # Build the model if we have input shape information
+        # This ensures proper parameter counting and layer output shapes
+        first_layer = self.config.layers[0] if self.config.layers else None
+        if first_layer and hasattr(first_layer, 'input_length') and first_layer.input_length:
+            # For sequence models, build with batch size and sequence length
+            input_shape = (None, first_layer.input_length)
+            model.build(input_shape)
+        elif first_layer and hasattr(first_layer, 'input_shape') and first_layer.input_shape:
+            # For models with explicit input_shape
+            input_shape = (None,) + first_layer.input_shape
+            model.build(input_shape)
+
+        # Auto-compile if optimizer and loss are provided in config
+        if self.config.optimizer and self.config.loss:
+            compile_params = {
+                'optimizer': self.config.optimizer,
+                'loss': self.config.loss,
+                'metrics': self.config.metrics if self.config.metrics else ['accuracy']
+            }
+            logger.info(f"Auto-compiling model with: {compile_params}")
+            model.compile(**compile_params)
+
         return model
 
     def _create_layer(
@@ -83,6 +105,18 @@ class TensorFlowModelGenerator(BaseModelGenerator):
             kwargs["strides"] = layer_config.strides
         if layer_config.padding:
             kwargs["padding"] = layer_config.padding
+        
+        # Embedding layer specific parameters
+        if layer_config.input_dim is not None:
+            kwargs["input_dim"] = layer_config.input_dim
+        if layer_config.output_dim is not None:
+            kwargs["output_dim"] = layer_config.output_dim
+        if layer_config.input_length is not None:
+            kwargs["input_length"] = layer_config.input_length
+            
+        # Dropout layer specific parameters
+        if layer_config.rate is not None:
+            kwargs["rate"] = layer_config.rate
 
         # Add any additional parameters from params dict
         kwargs.update(layer_config.params)
@@ -115,6 +149,21 @@ class TensorFlowModelGenerator(BaseModelGenerator):
             return self._keras.layers.BatchNormalization(**kwargs)
         elif layer_type == "EMBEDDING":
             return self._keras.layers.Embedding(**kwargs)
+        elif layer_type == "BIDIRECTIONAL":
+            # Handle Bidirectional layer with nested layer configuration
+            if hasattr(layer_config, 'layer') and layer_config.layer:
+                # Create the inner layer from nested configuration
+                if isinstance(layer_config.layer, dict):
+                    # Convert dict to LayerConfig-like object for consistency
+                    from ...types.config import LayerConfig
+                    inner_layer_config = LayerConfig(**layer_config.layer)
+                else:
+                    inner_layer_config = layer_config.layer
+                
+                inner_layer = self._create_layer(inner_layer_config, is_first_layer=False)
+                return self._keras.layers.Bidirectional(inner_layer, **kwargs)
+            else:
+                raise ValueError("Bidirectional layer requires a 'layer' configuration for the inner layer")
         else:
             # Try to get the layer class dynamically
             try:
