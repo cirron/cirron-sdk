@@ -118,49 +118,49 @@ def batch_processor(data, **kwargs):
 
 def demonstrate_experiments():
     """Demonstrate experiment parameter functionality."""
-    print("🧪 CIRRON EXPERIMENTS DECORATOR DEMONSTRATION")
+    print("[INFO] CIRRON EXPERIMENTS DECORATOR DEMONSTRATION")
     print("=" * 60)
     
     # Example 1: LLM with different temperatures
-    print("\n1️⃣ LLM Simulator - Temperature Experiments")
+    print("\n[INFO] 1. LLM Simulator - Temperature Experiments")
     print("-" * 40)
     
     llm = LLMSimulator()
     try:
-        print(f"📋 Available parameters: {llm.get_experiment_parameters()}")
-        print(f"🎛️ Default values: {llm.get_experiment_defaults()}")
+        print(f"[INFO] Available parameters: {llm.get_experiment_parameters()}")
+        print(f"[INFO] Default values: {llm.get_experiment_defaults()}")
     except AttributeError:
         # Fallback if methods aren't available 
         metadata = llm.get_cirron_metadata()
-        print(f"📋 Available parameters: {metadata.experiment_parameters}")
-        print(f"🎛️ Default values: {metadata.experiment_defaults}")
+        print(f"[INFO] Available parameters: {metadata.experiment_parameters}")
+        print(f"[INFO] Default values: {metadata.experiment_defaults}")
     
     # Test different temperatures
     temperatures = [0.1, 0.7, 0.9]
     for temp in temperatures:
         result = llm.predict("Hello world", temperature=temp, top_k=30)
-        print(f"   🌡️ Temperature {temp}: {result['text']}")
+        print(f"   [INFO] Temperature {temp}: {result['text']}")
         print(f"      Parameters: {result['parameters_used']}")
     
     # Example 2: Classification with different thresholds
-    print("\n2️⃣ Sentiment Classifier - Threshold Experiments")
+    print("\n[INFO] 2. Sentiment Classifier - Threshold Experiments")
     print("-" * 40)
     
     classifier = SentimentClassifier()
     try:
-        print(f"📋 Available parameters: {classifier.get_experiment_parameters()}")
+        print(f"[INFO] Available parameters: {classifier.get_experiment_parameters()}")
     except AttributeError:
         metadata = classifier.get_cirron_metadata()
-        print(f"📋 Available parameters: {metadata.experiment_parameters}")
+        print(f"[INFO] Available parameters: {metadata.experiment_parameters}")
     
     # Test different thresholds
     thresholds = [0.3, 0.5, 0.8]
     for threshold in thresholds:
         result = classifier.predict("This is a test", threshold=threshold, confidence_boost=1.2)
-        print(f"   🎯 Threshold {threshold}: {result['sentiment']} (confidence: {result['confidence']:.2f})")
+        print(f"   [INFO] Threshold {threshold}: {result['sentiment']} (confidence: {result['confidence']:.2f})")
     
     # Example 3: Batch processing with different sizes
-    print("\n3️⃣ Batch Processor - Performance Experiments")
+    print("\n[INFO] 3. Batch Processor - Performance Experiments")
     print("-" * 40)
     
     test_data = list(range(1000))  # Simulate 1000 items
@@ -169,11 +169,11 @@ def demonstrate_experiments():
     batch_sizes = [16, 64, 128]
     for batch_size in batch_sizes:
         result = batch_processor(test_data, batch_size=batch_size, parallel_workers=8)
-        print(f"   📦 Batch size {batch_size}: {result['batches_created']} batches, "
+        print(f"   [INFO] Batch size {batch_size}: {result['batches_created']} batches, "
               f"{result['processing_time']:.3f}s processing time")
     
     # API Payload Simulation
-    print("\n4️⃣ API Payload Simulation")
+    print("\n[INFO] 4. API Payload Simulation")
     print("-" * 40)
     
     # Simulate API requests with different parameters
@@ -183,7 +183,7 @@ def demonstrate_experiments():
         {"text": "Terrible experience", "threshold": 0.5, "confidence_boost": 1.0}
     ]
     
-    print("   📡 Simulating API requests with experiment parameters:")
+    print("   [INFO] Simulating API requests with experiment parameters:")
     for i, request in enumerate(api_requests, 1):
         text = request.pop("text")
         result = classifier.predict(text, **request)
@@ -191,7 +191,7 @@ def demonstrate_experiments():
               f"(threshold: {result['threshold_used']}, boost: {result['confidence_boost_used']})")
     
     # Registry Integration
-    print("\n5️⃣ Registry Integration")
+    print("\n[INFO] 5. Registry Integration")
     print("-" * 40)
     
     from cirron.decorators.registry import registry
@@ -200,21 +200,21 @@ def demonstrate_experiments():
     all_models = registry.get_all_models()
     experiment_models = registry.get_models_with_decorator("experiments")
     
-    print(f"   📊 Total models in registry: {len(all_models)}")
-    print(f"   🧪 Models with experiments: {len(experiment_models)}")
+    print(f"   [INFO] Total models in registry: {len(all_models)}")
+    print(f"   [INFO] Models with experiments: {len(experiment_models)}")
     
     for metadata in experiment_models:
-        print(f"      📝 {metadata.name}: {metadata.experiment_parameters}")
+        print(f"      [INFO] {metadata.name}: {metadata.experiment_parameters}")
         print(f"         Defaults: {metadata.experiment_defaults}")
     
     print("\n" + "=" * 60)
-    print("✨ EXPERIMENT PARAMETERS ENABLE:")
-    print("   🔬 A/B testing different parameter values")
-    print("   🎛️ User-controllable inference settings")
-    print("   🚀 Dynamic model configuration without redeployment")
-    print("   📊 Parameter optimization in production")
-    print("   🎯 Feature flags for model behavior")
-    print("\n💡 Perfect for LLM playgrounds, classification thresholds,")
+    print("[SUCCESS] EXPERIMENT PARAMETERS ENABLE:")
+    print("   [INFO] A/B testing different parameter values")
+    print("   [INFO] User-controllable inference settings")
+    print("   [INFO] Dynamic model configuration without redeployment")
+    print("   [INFO] Parameter optimization in production")
+    print("   [INFO] Feature flags for model behavior")
+    print("\n[INFO] Perfect for LLM playgrounds, classification thresholds,")
     print("   sampling parameters, and any runtime model configuration!")
 
 

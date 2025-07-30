@@ -71,7 +71,7 @@ class TestBasicDecorators(unittest.TestCase):
         self.assertEqual(stats["successful_calls"], 1)
         self.assertEqual(stats["failed_calls"], 0)
         
-        print("✓ @cirron.model decorator on classes works correctly")
+        print("[SUCCESS] @cirron.model decorator on classes works correctly")
     
     def test_model_decorator_function(self):
         """Test @cirron.model decorator on functions."""
@@ -99,7 +99,7 @@ class TestBasicDecorators(unittest.TestCase):
         self.assertEqual(len(history), 1)
         self.assertEqual(history[0]["method"], "my_model")
         
-        print("✓ @cirron.model decorator on functions works correctly")
+        print("[SUCCESS] @cirron.model decorator on functions works correctly")
     
     def test_track_decorator(self):
         """Test @cirron.track decorator."""
@@ -127,7 +127,7 @@ class TestBasicDecorators(unittest.TestCase):
         stats = model_instance.get_performance_stats()
         self.assertGreater(stats["avg_duration"], 0.005)  # Should take at least 5ms
         
-        print("✓ @cirron.track decorator works correctly")
+        print("[SUCCESS] @cirron.track decorator works correctly")
     
     def test_version_decorator(self):
         """Test @cirron.version decorator."""
@@ -146,7 +146,7 @@ class TestBasicDecorators(unittest.TestCase):
         self.assertEqual(metadata.git_commit, "abc123")
         self.assertIn("version", metadata.applied_decorators)
         
-        print("✓ @cirron.version decorator works correctly")
+        print("[SUCCESS] @cirron.version decorator works correctly")
     
     def test_deploy_ready_decorator(self):
         """Test @cirron.deploy_ready decorator."""
@@ -175,7 +175,7 @@ class TestBasicDecorators(unittest.TestCase):
         self.assertEqual(metadata.deployment_config["health_check"], health_check)
         self.assertIn("deploy_ready", metadata.applied_decorators)
         
-        print("✓ @cirron.deploy_ready decorator works correctly")
+        print("[SUCCESS] @cirron.deploy_ready decorator works correctly")
 
 
 class TestDecoratorStacking(unittest.TestCase):
@@ -216,7 +216,7 @@ class TestDecoratorStacking(unittest.TestCase):
         combined_metrics = set(metadata.track_metrics)
         self.assertTrue({"accuracy", "latency", "loss"}.issubset(combined_metrics))
         
-        print("✓ Decorator stacking works correctly")
+        print("[SUCCESS] Decorator stacking works correctly")
     
     def test_decorator_order_independence(self):
         """Test that decorator order doesn't affect functionality."""
@@ -253,7 +253,7 @@ class TestDecoratorStacking(unittest.TestCase):
             self.assertIn(decorator, metadata1.applied_decorators)
             self.assertIn(decorator, metadata2.applied_decorators)
         
-        print("✓ Decorator order independence works correctly")
+        print("[SUCCESS] Decorator order independence works correctly")
 
 
 class TestRegistryFunctionality(unittest.TestCase):
@@ -284,7 +284,7 @@ class TestRegistryFunctionality(unittest.TestCase):
         self.assertEqual(retrieved_metadata.name, "registered-model")
         self.assertEqual(retrieved_metadata.version, "1.0")
         
-        print("✓ Model registration works correctly")
+        print("[SUCCESS] Model registration works correctly")
     
     def test_registry_queries(self):
         """Test registry query functionality."""
@@ -328,7 +328,7 @@ class TestRegistryFunctionality(unittest.TestCase):
         self.assertEqual(len(deploy_ready), 1)
         self.assertEqual(deploy_ready[0].name, "deploy-model")
         
-        print("✓ Registry queries work correctly")
+        print("[SUCCESS] Registry queries work correctly")
 
 
 class TestFrameworkDetection(unittest.TestCase):
@@ -352,7 +352,7 @@ class TestFrameworkDetection(unittest.TestCase):
         # Should default to "unknown" framework
         self.assertEqual(metadata.framework, "unknown")
         
-        print("✓ Unknown framework detection works correctly")
+        print("[SUCCESS] Unknown framework detection works correctly")
     
     def test_explicit_framework_override(self):
         """Test explicit framework specification."""
@@ -368,7 +368,7 @@ class TestFrameworkDetection(unittest.TestCase):
         # Should use explicitly specified framework
         self.assertEqual(metadata.framework, "custom-framework")
         
-        print("✓ Explicit framework override works correctly")
+        print("[SUCCESS] Explicit framework override works correctly")
 
 
 class TestErrorHandling(unittest.TestCase):
@@ -415,7 +415,7 @@ class TestErrorHandling(unittest.TestCase):
         self.assertEqual(stats["successful_calls"], 1)
         self.assertEqual(stats["failed_calls"], 1)
         
-        print("✓ Exception tracking works correctly")
+        print("[SUCCESS] Exception tracking works correctly")
 
 
 def run_comprehensive_decorator_tests():
@@ -425,27 +425,27 @@ def run_comprehensive_decorator_tests():
     print("=" * 60)
     
     # Test basic decorators
-    print("\n🧪 Testing Basic Decorator Functionality...")
+    print("\n[INFO] Testing Basic Decorator Functionality...")
     basic_suite = unittest.TestLoader().loadTestsFromTestCase(TestBasicDecorators)
     basic_result = unittest.TextTestRunner(verbosity=0).run(basic_suite)
     
     # Test decorator stacking
-    print("\n🧪 Testing Decorator Stacking...")
+    print("\n[INFO] Testing Decorator Stacking...")
     stacking_suite = unittest.TestLoader().loadTestsFromTestCase(TestDecoratorStacking)
     stacking_result = unittest.TextTestRunner(verbosity=0).run(stacking_suite)
     
     # Test registry functionality
-    print("\n🧪 Testing Registry Functionality...")
+    print("\n[INFO] Testing Registry Functionality...")
     registry_suite = unittest.TestLoader().loadTestsFromTestCase(TestRegistryFunctionality)
     registry_result = unittest.TextTestRunner(verbosity=0).run(registry_suite)
     
     # Test framework detection
-    print("\n🧪 Testing Framework Detection...")
+    print("\n[INFO] Testing Framework Detection...")
     framework_suite = unittest.TestLoader().loadTestsFromTestCase(TestFrameworkDetection)
     framework_result = unittest.TextTestRunner(verbosity=0).run(framework_suite)
     
     # Test error handling
-    print("\n🧪 Testing Error Handling...")
+    print("\n[INFO] Testing Error Handling...")
     error_suite = unittest.TestLoader().loadTestsFromTestCase(TestErrorHandling)
     error_result = unittest.TextTestRunner(verbosity=0).run(error_suite)
     
@@ -464,18 +464,18 @@ def run_comprehensive_decorator_tests():
     print(f"Errors: {total_errors}")
     
     if total_failures == 0 and total_errors == 0:
-        print("\n🎉 ALL DECORATOR TESTS PASSED!")
+        print("\n[SUCCESS] ALL DECORATOR TESTS PASSED!")
         print("\nThe Cirron decorator system is working correctly:")
-        print("✓ @cirron.model decorator with automatic framework detection")
-        print("✓ @cirron.track decorator for metrics and resource tracking")
-        print("✓ @cirron.version decorator for experiment tracking")
-        print("✓ @cirron.deploy_ready decorator for deployment configuration")
-        print("✓ Decorator stacking and composability")
-        print("✓ Global registry for model management")
-        print("✓ Comprehensive error handling and tracking")
+        print("[SUCCESS] @cirron.model decorator with automatic framework detection")
+        print("[SUCCESS] @cirron.track decorator for metrics and resource tracking")
+        print("[SUCCESS] @cirron.version decorator for experiment tracking")
+        print("[SUCCESS] @cirron.deploy_ready decorator for deployment configuration")
+        print("[SUCCESS] Decorator stacking and composability")
+        print("[SUCCESS] Global registry for model management")
+        print("[SUCCESS] Comprehensive error handling and tracking")
         return True
     else:
-        print(f"\n❌ {total_failures + total_errors} TESTS FAILED")
+        print(f"\n[ERROR] {total_failures + total_errors} TESTS FAILED")
         return False
 
 
