@@ -161,3 +161,6 @@ cython_debug/
 
 # Misc
 CLAUDE.md
+.DS_Store
+cirron/.DS_Store
+cirron/model/.DS_Store
