@@ -574,3 +574,252 @@ def _track_metrics(
         f"Tracking metrics {metadata.track_metrics} for {method_name} "
         f"(model: {metadata.model_id})"
     )
+
+
+def experiments(
+    parameters: List[str],
+    defaults: Optional[Dict[str, Any]] = None
+) -> Callable:
+    """Decorator for enabling dynamic runtime experiment parameters.
+    
+    This decorator allows models to accept experimental parameters at inference time,
+    perfect for A/B testing, parameter tuning, and user-controllable inference settings.
+    
+    Args:
+        parameters: List of parameter names to extract from kwargs
+        defaults: Optional default values for parameters
+    
+    Returns:
+        Decorated model with experiment parameter support
+        
+    Examples:
+        @cirron.experiments(['temperature', 'top_k', 'threshold'])
+        class LLMModel:
+            def predict(self, text, **kwargs):
+                # Parameters automatically available in kwargs
+                temperature = kwargs.get('temperature', 0.7)
+                top_k = kwargs.get('top_k', 50)
+                return self.generate(text, temperature=temperature, top_k=top_k)
+        
+        # Usage in serving
+        model = LLMModel()
+        result = model.predict("Hello", temperature=0.9, top_k=20)
+        
+        # API payload example:
+        # {"text": "Hello", "temperature": 0.9, "top_k": 20, "threshold": 0.8}
+    """
+    def decorator(obj: Any) -> Any:
+        # Get or create metadata
+        metadata = getattr(obj, '_cirron_metadata', None)
+        if metadata is None:
+            metadata = DecoratorMetadata(
+                framework=detect_framework(obj),
+                experiment_parameters=parameters,
+                experiment_defaults=defaults or {}
+            )
+        else:
+            # Update existing metadata
+            metadata.experiment_parameters = parameters
+            metadata.experiment_defaults = defaults or {}
+        
+        metadata.add_decorator("experiments")
+        
+        # Apply wrapper if not already wrapped
+        if not hasattr(obj, '_cirron_wrapped'):
+            if inspect.isclass(obj):
+                wrapped_obj = _wrap_class_with_experiments(obj, metadata, parameters, defaults)
+            elif inspect.isfunction(obj) or inspect.ismethod(obj):
+                wrapped_obj = _wrap_function_with_experiments(obj, metadata, parameters, defaults)
+            else:
+                wrapped_obj = _wrap_instance_with_experiments(obj, metadata, parameters, defaults)
+            
+            # Register with global registry
+            registry.register(wrapped_obj, metadata)
+            
+            return wrapped_obj
+        else:
+            # Update existing wrapper
+            existing_metadata = obj._cirron_metadata  
+            
+            # Add experiments decorator
+            existing_metadata.add_decorator("experiments")
+            existing_metadata.experiment_parameters = parameters
+            existing_metadata.experiment_defaults = defaults or {}
+            
+            # Update registry
+            registry._metadata[existing_metadata.model_id] = existing_metadata
+            
+            return obj
+    
+    return decorator
+
+
+def _wrap_class_with_experiments(cls: Type, metadata: DecoratorMetadata, 
+                                 parameters: List[str], defaults: Dict[str, Any]) -> Type:
+    """Wrap a class with experiment parameter support."""
+    original_init = cls.__init__
+    original_methods = {}
+    
+    # Store key methods to wrap
+    methods_to_wrap = ["predict", "generate", "inference", "forward", "__call__"]
+    for method_name in methods_to_wrap:
+        if hasattr(cls, method_name):
+            original_methods[method_name] = getattr(cls, method_name)
+    
+    def __init__(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        self._cirron_metadata = metadata
+        self._cirron_wrapped = True
+        self._experiment_parameters = parameters
+        self._experiment_defaults = defaults
+    
+    # Create wrapped methods
+    wrapped_methods = {}
+    for method_name, original_method in original_methods.items():
+        def create_wrapper(method_name, original_method):
+            def wrapper(self, *args, **kwargs):
+                # Extract experiment parameters from kwargs
+                experiment_kwargs = {}
+                for param in parameters:
+                    if param in kwargs:
+                        experiment_kwargs[param] = kwargs[param]
+                    elif param in defaults:
+                        experiment_kwargs[param] = defaults[param]
+                
+                # Log experiment parameters
+                if experiment_kwargs:
+                    logger.info(f"Experiment parameters for {method_name}: {experiment_kwargs}")
+                
+                # Call original method with experiment parameters available
+                return original_method(self, *args, **kwargs)
+            
+            wrapper.__name__ = method_name
+            wrapper.__doc__ = getattr(original_method, '__doc__', None)
+            return wrapper
+        
+        wrapped_methods[method_name] = create_wrapper(method_name, original_method)
+    
+    # Create new class with wrapped methods
+    class_dict = dict(cls.__dict__)
+    class_dict['__init__'] = __init__
+    class_dict.update(wrapped_methods)
+    
+    # Add experiment helper methods
+    def get_experiment_parameters(self):
+        """Get configured experiment parameters."""
+        return self._experiment_parameters
+    
+    def get_experiment_defaults(self):
+        """Get default values for experiment parameters."""
+        return self._experiment_defaults
+    
+    def get_cirron_metadata(self):
+        """Get Cirron metadata."""
+        return self._cirron_metadata
+    
+    class_dict['get_experiment_parameters'] = get_experiment_parameters
+    class_dict['get_experiment_defaults'] = get_experiment_defaults
+    class_dict['get_cirron_metadata'] = get_cirron_metadata
+    
+    # Create new class
+    new_cls = type(cls.__name__, cls.__bases__, class_dict)
+    return new_cls
+
+
+def _wrap_function_with_experiments(func: Callable, metadata: DecoratorMetadata,
+                                   parameters: List[str], defaults: Dict[str, Any]) -> Callable:
+    """Wrap a function with experiment parameter support."""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        # Extract experiment parameters from kwargs
+        experiment_kwargs = {}
+        for param in parameters:
+            if param in kwargs:
+                experiment_kwargs[param] = kwargs[param]
+            elif param in defaults:
+                experiment_kwargs[param] = defaults[param]
+        
+        # Log experiment parameters
+        if experiment_kwargs:
+            logger.info(f"Experiment parameters for {func.__name__}: {experiment_kwargs}")
+        
+        # Call original function with experiment parameters available
+        return func(*args, **kwargs)
+    
+    # Add metadata and experiment info
+    wrapper._cirron_metadata = metadata
+    wrapper._cirron_wrapped = True
+    wrapper._experiment_parameters = parameters
+    wrapper._experiment_defaults = defaults
+    
+    # Add helper methods
+    def get_experiment_parameters():
+        return parameters
+    
+    def get_experiment_defaults():
+        return defaults
+    
+    def get_cirron_metadata():
+        return metadata
+    
+    wrapper.get_experiment_parameters = get_experiment_parameters
+    wrapper.get_experiment_defaults = get_experiment_defaults
+    wrapper.get_cirron_metadata = get_cirron_metadata
+    
+    return wrapper
+
+
+def _wrap_instance_with_experiments(obj: Any, metadata: DecoratorMetadata,
+                                   parameters: List[str], defaults: Dict[str, Any]) -> Any:
+    """Wrap an instance with experiment parameter support."""
+    # Store original methods
+    methods_to_wrap = ["predict", "generate", "inference", "forward", "__call__"]
+    
+    for method_name in methods_to_wrap:
+        if hasattr(obj, method_name):
+            original_method = getattr(obj, method_name)
+            
+            def create_wrapper(original_method, method_name):
+                def wrapper(*args, **kwargs):
+                    # Extract experiment parameters from kwargs
+                    experiment_kwargs = {}
+                    for param in parameters:
+                        if param in kwargs:
+                            experiment_kwargs[param] = kwargs[param]
+                        elif param in defaults:
+                            experiment_kwargs[param] = defaults[param]
+                    
+                    # Log experiment parameters
+                    if experiment_kwargs:
+                        logger.info(f"Experiment parameters for {method_name}: {experiment_kwargs}")
+                    
+                    # Call original method with experiment parameters available
+                    return original_method(*args, **kwargs)
+                
+                wrapper.__name__ = method_name
+                wrapper.__doc__ = getattr(original_method, '__doc__', None)
+                return wrapper
+            
+            setattr(obj, method_name, create_wrapper(original_method, method_name))
+    
+    # Add metadata and experiment info
+    obj._cirron_metadata = metadata
+    obj._cirron_wrapped = True
+    obj._experiment_parameters = parameters
+    obj._experiment_defaults = defaults
+    
+    # Add helper methods
+    def get_experiment_parameters():
+        return parameters
+    
+    def get_experiment_defaults():
+        return defaults
+    
+    def get_cirron_metadata():
+        return metadata
+    
+    obj.get_experiment_parameters = get_experiment_parameters
+    obj.get_experiment_defaults = get_experiment_defaults
+    obj.get_cirron_metadata = get_cirron_metadata
+    
+    return obj

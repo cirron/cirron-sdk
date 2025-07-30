@@ -1,4 +1,4 @@
-from .core import model, track, version, deploy_ready
+from .core import model, track, version, deploy_ready, experiments
 from .registry import DecoratorRegistry
 from .metadata import DecoratorMetadata
 
@@ -7,6 +7,7 @@ __all__ = [
     "track", 
     "version",
     "deploy_ready",
+    "experiments",
     "DecoratorRegistry",
     "DecoratorMetadata",
 ]
