@@ -66,7 +66,23 @@ model_config = {
 model = ci.Model(model_config)  # pandas-like interface
 ```
 
-### **4. Unified Data Management**
+### **4. Dynamic Runtime Parameters (Experiments)**
+```python
+# Perfect for A/B testing and user-controllable inference
+@ci.experiments(['threshold', 'confidence_boost'], defaults={'threshold': 0.5})
+@ci.model(name="sentiment-analyzer")
+class SentimentModel:
+    def predict(self, text, **kwargs):
+        threshold = kwargs.get('threshold', 0.5)  # From API payload!
+        confidence = self.model.predict(text) * kwargs.get('confidence_boost', 1.0)
+        return "positive" if confidence > threshold else "negative"
+
+# API calls with different parameters - no redeployment needed!
+# POST /api/sentiment {"text": "Great product!", "threshold": 0.3}
+# POST /api/sentiment {"text": "Great product!", "threshold": 0.7}
+```
+
+### **5. Unified Data Management**
 ```python
 # Config-based data sources - local and cloud
 data_config = {
@@ -85,7 +101,7 @@ data = ci.Data(data_config)
 processed = data.load_and_process()
 ```
 
-### **5. Global Model Registry**
+### **6. Global Model Registry**
 ```python
 # Team collaboration and model discovery
 all_models = registry.get_all_models()
@@ -181,7 +197,38 @@ deploy_to_production(model)  # For full deployment
 
 ## 📊 **Real Engineering Scenarios**
 
-### **Scenario 1: Experiment Management**
+### **Scenario 1: Production Martech with Dynamic Parameters**
+```python
+# Production sentiment analysis for marketing campaigns
+@ci.experiments(['threshold', 'confidence_boost', 'min_text_length'], 
+                defaults={'threshold': 0.5, 'confidence_boost': 1.0})
+@ci.model(name="martech-sentiment-v2", framework="tensorflow")
+class ProductionSentimentModel:
+    def predict(self, text, **kwargs):
+        threshold = kwargs.get('threshold', 0.5)  # From API payload
+        confidence_boost = kwargs.get('confidence_boost', 1.0)
+        
+        raw_confidence = self.model.predict(text)[0]
+        adjusted_confidence = raw_confidence * confidence_boost
+        
+        sentiment = "positive" if adjusted_confidence > threshold else "negative"
+        return {"sentiment": sentiment, "confidence": adjusted_confidence}
+
+# A/B Test different thresholds without redeployment
+# Conservative: {"text": "Love this product!", "threshold": 0.7}
+# Aggressive:   {"text": "Love this product!", "threshold": 0.3}
+# Platform-specific: Twitter=0.3, LinkedIn=0.7, Email=0.5
+
+# Flask/FastAPI endpoint
+@app.route('/api/sentiment', methods=['POST'])
+def analyze_sentiment():
+    data = request.json
+    text = data.pop('text')
+    result = model.predict(text, **data)  # Pass experiment params directly!
+    return jsonify(result)
+```
+
+### **Scenario 2: Experiment Management**
 ```python
 # Research Phase - Multiple experiments
 @ci.version("1.0-baseline")
@@ -199,7 +246,7 @@ candidates = registry.get_deployment_ready_models()
 best = max(candidates, key=lambda m: m.get_performance_stats()['accuracy'])
 ```
 
-### **Scenario 2: Team Collaboration**
+### **Scenario 3: Team Collaboration**
 ```python
 # Data Scientist tags model as ready
 @ci.deploy_ready(
@@ -219,7 +266,7 @@ for model in deploy_ready:
     print(f"Performance: {model.get_performance_stats()}")
 ```
 
-### **Scenario 3: Production Monitoring**
+### **Scenario 4: Production Monitoring**
 ```python
 # Automatic performance tracking - no manual setup
 model = ProductionModel()
@@ -269,6 +316,9 @@ python test_enhanced_sdk.py
 ## 🎯 **Use Cases**
 
 ### ✅ **Perfect For:**
+- **Dynamic A/B Testing**: Test model parameters without redeployment
+- **Martech Campaigns**: Different sentiment thresholds per platform/audience
+- **LLM Playgrounds**: User-controllable temperature, top_k, top_p parameters
 - **Experiment Management**: Organize and track ML experiments
 - **Team Collaboration**: Shared model visibility and handoffs
 - **Performance Monitoring**: Automatic metrics without manual setup
