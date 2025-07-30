@@ -196,10 +196,9 @@ def demonstrate_experiments():
     
     from cirron.decorators.registry import registry
     
-    # Find models with experiments
+    # Find models with experiments using proper encapsulation
     all_models = registry.get_all_models()
-    experiment_models = [m for m in registry._metadata.values() 
-                        if "experiments" in m.applied_decorators]
+    experiment_models = registry.get_models_with_decorator("experiments")
     
     print(f"   📊 Total models in registry: {len(all_models)}")
     print(f"   🧪 Models with experiments: {len(experiment_models)}")

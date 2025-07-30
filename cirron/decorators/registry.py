@@ -133,6 +133,26 @@ class DecoratorRegistry:
             if metadata.deploy_ready
         ]
     
+    def get_models_with_decorator(self, decorator_name: str) -> List[DecoratorMetadata]:
+        """Get all models that have a specific decorator applied.
+        
+        Args:
+            decorator_name: Name of the decorator to filter by (e.g., "experiments", "track", "version")
+            
+        Returns:
+            List of metadata for models with the specified decorator
+            
+        Examples:
+            experiment_models = registry.get_models_with_decorator("experiments")
+            tracked_models = registry.get_models_with_decorator("track")
+            versioned_models = registry.get_models_with_decorator("version")
+        """
+        self._cleanup_dead_references()
+        return [
+            metadata for metadata in self._metadata.values()
+            if decorator_name in metadata.applied_decorators
+        ]
+    
     def update_metadata(self, model_id: str, **kwargs) -> bool:
         """Update metadata for a model.
         
