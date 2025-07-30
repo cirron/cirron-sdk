@@ -19,7 +19,7 @@ import unittest
 # Add the project root to the path
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
-import cirron as cr
+import cirron as ci
 from cirron.decorators.registry import registry
 
 
@@ -33,7 +33,7 @@ class TestBasicDecorators(unittest.TestCase):
     def test_model_decorator_class(self):
         """Test @cirron.model decorator on classes."""
         
-        @cr.model(track_metrics=["accuracy", "latency"], name="test-model", version="1.0")
+        @ci.model(track_metrics=["accuracy", "latency"], name="test-model", version="1.0")
         class TestModel:
             def predict(self, x):
                 return x * 2
@@ -76,7 +76,7 @@ class TestBasicDecorators(unittest.TestCase):
     def test_model_decorator_function(self):
         """Test @cirron.model decorator on functions."""
         
-        @cr.model(track_metrics=["accuracy"], name="func-model")
+        @ci.model(track_metrics=["accuracy"], name="func-model")
         def my_model(x):
             return x ** 2
         
@@ -104,7 +104,7 @@ class TestBasicDecorators(unittest.TestCase):
     def test_track_decorator(self):
         """Test @cirron.track decorator."""
         
-        @cr.track(metrics=["f1_score", "precision"], resources=True, performance=True)
+        @ci.track(metrics=["f1_score", "precision"], resources=True, performance=True)
         class TrackedModel:
             def predict(self, x):
                 time.sleep(0.01)  # Small delay to test timing
@@ -132,7 +132,7 @@ class TestBasicDecorators(unittest.TestCase):
     def test_version_decorator(self):
         """Test @cirron.version decorator."""
         
-        @cr.version("2.1-beta", experiment_id="exp-123", git_commit="abc123")
+        @ci.version("2.1-beta", experiment_id="exp-123", git_commit="abc123")
         class VersionedModel:
             def predict(self, x):
                 return x * 3
@@ -154,7 +154,7 @@ class TestBasicDecorators(unittest.TestCase):
         def health_check():
             return True
         
-        @cr.deploy_ready(
+        @ci.deploy_ready(
             compute="c5.large", 
             nodes=2, 
             requirements=["torch", "numpy"],
@@ -188,10 +188,10 @@ class TestDecoratorStacking(unittest.TestCase):
     def test_stacked_decorators(self):
         """Test multiple decorators stacked together."""
         
-        @cr.deploy_ready(compute="c5.xlarge", nodes=3)
-        @cr.version("1.2.0", experiment_id="exp-456")
-        @cr.track(metrics=["accuracy", "latency"], resources=True)
-        @cr.model(name="stacked-model", track_metrics=["loss"])
+        @ci.deploy_ready(compute="c5.xlarge", nodes=3)
+        @ci.version("1.2.0", experiment_id="exp-456")
+        @ci.track(metrics=["accuracy", "latency"], resources=True)
+        @ci.model(name="stacked-model", track_metrics=["loss"])
         class StackedModel:
             def predict(self, x):
                 return x ** 0.5
@@ -222,17 +222,17 @@ class TestDecoratorStacking(unittest.TestCase):
         """Test that decorator order doesn't affect functionality."""
         
         # First order
-        @cr.model(name="order-test-1")
-        @cr.track(metrics=["metric1"])
-        @cr.version("1.0")
+        @ci.model(name="order-test-1")
+        @ci.track(metrics=["metric1"])
+        @ci.version("1.0")
         class Model1:
             def predict(self, x):
                 return x
         
         # Different order
-        @cr.version("1.0")
-        @cr.track(metrics=["metric1"])
-        @cr.model(name="order-test-2")
+        @ci.version("1.0")
+        @ci.track(metrics=["metric1"])
+        @ci.model(name="order-test-2")
         class Model2:
             def predict(self, x):
                 return x
@@ -266,7 +266,7 @@ class TestRegistryFunctionality(unittest.TestCase):
     def test_model_registration(self):
         """Test that models are automatically registered."""
         
-        @cr.model(name="registered-model", version="1.0")
+        @ci.model(name="registered-model", version="1.0")
         class RegisteredModel:
             def predict(self, x):
                 return x
@@ -289,16 +289,16 @@ class TestRegistryFunctionality(unittest.TestCase):
     def test_registry_queries(self):
         """Test registry query functionality."""
         
-        @cr.model(name="pytorch-model", version="1.0")
+        @ci.model(name="pytorch-model", version="1.0")
         class PyTorchModel:
             pass
         
-        @cr.model(name="tensorflow-model", version="2.0")  
+        @ci.model(name="tensorflow-model", version="2.0")  
         class TensorFlowModel:
             pass
         
-        @cr.deploy_ready(compute="c5.large")
-        @cr.model(name="deploy-model", version="1.0")
+        @ci.deploy_ready(compute="c5.large")
+        @ci.model(name="deploy-model", version="1.0")
         class DeployModel:
             pass
         
@@ -341,7 +341,7 @@ class TestFrameworkDetection(unittest.TestCase):
     def test_unknown_framework_detection(self):
         """Test handling of unknown frameworks."""
         
-        @cr.model(name="unknown-model")
+        @ci.model(name="unknown-model")
         class UnknownModel:
             def predict(self, x):
                 return x
@@ -357,7 +357,7 @@ class TestFrameworkDetection(unittest.TestCase):
     def test_explicit_framework_override(self):
         """Test explicit framework specification."""
         
-        @cr.model(name="explicit-model", framework="custom-framework")
+        @ci.model(name="explicit-model", framework="custom-framework")
         class ExplicitModel:
             def predict(self, x):
                 return x
@@ -381,7 +381,7 @@ class TestErrorHandling(unittest.TestCase):
     def test_exception_tracking(self):
         """Test that exceptions are tracked in call history."""
         
-        @cr.model(name="error-model")
+        @ci.model(name="error-model")
         class ErrorModel:
             def predict(self, x):
                 if x < 0:

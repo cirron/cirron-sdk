@@ -10,11 +10,11 @@ This file shows various usage patterns for the Cirron decorators:
 - Decorator stacking and composability
 """
 
-import cirron as cr
+import cirron as ci
 import time
 
 # Example 1: Basic @cirron.model decorator
-@cr.model(track_metrics=["accuracy", "latency"], name="basic-classifier")
+@ci.model(track_metrics=["accuracy", "latency"], name="basic-classifier")
 class BasicClassifier:
     """A simple classifier with basic tracking."""
     
@@ -30,7 +30,7 @@ class BasicClassifier:
 
 
 # Example 2: Function-based model with tracking
-@cr.model(track_metrics=["throughput"], name="text-processor", version="1.0")
+@ci.model(track_metrics=["throughput"], name="text-processor", version="1.0")
 def text_processor(text):
     """A text processing function with tracking."""
     # Simulate text processing
@@ -39,10 +39,10 @@ def text_processor(text):
 
 
 # Example 3: Advanced stacked decorators
-@cr.deploy_ready(compute="c5.large", nodes=2, requirements=["torch", "numpy"])
-@cr.version("2.1-beta", experiment_id="exp-2024-001")
-@cr.track(metrics=["accuracy", "f1_score", "latency"], resources=True)
-@cr.model(name="advanced-nlp-model")
+@ci.deploy_ready(compute="c5.large", nodes=2, requirements=["torch", "numpy"])
+@ci.version("2.1-beta", experiment_id="exp-2024-001")
+@ci.track(metrics=["accuracy", "f1_score", "latency"], resources=True)
+@ci.model(name="advanced-nlp-model")
 class AdvancedNLPModel:
     """An advanced NLP model with full decorator stack."""
     
@@ -67,9 +67,9 @@ class AdvancedNLPModel:
 
 
 # Example 4: Different decorator order (should work the same)
-@cr.model(name="order-test-model")
-@cr.track(metrics=["precision", "recall"])
-@cr.version("1.5")
+@ci.model(name="order-test-model")
+@ci.track(metrics=["precision", "recall"])
+@ci.version("1.5")
 class OrderTestModel:
     """Testing decorator order independence."""
     
@@ -82,13 +82,13 @@ def model_health_check():
     """Health check function for deployment."""
     return {"status": "healthy", "memory_usage": "normal"}
 
-@cr.deploy_ready(
+@ci.deploy_ready(
     compute="c5.xlarge",
     nodes=3,
     requirements=["scikit-learn==1.0.2", "pandas>=1.3.0"],
     health_check=model_health_check
 )
-@cr.model(name="production-model", version="2.0")
+@ci.model(name="production-model", version="2.0")
 class ProductionModel:
     """A production-ready model with comprehensive configuration."""
     
