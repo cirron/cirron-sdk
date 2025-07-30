@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 @dataclass
 class LayerConfig:
     """Configuration for a single model layer."""
+
     type: str
     units: Optional[int] = None
     activation: Optional[str] = None
@@ -23,6 +24,7 @@ class LayerConfig:
 @dataclass
 class ModelConfig:
     """Configuration for model construction."""
+
     model_id: Optional[str] = None
     name: str = "unnamed_model"
     framework: Literal["tensorflow", "pytorch", "sklearn", "custom"] = "sklearn"
@@ -39,6 +41,7 @@ class ModelConfig:
 @dataclass
 class PreprocessingConfig:
     """Data preprocessing configuration."""
+
     normalize: bool = False
     shuffle: bool = True
     split_ratio: List[float] = field(default_factory=lambda: [0.8, 0.1, 0.1])
@@ -55,6 +58,7 @@ class PreprocessingConfig:
 @dataclass
 class DataSourceConfig:
     """Configuration for a single data source."""
+
     source_name: str
     source_type: Literal["local", "cloud"]
     path: Optional[str] = None
@@ -71,6 +75,7 @@ class DataSourceConfig:
 @dataclass
 class TargetDestinationConfig:
     """Configuration for target data destination."""
+
     type: Literal["local", "cloud"]
     path: Optional[str] = None
     cloud_provider: Optional[Literal["aws", "gcp", "azure"]] = None
@@ -84,6 +89,7 @@ class TargetDestinationConfig:
 @dataclass
 class DataRefreshConfig:
     """Configuration for data refresh schedule."""
+
     interval: Literal["hourly", "daily", "weekly", "monthly"] = "daily"
     time: str = "02:00 AM"
     retain_old_versions: bool = True
@@ -93,6 +99,7 @@ class DataRefreshConfig:
 @dataclass
 class DataConfig:
     """Complete data configuration."""
+
     data_sources: List[DataSourceConfig] = field(default_factory=list)
     target_destination: Optional[TargetDestinationConfig] = None
     data_refresh: Optional[DataRefreshConfig] = None
@@ -101,6 +108,7 @@ class DataConfig:
 @dataclass
 class DeploymentConfig:
     """Configuration for model deployment."""
+
     compute: str = "c5.large"
     nodes: Union[int, str] = 1
     auto_scaling: bool = False
@@ -114,6 +122,7 @@ class DeploymentConfig:
 @dataclass
 class TrainingConfig:
     """Configuration for model training."""
+
     epochs: int = 10
     batch_size: int = 32
     validation_split: float = 0.2
@@ -127,37 +136,115 @@ class TrainingConfig:
 def dict_to_layer_config(layer_dict: Dict[str, Any]) -> LayerConfig:
     """Convert dictionary to LayerConfig."""
     known_fields = {
-        'type', 'units', 'activation', 'input_shape', 'return_sequences',
-        'dropout', 'kernel_size', 'filters', 'pool_size', 'strides', 'padding'
+        "type",
+        "units",
+        "activation",
+        "input_shape",
+        "return_sequences",
+        "dropout",
+        "kernel_size",
+        "filters",
+        "pool_size",
+        "strides",
+        "padding",
     }
-    
+
     # Extract known fields
     kwargs = {k: v for k, v in layer_dict.items() if k in known_fields}
-    
+
     # Put unknown fields in params
     params = {k: v for k, v in layer_dict.items() if k not in known_fields}
-    
+
     return LayerConfig(**kwargs, params=params)
 
 
 def dict_to_model_config(config_dict: Dict[str, Any]) -> ModelConfig:
     """Convert dictionary to ModelConfig."""
     config_copy = config_dict.copy()
-    
+
     # Convert layers if present
-    if 'layers' in config_copy and isinstance(config_copy['layers'], list):
-        config_copy['layers'] = [
+    if "layers" in config_copy and isinstance(config_copy["layers"], list):
+        config_copy["layers"] = [
             dict_to_layer_config(layer) if isinstance(layer, dict) else layer
-            for layer in config_copy['layers']
+            for layer in config_copy["layers"]
         ]
-    
+
     # Extract known fields for ModelConfig
     known_fields = {
-        'model_id', 'name', 'framework', 'num_layers', 'layers',
-        'optimizer', 'loss', 'metrics', 'compile_params'
+        "model_id",
+        "name",
+        "framework",
+        "num_layers",
+        "layers",
+        "optimizer",
+        "loss",
+        "metrics",
+        "compile_params",
     }
-    
+
     kwargs = {k: v for k, v in config_copy.items() if k in known_fields}
     params = {k: v for k, v in config_copy.items() if k not in known_fields}
-    
+
     return ModelConfig(**kwargs, params=params)
+
+
+def dict_to_preprocessing_config(
+    preprocessing_dict: Dict[str, Any],
+) -> PreprocessingConfig:
+    """Convert dictionary to PreprocessingConfig."""
+    return PreprocessingConfig(**preprocessing_dict)
+
+
+def dict_to_data_source_config(source_dict: Dict[str, Any]) -> DataSourceConfig:
+    """Convert dictionary to DataSourceConfig."""
+    source_copy = source_dict.copy()
+
+    # Convert preprocessing if present
+    if "preprocessing" in source_copy and isinstance(
+        source_copy["preprocessing"], dict
+    ):
+        source_copy["preprocessing"] = dict_to_preprocessing_config(
+            source_copy["preprocessing"]
+        )
+
+    return DataSourceConfig(**source_copy)
+
+
+def dict_to_target_destination_config(
+    destination_dict: Dict[str, Any],
+) -> TargetDestinationConfig:
+    """Convert dictionary to TargetDestinationConfig."""
+    return TargetDestinationConfig(**destination_dict)
+
+
+def dict_to_data_refresh_config(refresh_dict: Dict[str, Any]) -> DataRefreshConfig:
+    """Convert dictionary to DataRefreshConfig."""
+    return DataRefreshConfig(**refresh_dict)
+
+
+def dict_to_data_config(config_dict: Dict[str, Any]) -> DataConfig:
+    """Convert dictionary to DataConfig."""
+    config_copy = config_dict.copy()
+
+    # Convert data_sources if present
+    if "data_sources" in config_copy and isinstance(config_copy["data_sources"], list):
+        config_copy["data_sources"] = [
+            dict_to_data_source_config(source) if isinstance(source, dict) else source
+            for source in config_copy["data_sources"]
+        ]
+
+    # Convert target_destination if present
+    if "target_destination" in config_copy and isinstance(
+        config_copy["target_destination"], dict
+    ):
+        config_copy["target_destination"] = dict_to_target_destination_config(
+            config_copy["target_destination"]
+        )
+
+    # Convert data_refresh if present
+    if "data_refresh" in config_copy and isinstance(config_copy["data_refresh"], dict):
+        config_copy["data_refresh"] = dict_to_data_refresh_config(
+            config_copy["data_refresh"]
+        )
+
+    return DataConfig(**config_copy)
