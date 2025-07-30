@@ -43,11 +43,17 @@ best_model = max(candidates, key=lambda m: m.get_performance_stats()['accuracy']
 ```python
 # Automatic comprehensive tracking - no manual logging
 model = MyModel()
-result = model.predict(data)  # Automatically tracked
+result = model.predict(data)  # Returns class indices for classification
 
 # Rich performance insights
-stats = model.get_performance_stats()  # accuracy, latency, resource usage
-history = model.get_call_history()     # every prediction logged
+stats = model.get_performance_stats()       # accuracy, latency, resource usage
+history = model.get_call_history()          # every prediction logged
+metrics = model.get_training_metrics()      # training history and final metrics
+metadata = model.get_cirron_metadata()      # model version, experiment info
+
+# Smart predictions - automatically returns class indices vs probabilities
+predictions = model.predict(X_test)         # [0, 1, 2, 1, 0] - ready for accuracy calc
+probabilities = model.predict_proba(X_test) # [[0.1, 0.8, 0.1], ...] - raw probabilities
 ```
 
 ### **3. Config-Driven Model Development**
@@ -56,14 +62,38 @@ history = model.get_call_history()     # every prediction logged
 model_config = {
     "framework": "tensorflow",
     "layers": [
-        {"type": "LSTM", "units": 128, "return_sequences": True},
+        {
+            "type": "Embedding",
+            "input_dim": 10000,
+            "output_dim": 200,
+            "input_length": 100
+        },
+        {
+            "type": "Bidirectional",
+            "layer": {
+                "type": "LSTM",
+                "units": 128,
+                "return_sequences": True
+            }
+        },
+        {"type": "Dropout", "rate": 0.5},
+        {
+            "type": "Bidirectional", 
+            "layer": {
+                "type": "LSTM",
+                "units": 128,
+                "return_sequences": False
+            }
+        },
         {"type": "Dense", "units": 3, "activation": "softmax"}
     ],
     "optimizer": "adam",
-    "loss": "categorical_crossentropy"
+    "loss": "categorical_crossentropy",
+    "metrics": ["accuracy"]
 }
 
-model = ci.Model(model_config)  # pandas-like interface
+model = ci.Model(model_config)  # Automatically compiles and builds
+model.print_summary()  # Shows proper architecture with parameter counts
 ```
 
 ### **4. Dynamic Runtime Parameters (Experiments)**
@@ -190,7 +220,11 @@ deploy_to_production(model)  # For full deployment
    - **Resource Planning**: Aggregate compute requirements
 
 ### **Framework Support**
-- **TensorFlow/Keras**: Sequential models, LSTM, Dense, Conv2D layers
+- **TensorFlow/Keras**: Sequential models with full layer support
+  - **Core Layers**: Dense, LSTM, GRU, Conv2D, Conv1D, Dropout, BatchNormalization
+  - **Advanced Layers**: Bidirectional, Embedding, MaxPooling, AveragePooling, Flatten
+  - **Auto-compilation**: Automatic model compilation when optimizer/loss provided
+  - **Built-in Training**: Automatic history capture and metrics tracking
 - **PyTorch**: nn.Sequential and custom nn.Module creation
 - **Scikit-learn**: Pipeline construction with preprocessing
 - **API-Generated**: Remote code generation with local fallback
@@ -293,8 +327,36 @@ pip install -e ".[dev,pytorch,tensorflow,sklearn]"
 
 ## 📚 **Examples**
 
-- **[Sentiment Analysis with Cirron](temp/sentiment_analysis_cirron.ipynb)** - Production LSTM with comprehensive tracking
-- **[Decorator Examples](examples/decorators.py)** - All decorator patterns and usage
+### **Production-Ready Sentiment Analysis**
+```python
+# Complete sentiment analysis with Bidirectional LSTM
+sentiment_config = {
+    "name": "production-sentiment-lstm",
+    "framework": "tensorflow", 
+    "layers": [
+        {"type": "Embedding", "input_dim": 16477, "output_dim": 200, "input_length": 200},
+        {"type": "Bidirectional", "layer": {"type": "LSTM", "units": 128, "return_sequences": True}},
+        {"type": "Dropout", "rate": 0.5},
+        {"type": "Bidirectional", "layer": {"type": "LSTM", "units": 128, "return_sequences": False}},
+        {"type": "Dropout", "rate": 0.5},
+        {"type": "Dense", "units": 3, "activation": "softmax"}
+    ],
+    "optimizer": "adam",
+    "loss": "categorical_crossentropy",
+    "metrics": ["accuracy"]
+}
+
+model = ci.Model(sentiment_config)
+model.fit(X_train, y_train, epochs=5, validation_split=0.1)
+
+# Automatic performance tracking
+accuracy = np.mean(model.predict(X_test) == y_true)  # Works directly!
+metrics = model.get_training_metrics()  # {'final_accuracy': 0.73, 'epochs_trained': 5}
+```
+
+### **More Examples**
+- **[Sentiment Analysis Notebook](temp/sentiment_analysis_cirron_config.ipynb)** - Complete production workflow
+- **[Decorator Examples](examples/decorators.py)** - All decorator patterns and usage  
 - **[Config-Based Models](tests/test_enhanced_sdk.py)** - Configuration-driven development
 
 ## 🧪 **Testing**
@@ -303,14 +365,20 @@ pip install -e ".[dev,pytorch,tensorflow,sklearn]"
 # Run comprehensive test suite
 python test_cirron.py
 
-# Test decorator system
+# Test latest working features (recommended)
+python test_working_features.py
+
+# Test decorator system with performance tracking
 python test_decorators.py
 
-# Test data management
+# Test config-based models with Bidirectional LSTM support
+python test_enhanced_sdk.py
+
+# Test data management and preprocessing
 python test_data_constructor.py
 
-# Test enhanced functionality
-python test_enhanced_sdk.py
+# Run all tests with pytest
+pytest test_*.py -v
 ```
 
 ## 🎯 **Use Cases**
