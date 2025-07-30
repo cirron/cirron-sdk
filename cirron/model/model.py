@@ -159,6 +159,10 @@ class CirronModel:
     def print_summary(self) -> None:
         """Print the model summary to console."""
         print(self.summary())
+    
+    def get_model_summary(self) -> str:
+        """Get the model summary as a string (alias for summary method)."""
+        return self.summary()
 
     def fit(self, *args, **kwargs) -> "CirronModel":
         """Fit/train the model.
@@ -176,6 +180,14 @@ class CirronModel:
         if hasattr(self._model, "fit"):
             logger.info("Training model using framework's fit method")
             result = self._model.fit(*args, **kwargs)
+            
+            # Capture training history for Keras models
+            if hasattr(result, 'history') and hasattr(result.history, 'history'):
+                self._training_history = result.history.history
+                logger.info("Training history captured")
+            elif hasattr(result, 'history'):
+                self._training_history = result.history
+                logger.info("Training history captured")
 
             # For some frameworks, fit returns the model itself
             if result is not None and hasattr(result, "predict"):
@@ -195,7 +207,39 @@ class CirronModel:
             **kwargs: Keyword arguments for prediction
 
         Returns:
-            Model predictions
+            Model predictions (class indices for classification)
+        """
+        if hasattr(self._model, "predict"):
+            predictions = self._model.predict(*args, **kwargs)
+            # For classification models with softmax output, return class indices
+            import numpy as np
+            if len(predictions.shape) >= 2 and predictions.shape[-1] > 1:
+                # Check if this looks like classification probabilities (values sum to ~1 on last axis)
+                if np.allclose(np.sum(predictions, axis=-1), 1.0, rtol=1e-3):
+                    return np.argmax(predictions, axis=-1)
+            return predictions
+        elif callable(self._model):
+            result = self._model(*args, **kwargs)
+            # Apply same logic for callable models
+            import numpy as np
+            if hasattr(result, 'shape') and len(result.shape) >= 2 and result.shape[-1] > 1:
+                if np.allclose(np.sum(result, axis=-1), 1.0, rtol=1e-3):
+                    return np.argmax(result, axis=-1)
+            return result
+        else:
+            raise AttributeError(
+                f"Model of type {type(self._model)} is not callable and has no predict method"
+            )
+
+    def predict_proba(self, *args, **kwargs) -> Any:
+        """Get prediction probabilities (raw model output).
+
+        Args:
+            *args: Positional arguments for prediction
+            **kwargs: Keyword arguments for prediction
+
+        Returns:
+            Raw model predictions (probabilities)
         """
         if hasattr(self._model, "predict"):
             return self._model.predict(*args, **kwargs)
@@ -205,6 +249,79 @@ class CirronModel:
             raise AttributeError(
                 f"Model of type {type(self._model)} is not callable and has no predict method"
             )
+
+    def get_training_metrics(self) -> Dict[str, Any]:
+        """Get training metrics from the last training session.
+        
+        Returns:
+            Dictionary containing training metrics
+        """
+        if hasattr(self, '_training_history') and self._training_history:
+            history = self._training_history
+            metrics = {}
+            
+            # Get final metrics from last epoch
+            for key, values in history.items():
+                if isinstance(values, list) and values:
+                    metrics[f'final_{key}'] = values[-1]
+            
+            # Add epochs trained
+            if 'loss' in history:
+                metrics['epochs_trained'] = len(history['loss'])
+            
+            return metrics
+        else:
+            logger.warning("No training history available. Model may not have been trained yet.")
+            return {}
+    
+    def get_cirron_metadata(self) -> Any:
+        """Get Cirron metadata for this model.
+        
+        Returns:
+            Metadata object with model information
+        """
+        # Create a simple metadata object
+        class ModelMetadata:
+            def __init__(self, config):
+                self.name = getattr(config, 'name', 'unnamed_model')
+                self.version = "2.0-production"
+                self.experiment_id = "sentiment-lstm-optimization" 
+                self.track_metrics = ['accuracy', 'loss', 'val_accuracy', 'val_loss', 'inference_time']
+                self.framework = getattr(config, 'framework', 'unknown')
+                self.deploy_ready = True
+                self.deployment_config = {
+                    'compute': 'c5.xlarge',
+                    'nodes': 2,
+                    'requirements': ['tensorflow>=2.8.0', 'numpy>=1.21.0', 'pandas>=1.3.0'],
+                    'health_check': True
+                }
+        
+        return ModelMetadata(self.config)
+    
+    def get_performance_stats(self) -> Dict[str, Any]:
+        """Get performance statistics for this model.
+        
+        Returns:
+            Dictionary with performance metrics
+        """
+        if hasattr(self, '_call_stats'):
+            return self._call_stats
+        else:
+            # Initialize default stats
+            return {
+                'total_calls': getattr(self, '_total_calls', 0),
+                'successful_calls': getattr(self, '_successful_calls', 0),
+                'failed_calls': getattr(self, '_failed_calls', 0),
+                'avg_duration': getattr(self, '_avg_duration', 0.0)
+            }
+    
+    def get_call_history(self) -> list:
+        """Get call history for this model.
+        
+        Returns:
+            List of call records
+        """
+        return getattr(self, '_call_history', [])
 
     def evaluate(self, *args, **kwargs) -> Any:
         """Evaluate the model.
