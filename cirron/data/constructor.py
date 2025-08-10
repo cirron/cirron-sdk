@@ -96,12 +96,13 @@ class CirronData:
                 data[name] = source.load()
             return data
 
-    def process_data(self, data: Any, source_name: Optional[str] = None) -> Any:
+    def process_data(self, data: Any, source_name: Optional[str] = None, target: Optional[Any] = None) -> Any:
         """Apply preprocessing to data.
 
         Args:
             data: Raw data to process
             source_name: Source name to get preprocessing config
+            target: Optional target data for supervised transforms
 
         Returns:
             Processed data
@@ -113,28 +114,29 @@ class CirronData:
                 None,
             )
             if source_config and source_config.preprocessing:
-                return self.processor.process(data, source_config.preprocessing)
+                return self.processor.process(data, source_config.preprocessing, target)
 
         return data
 
-    def load_and_process(self, source_name: Optional[str] = None) -> Any:
+    def load_and_process(self, source_name: Optional[str] = None, target: Optional[Any] = None) -> Any:
         """Load data and apply preprocessing in one step.
 
         Args:
             source_name: Specific source to process, or None for all sources
+            target: Optional target data for supervised transforms
 
         Returns:
             Loaded and processed data
         """
         if source_name:
             raw_data = self.load_data(source_name)
-            return self.process_data(raw_data, source_name)
+            return self.process_data(raw_data, source_name, target)
         else:
             # Process all sources
             processed_data = {}
             for name in self.data_sources.keys():
                 raw_data = self.load_data(name)
-                processed_data[name] = self.process_data(raw_data, name)
+                processed_data[name] = self.process_data(raw_data, name, target)
             return processed_data
 
     def get_source_info(self, source_name: str) -> Dict[str, Any]:
