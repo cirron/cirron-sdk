@@ -1,6 +1,9 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 import logging
-from ..types.config import PreprocessingConfig
+from ..types.config import PreprocessingConfig, TransformConfig
+from .adapters import create_adapter
+from .transforms import TransformPipeline
+from .transforms.registry import create_transform_from_config
 
 logger = logging.getLogger(__name__)
 
@@ -8,13 +11,93 @@ logger = logging.getLogger(__name__)
 class DataProcessor:
     """Handles data preprocessing operations."""
 
-    def process(self, data: Any, config: PreprocessingConfig) -> Any:
+    def process(self, data: Any, config: PreprocessingConfig, target: Optional[Any] = None) -> Any:
         """Apply preprocessing operations to data.
 
         Args:
             data: Input data to process
             config: Preprocessing configuration
+            target: Optional target data for supervised transforms
 
+        Returns:
+            Processed data
+        """
+        try:
+            processed_data = data
+            
+            # Apply new transform system if configured
+            if config.transforms:
+                processed_data = self._apply_transform_pipeline(processed_data, config, target)
+            
+            # Apply legacy preprocessing if enabled
+            if config.use_legacy_preprocessing:
+                processed_data = self._apply_legacy_preprocessing(processed_data, config)
+            
+            return processed_data
+            
+        except Exception as e:
+            logger.error(f"Preprocessing failed: {e}")
+            raise
+    
+    def _apply_transform_pipeline(self, data: Any, config: PreprocessingConfig, target: Optional[Any] = None) -> Any:
+        """Apply the new transform system to data.
+        
+        Args:
+            data: Input data to process
+            config: Preprocessing configuration
+            target: Optional target data for supervised transforms
+            
+        Returns:
+            Transformed data
+        """
+        try:
+            # Create transforms from configuration
+            transforms = []
+            for transform_config in config.transforms:
+                if not transform_config.enabled:
+                    continue
+                    
+                # Convert transform config to dict format expected by registry
+                params = transform_config.params.copy()
+                
+                # Add columns and name to params if specified
+                if transform_config.columns:
+                    params['columns'] = transform_config.columns
+                if transform_config.name:
+                    params['name'] = transform_config.name
+                
+                transform_dict = {
+                    'type': transform_config.type,
+                    'params': params
+                }
+                
+                transform = create_transform_from_config(transform_dict)
+                transforms.append(transform)
+            
+            if not transforms:
+                logger.debug("No enabled transforms found")
+                return data
+            
+            # Create and apply pipeline
+            pipeline = TransformPipeline(transforms, strategy=config.pipeline_strategy)
+            transformed_data = pipeline.fit_transform(data, target)
+            
+            logger.info(f"Applied {len(transforms)} transforms using {config.pipeline_strategy} strategy")
+            return transformed_data
+            
+        except Exception as e:
+            logger.error(f"Error applying transform pipeline: {e}")
+            # Fallback to original data
+            logger.warning("Falling back to original data due to transform pipeline error")
+            return data
+    
+    def _apply_legacy_preprocessing(self, data: Any, config: PreprocessingConfig) -> Any:
+        """Apply legacy preprocessing operations.
+        
+        Args:
+            data: Input data to process
+            config: Preprocessing configuration
+            
         Returns:
             Processed data
         """

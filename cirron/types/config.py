@@ -47,9 +47,33 @@ class ModelConfig:
 
 
 @dataclass
-class PreprocessingConfig:
-    """Data preprocessing configuration."""
+class TransformConfig:
+    """Configuration for a single data transform with enhanced selector support."""
+    
+    name: str
+    type: str  # Transform class name (e.g., "StandardScaler", "OneHotEncoder")
+    params: Dict[str, Any] = field(default_factory=dict)
+    
+    # Column targeting (use selector for new features, columns for backward compatibility)
+    columns: Optional[List[str]] = None  # Legacy column specification
+    selector: Optional[Union[str, Dict[str, Any]]] = None  # New selector specification
+    
+    # Transform configuration
+    enabled: bool = True
+    description: Optional[str] = None
+    
+    # Advanced features
+    handle_unknown: str = "ignore"  # For encoders: "error", "ignore", "infrequent", "hash"
+    min_frequency: Optional[Union[int, float]] = None  # Minimum frequency for categories
+    random_state: Optional[int] = None  # For deterministic transforms
+    validation_level: str = "warning"  # "strict", "warning", "permissive"
 
+
+@dataclass
+class PreprocessingConfig:
+    """Enhanced data preprocessing configuration with advanced transform support."""
+
+    # Legacy preprocessing options (maintained for backward compatibility)
     normalize: bool = False
     shuffle: bool = True
     split_ratio: List[float] = field(default_factory=lambda: [0.8, 0.1, 0.1])
@@ -61,6 +85,28 @@ class PreprocessingConfig:
     stemming: bool = False
     partition_by: Optional[str] = None
     filter_columns: Optional[List[str]] = None
+    
+    # Enhanced transform system configuration
+    transforms: List[TransformConfig] = field(default_factory=list)
+    pipeline_strategy: str = "sequential"  # "sequential", "parallel"
+    use_legacy_preprocessing: bool = True  # Whether to apply legacy preprocessing alongside transforms
+    
+    # Advanced features
+    validation_enabled: bool = True  # Enable schema and transform validation
+    validation_level: str = "warning"  # "strict", "warning", "permissive"
+    
+    # Imputation configuration
+    auto_impute: bool = False  # Automatically add imputation for missing values
+    imputation_strategy: str = "smart"  # Default imputation strategy
+    add_missing_indicators: bool = False  # Add missing value indicator columns
+    
+    # Tag mappings for selector system
+    tag_mapping: Dict[str, List[str]] = field(default_factory=dict)  # e.g., {"geo": ["lat", "lng"]}
+    
+    # Serialization and versioning
+    save_artifacts: bool = False  # Save fitted transforms as artifacts
+    artifact_version: str = "1.0.0"  # Version for saved artifacts
+    artifact_metadata: Dict[str, Any] = field(default_factory=dict)  # Additional metadata
 
 
 @dataclass
@@ -207,11 +253,25 @@ def dict_to_model_config(config_dict: Dict[str, Any]) -> ModelConfig:
     return ModelConfig(**kwargs, params=params)
 
 
+def dict_to_transform_config(transform_dict: Dict[str, Any]) -> TransformConfig:
+    """Convert dictionary to TransformConfig."""
+    return TransformConfig(**transform_dict)
+
+
 def dict_to_preprocessing_config(
     preprocessing_dict: Dict[str, Any],
 ) -> PreprocessingConfig:
     """Convert dictionary to PreprocessingConfig."""
-    return PreprocessingConfig(**preprocessing_dict)
+    preprocessing_copy = preprocessing_dict.copy()
+    
+    # Convert transforms if present
+    if "transforms" in preprocessing_copy and isinstance(preprocessing_copy["transforms"], list):
+        preprocessing_copy["transforms"] = [
+            dict_to_transform_config(transform) if isinstance(transform, dict) else transform
+            for transform in preprocessing_copy["transforms"]
+        ]
+    
+    return PreprocessingConfig(**preprocessing_copy)
 
 
 def dict_to_data_source_config(source_dict: Dict[str, Any]) -> DataSourceConfig:
