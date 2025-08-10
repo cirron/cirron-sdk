@@ -8,6 +8,7 @@ categorical features into numerical representations suitable for machine learnin
 from typing import Any, Dict, List, Optional, Union
 import logging
 import numpy as np
+import pandas as pd
 from .base import FittableTransform, SupervisedTransform
 
 logger = logging.getLogger(__name__)
@@ -18,22 +19,47 @@ class OneHotEncoder(FittableTransform):
     
     Creates binary columns for each category, with 1 indicating presence
     and 0 indicating absence of that category.
+    
+    Enhanced with category stability features:
+    - Multiple unknown handling strategies (error, ignore, infrequent, hash)
+    - Minimum frequency thresholds for rare category grouping
+    - Vocabulary persistence and validation
     """
     
-    def __init__(self, handle_unknown: str = 'ignore', sparse: bool = False, **kwargs):
+    def __init__(
+        self, 
+        handle_unknown: str = 'ignore', 
+        sparse: bool = False,
+        min_frequency: Optional[Union[int, float]] = None,
+        max_categories: Optional[int] = None,
+        **kwargs
+    ):
         """Initialize OneHotEncoder.
         
         Args:
-            handle_unknown: How to handle unknown categories ('ignore' or 'error')
+            handle_unknown: How to handle unknown categories 
+                ('error', 'ignore', 'infrequent', 'hash')
             sparse: Whether to return sparse matrix (not implemented yet)
+            min_frequency: Minimum frequency for categories (absolute or relative)
+            max_categories: Maximum number of categories to keep per feature
             **kwargs: Additional parameters (name, columns, etc.)
         """
         super().__init__(**kwargs)
+        
+        # Validate handle_unknown parameter
+        valid_unknown = {'ignore', 'error', 'infrequent', 'hash'}
+        if handle_unknown not in valid_unknown:
+            logger.warning(f"handle_unknown '{handle_unknown}' not in {valid_unknown}, using 'ignore'")
+            handle_unknown = 'ignore'
+            
         self.handle_unknown = handle_unknown
         self.sparse = sparse
+        self.min_frequency = min_frequency
+        self.max_categories = max_categories
+        self.infrequent_category = "<INFREQUENT>"
     
     def fit(self, data: Any, target: Optional[Any] = None) -> 'OneHotEncoder':
-        """Fit encoder by discovering unique categories.
+        """Fit encoder by discovering unique categories with enhanced handling.
         
         Args:
             data: Input data to fit encoder to
@@ -42,6 +68,8 @@ class OneHotEncoder(FittableTransform):
         Returns:
             Self for method chaining
         """
+        super().fit(data, target)
+        
         try:
             import pandas as pd
             
@@ -51,16 +79,62 @@ class OneHotEncoder(FittableTransform):
                 
                 if not categorical_columns:
                     logger.warning("No categorical columns found for OneHotEncoder")
-                    self._fitted_params = {'categories': {}, 'categorical_columns': []}
+                    self._fitted_params = {
+                        'categories': {}, 
+                        'categorical_columns': [],
+                        'vocabularies': {},
+                        'infrequent_categories': {},
+                        'category_counts': {}
+                    }
                 else:
                     categories = {}
+                    vocabularies = {}
+                    infrequent_categories = {}
+                    category_counts = {}
+                    
                     for col in categorical_columns:
-                        unique_values = sorted(data[col].dropna().unique().tolist())
-                        categories[col] = unique_values
+                        # Get value counts for frequency analysis
+                        value_counts = data[col].value_counts()
+                        category_counts[col] = dict(value_counts)
+                        
+                        # Apply frequency filtering if specified
+                        if self.min_frequency is not None:
+                            total_count = len(data)
+                            if isinstance(self.min_frequency, float):
+                                min_count = self.min_frequency * total_count
+                            else:
+                                min_count = self.min_frequency
+                            
+                            frequent_cats = value_counts[value_counts >= min_count]
+                            infrequent_cats = value_counts[value_counts < min_count]
+                            
+                            vocabulary = sorted(frequent_cats.index.tolist())
+                            infrequent_categories[col] = sorted(infrequent_cats.index.tolist())
+                        else:
+                            vocabulary = sorted(data[col].dropna().unique().tolist())
+                            infrequent_categories[col] = []
+                        
+                        # Apply max categories limit
+                        if self.max_categories and len(vocabulary) > self.max_categories:
+                            # Keep most frequent categories
+                            top_cats = value_counts.head(self.max_categories)
+                            vocabulary = sorted(top_cats.index.tolist())
+                            remaining_cats = set(value_counts.index) - set(vocabulary)
+                            infrequent_categories[col].extend(list(remaining_cats))
+                        
+                        # Add infrequent category to vocabulary if using infrequent handling
+                        if infrequent_categories[col] and self.handle_unknown == "infrequent":
+                            vocabulary.append(self.infrequent_category)
+                        
+                        categories[col] = vocabulary  # For backward compatibility
+                        vocabularies[col] = vocabulary
                     
                     self._fitted_params = {
                         'categories': categories,
-                        'categorical_columns': categorical_columns
+                        'categorical_columns': categorical_columns,
+                        'vocabularies': vocabularies,
+                        'infrequent_categories': infrequent_categories,
+                        'category_counts': category_counts
                     }
                     
             elif isinstance(data, np.ndarray):
@@ -90,7 +164,7 @@ class OneHotEncoder(FittableTransform):
             raise
     
     def _transform_fitted(self, data: Any) -> Any:
-        """Apply fitted one-hot encoding to data.
+        """Apply fitted one-hot encoding to data with enhanced unknown handling.
         
         Args:
             data: Input data to transform
@@ -100,6 +174,7 @@ class OneHotEncoder(FittableTransform):
         """
         try:
             import pandas as pd
+            import hashlib
             
             if isinstance(data, pd.DataFrame):
                 transformed_data = data.copy()
@@ -108,11 +183,19 @@ class OneHotEncoder(FittableTransform):
                 for col in categorical_columns:
                     if col in transformed_data.columns:
                         categories = self._fitted_params['categories'][col]
+                        vocabularies = self._fitted_params.get('vocabularies', {})
+                        infrequent_categories = self._fitted_params.get('infrequent_categories', {}).get(col, [])
+                        
+                        # Handle unknown categories
+                        processed_series = self._handle_unknown_categories(
+                            transformed_data[col], vocabularies.get(col, categories), 
+                            infrequent_categories, col
+                        )
                         
                         # Create one-hot encoded columns
                         for category in categories:
                             new_col = f"{col}_{category}"
-                            transformed_data[new_col] = (transformed_data[col] == category).astype(int)
+                            transformed_data[new_col] = (processed_series == category).astype(int)
                         
                         # Drop original categorical column
                         transformed_data = transformed_data.drop(columns=[col])
@@ -147,13 +230,108 @@ class OneHotEncoder(FittableTransform):
         except Exception as e:
             logger.error(f"Error transforming with OneHotEncoder: {e}")
             raise
+    
+    def _handle_unknown_categories(self, series: pd.Series, vocabulary: List[str], 
+                                 infrequent_categories: List[str], column_name: str) -> pd.Series:
+        """Handle unknown categories according to the specified strategy."""
+        import hashlib
+        
+        result = series.copy()
+        
+        # Map infrequent categories to infrequent group if using infrequent strategy
+        if infrequent_categories and self.handle_unknown == "infrequent":
+            result = result.replace(infrequent_categories, self.infrequent_category)
+        
+        # Find unknown categories (not in vocabulary and not in known infrequent)
+        known_categories = set(vocabulary + infrequent_categories)
+        unknown_mask = ~result.isin(known_categories)
+        
+        if not unknown_mask.any():
+            return result
+        
+        unknown_categories = result[unknown_mask].unique()
+        
+        if self.handle_unknown == "error":
+            raise ValueError(f"Unknown categories found in column '{column_name}': {list(unknown_categories)}")
+        
+        elif self.handle_unknown == "ignore":
+            # Replace unknown categories with a value not in vocabulary (will become all zeros)
+            result.loc[unknown_mask] = "<UNKNOWN_IGNORE>"
+        
+        elif self.handle_unknown == "infrequent":
+            # Map unknown categories to infrequent group
+            result.loc[unknown_mask] = self.infrequent_category
+        
+        elif self.handle_unknown == "hash":
+            # Use consistent hashing for unknown categories
+            for unknown_cat in unknown_categories:
+                if vocabulary:
+                    hash_bytes = hashlib.md5(str(unknown_cat).encode()).digest()
+                    hash_int = int.from_bytes(hash_bytes[:4], byteorder='big')
+                    mapped_category = vocabulary[hash_int % len(vocabulary)]
+                    result.loc[result == unknown_cat] = mapped_category
+                else:
+                    result.loc[result == unknown_cat] = "<UNKNOWN_HASH>"
+        
+        return result
+    
+    def get_vocabulary(self, column: Optional[str] = None) -> Union[Dict[str, List[str]], List[str]]:
+        """Get vocabulary for all columns or specific column.
+        
+        Args:
+            column: Specific column name, or None for all columns
+            
+        Returns:
+            Vocabulary list or dictionary of vocabularies
+        """
+        if not self._is_fitted:
+            raise ValueError("Encoder has not been fitted yet")
+        
+        vocabularies = self._fitted_params.get('vocabularies', self._fitted_params.get('categories', {}))
+        
+        if column:
+            return vocabularies.get(column, [])
+        else:
+            return vocabularies
 
 
 class LabelEncoder(FittableTransform):
     """Encode categorical features as integer labels.
     
     Maps each unique category to an integer value (0, 1, 2, ...).
+    Enhanced with category stability features:
+    - Multiple unknown handling strategies
+    - Minimum frequency thresholds
+    - Vocabulary management
     """
+    
+    def __init__(
+        self,
+        handle_unknown: str = 'ignore',
+        min_frequency: Optional[Union[int, float]] = None,
+        unknown_value: int = -1,
+        **kwargs
+    ):
+        """Initialize LabelEncoder.
+        
+        Args:
+            handle_unknown: How to handle unknown categories 
+                ('error', 'ignore', 'infrequent', 'hash')
+            min_frequency: Minimum frequency for categories (absolute or relative)
+            unknown_value: Value to use for unknown categories (when handle_unknown="ignore")
+            **kwargs: Additional parameters
+        """
+        super().__init__(**kwargs)
+        
+        valid_unknown = {'ignore', 'error', 'infrequent', 'hash'}
+        if handle_unknown not in valid_unknown:
+            logger.warning(f"handle_unknown '{handle_unknown}' not in {valid_unknown}, using 'ignore'")
+            handle_unknown = 'ignore'
+            
+        self.handle_unknown = handle_unknown
+        self.min_frequency = min_frequency
+        self.unknown_value = unknown_value
+        self.infrequent_category = "<INFREQUENT>"
     
     def fit(self, data: Any, target: Optional[Any] = None) -> 'LabelEncoder':
         """Fit encoder by creating label mappings.
@@ -266,7 +444,11 @@ class TargetEncoder(SupervisedTransform):
     
     Replaces each category with the mean of the target variable for that category.
     This is useful for high-cardinality categorical features.
+    
+    This transform requires target data and will raise an error if target is not provided.
     """
+    
+    requires_target: bool = True  # Explicitly require target data
     
     def __init__(self, smoothing: float = 1.0, **kwargs):
         """Initialize TargetEncoder.
@@ -278,7 +460,7 @@ class TargetEncoder(SupervisedTransform):
         super().__init__(**kwargs)
         self.smoothing = smoothing
     
-    def fit(self, data: Any, target: Any) -> 'TargetEncoder':
+    def fit(self, data: Any, target: Optional[Any] = None) -> 'TargetEncoder':
         """Fit encoder by computing target statistics for each category.
         
         Args:
@@ -292,7 +474,7 @@ class TargetEncoder(SupervisedTransform):
             import pandas as pd
             
             if target is None:
-                raise ValueError("Target data is required for TargetEncoder")
+                raise ValueError("TargetEncoder requires target data but none was provided")
             
             if isinstance(data, pd.DataFrame):
                 if not isinstance(target, (pd.Series, np.ndarray, list)):
