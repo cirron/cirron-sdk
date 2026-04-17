@@ -167,6 +167,11 @@ class ScopeStack:
             return None
 
         scope_obj = stack.pop()
+        # A consumer thread (e.g. ``Profiler.shutdown()``) may have already
+        # closed this scope via ``close_scope()``. In that case it's already
+        # on the closed deque — don't double-close and double-emit.
+        if scope_obj.end_ns is not None:
+            return scope_obj
         scope_obj.end_ns = time.time_ns()
         scope_obj.cpu_ns = time.process_time_ns() - scope_obj.cpu_start_ns
         state.closed.append(scope_obj)
@@ -215,6 +220,45 @@ class ScopeStack:
 
     def drop_count(self) -> int:
         return self._state.drop_count
+
+    def drop_count_all(self) -> int:
+        """Sum drop counts across every producer thread's state.
+
+        ``drop_count()`` is thread-local — it only reflects the caller's
+        own thread. ``health()`` needs process-wide visibility, so we
+        aggregate here the same way ``drain_closed_all`` enumerates
+        ``_states``.
+        """
+        with self._states_lock:
+            states = list(self._states.values())
+        return sum(s.drop_count for s in states)
+
+    def close_scope(self, scope_obj: Scope) -> None:
+        """Close a specific scope regardless of stack position.
+
+        Used by ``Profiler.shutdown()`` (SDK-13) to close the root scope
+        from a thread that may differ from the one that opened it.
+
+        Thread safety: we set ``end_ns`` (an atomic attribute assignment under
+        the GIL) and append to the owning thread's closed deque
+        (``deque.append`` is GIL-atomic). We intentionally do *not* touch
+        ``state.stack`` (a plain list) from this method — ``list.remove``
+        isn't atomic, and a concurrent ``push``/``pop`` on the owning
+        thread could race. Instead, ``pop()`` checks ``end_ns`` and skips
+        re-emitting a scope that was already closed out of band.
+        """
+        if scope_obj.end_ns is not None:
+            return
+        scope_obj.cpu_ns = time.process_time_ns() - scope_obj.cpu_start_ns
+        # end_ns is written last so readers see a consistent snapshot: any
+        # thread observing ``end_ns is not None`` will also see the final
+        # ``cpu_ns``.
+        scope_obj.end_ns = time.time_ns()
+        with self._states_lock:
+            state = self._states.get(scope_obj.thread_id)
+        if state is None:
+            return
+        state.closed.append(scope_obj)
 
 
 _default_stack = ScopeStack()

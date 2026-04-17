@@ -145,9 +145,7 @@ class IngestClient:
             headers["Content-Encoding"] = "gzip"
         return payload, headers
 
-    def _attempt_once(
-        self, payload: bytes, headers: dict[str, str], attempt: int
-    ) -> _Attempt:
+    def _attempt_once(self, payload: bytes, headers: dict[str, str], attempt: int) -> _Attempt:
         last_attempt = attempt >= self._max_retries
         try:
             resp = self._session.post(

@@ -192,3 +192,47 @@ def test_drain_closed_all_crosses_threads():
     closed = get_default_stack().drain_closed_all()
     names = sorted(s.name for s in closed)
     assert names == ["worker-inner", "worker-outer"]
+
+
+def test_close_scope_then_pop_does_not_double_emit():
+    """``close_scope`` from a consumer thread + later ``pop`` on the owning
+    thread must not emit the same scope twice."""
+    stack = ScopeStack()
+    # Push on this thread.
+    scope_obj = stack.push("outer")
+    assert scope_obj is not None
+
+    # Close from a 'foreign' call path (simulating Profiler.shutdown).
+    stack.close_scope(scope_obj)
+    assert scope_obj.end_ns is not None
+
+    # Owning thread then does its normal context-manager ``pop``. Should
+    # no-op the close (already closed) but still unwind the stack.
+    popped = stack.pop()
+    assert popped is scope_obj
+    assert stack.depth() == 0
+
+    # Exactly one entry in the closed deque.
+    closed = stack.drain_closed()
+    assert len(closed) == 1
+    assert closed[0] is scope_obj
+
+
+def test_drop_count_all_aggregates_across_threads():
+    stack = ScopeStack()
+
+    def worker() -> None:
+        for _ in range(MAX_DEPTH + 3):
+            stack.push("deep")
+        # Drain to leave no open scopes.
+        while stack.depth() > 0:
+            stack.pop()
+
+    threads = [threading.Thread(target=worker) for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # Each thread dropped 3 scopes past MAX_DEPTH → 9 total.
+    assert stack.drop_count_all() == 9

@@ -144,6 +144,13 @@ class MarkBuffer:
     def drop_count(self) -> int:
         return self._state.drop_count
 
+    def drop_count_all(self) -> int:
+        """Sum drop counts across every producer thread. See
+        ``ScopeStack.drop_count_all`` for rationale."""
+        with self._states_lock:
+            states = list(self._states.values())
+        return sum(s.drop_count for s in states)
+
     def depth(self) -> int:
         return len(self._state.buffer)
 
