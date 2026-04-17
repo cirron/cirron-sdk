@@ -14,18 +14,18 @@ You're 10 epochs into a training run. Loss spikes. Throughput halves. You want t
 
 ```python
 import cirron as ci
-import torch
 
-ci.profile()  # attaches to the process, detects torch, starts reporting
+ci.profile()  # attaches to the process, detects torch, installs hooks
 
 for epoch in range(20):
-    with ci.scope("epoch", index=epoch):
-        for i, batch in enumerate(loader):
-            loss = train_step(batch)
-            ci.mark("loss", loss.item())
+    for batch in loader:          # DataLoader iteration → batch scopes, automatically
+        loss = train_step(batch)  # forward / backward / optimizer_step → scopes, automatically
+        ci.mark("loss", loss.item())
 ```
 
-That's the whole integration. On the platform you now get:
+One line of setup. No scope wrapping, no callbacks, no manual instrumentation. Framework hooks detect epoch and batch boundaries, wrap the forward/backward/optimizer passes, and time the DataLoader — all from `ci.profile()` alone. The same zero-touch experience works for `Trainer.train()` (transformers) and `model.fit()` (Keras).
+
+With no other changes, you now get:
 
 - Wall time, GPU seconds, and memory peak attributed to every epoch and batch
 - Weight and gradient statistics (mean, std, norm, histogram) per epoch by default
@@ -107,25 +107,33 @@ ci.profile(
 - `"sampled"` — stats plus actual tensor values for a configurable fraction of steps. Useful for debugging specific layers.
 - `"full"` — every weight and gradient tensor. Expensive. Do not enable on large models without a reason.
 
-## `scope` and `mark` — finer attribution
+## `epochs()` and `batches()` — custom loops
 
-`scope` opens a profiling span. `mark` drops a named value into the current span. The platform reconstructs the tree: run → epoch → batch → whatever you scoped.
+Framework hooks cover Keras, transformers, and any PyTorch loop that iterates a `DataLoader`. If you're writing a custom PyTorch loop where the hooks can't detect epoch/batch boundaries (generator-based iteration, custom samplers, training-step counters), wrap the iterables:
 
 ```python
-for epoch in range(epochs):
-    with ci.scope("epoch", index=epoch):
-        for i, batch in enumerate(loader):
-            with ci.scope("batch", index=i):
-                with ci.scope("forward"):
-                    out = model(batch["x"])
-                with ci.scope("backward"):
-                    loss = criterion(out, batch["y"])
-                    loss.backward()
-                ci.mark("loss", loss.item())
-                ci.mark("grad_norm", grad_norm(model))
+for epoch in ci.epochs(range(20)):
+    for batch in ci.batches(loader):
+        loss = train_step(batch)
+        ci.mark("loss", loss.item())
 ```
 
-Scopes nest. Marks attach to the innermost open scope. Both are cheap — overhead is in the low microseconds per call and is itself tracked so you can see it.
+`ci.epochs()` and `ci.batches()` are transparent iterators — `ci.epochs(range(20))` yields `0..19` exactly, opening and closing `epoch` / `batch` scopes indexed automatically around each iteration. Overhead is < 10μs per iteration.
+
+## `scope` and `mark` — power-user attribution
+
+`scope` and `mark` are the escape hatches for regions the hooks and wrappers don't cover — custom preprocessing, postprocessing passes, beam search, alternative schedulers. Most users never need them.
+
+```python
+with ci.scope("augmentation"):
+    batch = augment(batch)
+
+with ci.scope("postprocess", variant="beam-search"):
+    output = beam_search(logits)
+    ci.mark("beam_entropy", compute_entropy(output))
+```
+
+Scopes nest arbitrarily (max depth 64) and attach as children of whatever scope is already open — so the hooks' `epoch` / `batch` / `forward` tree stays intact and your custom scope slots in at the right level. Marks attach to the innermost open scope. Both are cheap: < 5μs per scope open/close, and the overhead is itself tracked and reported as a mark so you can see the instrumentation tax.
 
 ## `@inference` — instrumenting served models
 
@@ -188,16 +196,32 @@ If neither pandas nor polars is installed, `ci.load()` raises with an install hi
 
 ## Secrets and environment
 
-```python
-ci.get_secret("openai-api-key")     # reads from the injected secret store
+`ci.env()` is a convenience function over `os.environ` with `.env` file support and JSON auto-parsing for structured config:
 
-ci.env.pipeline_id                  # current context, populated automatically
-ci.env.run_id
-ci.env.deployment_id                # set only inside a deployment
-ci.env.workspace_id
+```python
+# Any environment variable — reads from .env locally, container env in deployments
+api_base = ci.env("API_BASE_URL", default="https://api.example.com")
+debug    = ci.env("DEBUG", default=False)
+
+# JSON auto-parse: values starting with `{` or `[` are parsed; scalars stay as strings
+config = ci.env("CONFIG")    # returns a dict if CONFIG={"threshold": 0.5}
+
+# Platform context — set automatically when running inside a Cirron pipeline or deployment
+run_id        = ci.env("CIRRON_RUN_ID")
+pipeline_id   = ci.env("CIRRON_PIPELINE_ID")
+deployment_id = ci.env("CIRRON_DEPLOYMENT_ID")   # deployment-only
+workspace_id  = ci.env("CIRRON_WORKSPACE_ID")
 ```
 
-Secrets are scoped on the platform (workspace, pipeline, deployment) and injected at runtime. They work identically in cloud, on-prem, and air-gapped environments — the SDK never pulls from environment variables directly, so there is no configuration drift between deployment targets.
+`ci.env()` is not a proprietary config system — it's functionally equivalent to `os.environ.get()` plus `.env` loading and JSON auto-parse. Users who prefer `os.environ` or `python-decouple` can use those instead; the SDK accepts config from any source.
+
+`ci.get_secret()` reads platform-mounted secrets. In cloud and on-prem deployments, secrets are injected as env vars with a `CIRRON_SECRET_` prefix; in air-gapped environments they mount as files. The SDK abstracts the mechanism:
+
+```python
+api_key = ci.get_secret("openai-api-key")    # mounted by the platform at runtime
+```
+
+Secrets are scoped on the platform (workspace, pipeline, deployment), are never logged, never included in traces, and never flushed to disk. Raises `CirronSecretNotFound` with a clear message if the secret isn't mounted.
 
 ## Configuration
 
