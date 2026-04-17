@@ -1,4 +1,5 @@
-from typing import Optional, Dict, Any, Union, Callable, Type
+import warnings
+from typing import Optional, Dict, Any, List, Union, Callable, Type
 
 from .data.manager import DataManager
 from .data.constructor import CirronData
@@ -42,6 +43,7 @@ class Cirron:
         self._api_key = api_key
         self._project = project
         self._config = config or {}
+        self._profile_config: Dict[str, Any] = {}
 
         # Initialize managers
         self._data_manager = DataManager(self)
@@ -173,6 +175,67 @@ class Cirron:
         else:
             # Traditional model wrapping
             return self._model_manager.wrap_model(model_config, **kwargs)
+
+    def profile(
+        self,
+        config: Optional[Dict[str, Any]] = None,
+        *,
+        frameworks: Optional[List[str]] = None,
+        snapshots: Optional[str] = None,
+        sample_rate: Optional[float] = None,
+        flush_interval: Optional[float] = None,
+        path: Optional[str] = None,
+    ) -> "Cirron":
+        """Resolve profiling config from kwargs / dict / cirron.yaml / defaults.
+
+        NOTE: This is a scaffold, NOT the real profiling runtime. It only
+        resolves and stores config — no snapshots, no framework hooks, no
+        flush pipeline. See SDK-13 for the real implementation.
+
+        Resolution priority (highest to lowest):
+            explicit kwargs > config dict > cirron.yaml profiling section > defaults
+
+        The resolved config is stored on ``self._profile_config`` so tests can
+        assert the YAML-wiring contract before SDK-13 replaces this scaffold.
+        """
+        # TODO(SDK-13): replace this scaffold with the real profiling runtime
+        # (framework autodetection, snapshot capture, periodic flush, etc.).
+        # Preserve the resolution-priority contract and the cirron.yaml loader
+        # wiring — tests in tests/test_profile.py depend on it.
+        warnings.warn(
+            "cirron.profile() is a scaffold for YAML-config wiring only; "
+            "actual profiling runtime is not implemented yet (SDK-13).",
+            stacklevel=2,
+        )
+
+        from .config.loader import load_profiling_config
+        from .types.yaml import ProfilingConfig
+
+        resolved: Dict[str, Any] = {
+            "snapshots": "stats",
+            "sample_rate": 0.01,
+            "flush_interval": 1.0,
+            "frameworks": None,
+        }
+
+        # defaults -> YAML -> config dict -> explicit kwargs
+        resolved.update(load_profiling_config(path))
+        if config is not None:
+            resolved.update(config)
+        for key, value in (
+            ("frameworks", frameworks),
+            ("snapshots", snapshots),
+            ("sample_rate", sample_rate),
+            ("flush_interval", flush_interval),
+        ):
+            if value is not None:
+                resolved[key] = value
+
+        # Validate via the same Pydantic model used for YAML so constraints
+        # (enum membership, sample_rate bounds, flush_interval > 0) are
+        # enforced consistently regardless of which source supplied a value.
+        self._profile_config = ProfilingConfig.model_validate(resolved).model_dump()
+        return self
 
     def deploy(
         self, model: Any, environment: str = "production", **kwargs
