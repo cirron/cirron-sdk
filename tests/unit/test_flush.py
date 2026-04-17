@@ -169,6 +169,46 @@ def test_tick_writes_spool_and_invokes_transport(tmp_path):
     assert sent[0]["schema_version"] == SPOOL_SCHEMA_VERSION
 
 
+def test_live_flush_thread_drains_cross_thread(tmp_path):
+    # Scope + mark produced on the main thread must appear in a spool file
+    # written by the flush thread (which runs on a different thread). This
+    # is the end-to-end guarantee SDK-11 is supposed to provide.
+    writer = _make_writer(tmp_path)
+    sent: list[dict] = []
+
+    class FakeTransport:
+        def send(self, payload: dict) -> bool:
+            sent.append(payload)
+            return True
+
+    wake = threading.Event()
+    thread = FlushThread(
+        get_default_stack(),
+        get_default_mark_buffer(),
+        writer,
+        transport=FakeTransport(),
+        interval=60.0,
+        wake_event=wake,
+    )
+    thread.start()
+    try:
+        with ci.scope("cross-thread-scope"):
+            ci.mark("x", 1)
+        wake.set()
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not list(writer.spool_dir.glob("*.json")):
+            time.sleep(0.01)
+        files = list(writer.spool_dir.glob("*.json"))
+        assert len(files) == 1, "flush thread did not write a spool file"
+        payload = json.loads(files[0].read_text())
+        assert any(s["name"] == "cross-thread-scope" for s in payload["spans"])
+        assert any(m["name"] == "x" for m in payload["marks"])
+        assert len(sent) == 1
+    finally:
+        thread.stop(timeout=2.0)
+
+
 def test_buffer_full_event_wakes_thread_before_interval(tmp_path):
     # 60s interval — the wake event is the only thing that can trigger a
     # tick inside the test window. We observe the tick via ``_tick_hook``
