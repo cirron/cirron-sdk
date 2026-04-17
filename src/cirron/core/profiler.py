@@ -418,19 +418,25 @@ def _atexit_clear_singleton() -> None:
 
 
 def _reset_for_tests() -> None:
-    """Test-only: drop the singleton and stop the flush thread. Not public."""
+    """Test-only: shut down the active profiler, drain global buffers, and
+    stop the flush thread. Ensures no state leaks across tests."""
     global _profiler
     with _profiler_lock:
         active = _profiler
-        _profiler = None
-    if active is not None and active.enabled:
+    if active is not None:
         try:
-            get_default_stack().drain_closed_all()
-            get_default_mark_buffer().drain_all()
+            active.shutdown()
         except Exception:
             pass
+    with _profiler_lock:
+        _profiler = None
     try:
         stop_flush_thread(timeout=2.0)
+    except Exception:
+        pass
+    try:
+        get_default_stack().drain_closed_all()
+        get_default_mark_buffer().drain_all()
     except Exception:
         pass
 
