@@ -25,6 +25,9 @@ log = logging.getLogger("cirron.ingest")
 DEFAULT_INGEST_PATH = "/api/traces"
 GZIP_MIN_BYTES = 1024
 MAX_BACKOFF_SEC = 30.0
+# Cap Retry-After so a misbehaving server can't stall the flush thread for
+# hours. We'd rather re-hit the server than leave scopes/marks undrained.
+MAX_RETRY_AFTER_SEC = 60.0
 AUTH_HEADER = "X-Cluster-Api-Key"
 SDK_VERSION_HEADER = "X-Cirron-SDK-Version"
 BATCH_ID_HEADER = "X-Cirron-Batch-Id"
@@ -100,6 +103,8 @@ class IngestClient:
         session: requests.Session | None = None,
         sleep: Any = time.sleep,
     ) -> None:
+        if not path.startswith("/"):
+            path = "/" + path
         self._url = f"{api_endpoint.rstrip('/')}{path}"
         self._api_key = api_key
         self._timeout = timeout
@@ -170,7 +175,11 @@ class IngestClient:
             if last_attempt:
                 return _Attempt.finish(IngestResult(ok=False, retryable=True, status=status))
             wait = _parse_retry_after(resp.headers.get("Retry-After"))
-            return _Attempt.retry(self._backoff(attempt) if wait is None else wait)
+            if wait is None:
+                wait = self._backoff(attempt)
+            else:
+                wait = min(wait, MAX_RETRY_AFTER_SEC)
+            return _Attempt.retry(wait)
         if 500 <= status < 600:
             if last_attempt:
                 return _Attempt.finish(IngestResult(ok=False, retryable=True, status=status))
@@ -186,4 +195,4 @@ class IngestClient:
 
     @staticmethod
     def _backoff(attempt: int) -> float:
-        return min(2.0**attempt, MAX_BACKOFF_SEC) + random.random()
+        return min(2.0**attempt + random.random(), MAX_BACKOFF_SEC)

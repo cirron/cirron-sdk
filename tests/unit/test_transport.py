@@ -182,7 +182,8 @@ def test_http_gzips_large_body() -> None:
     assert client.post_batch(batch).ok is True
     call = session.calls[0]
     assert call["headers"]["Content-Encoding"] == "gzip"
-    assert len(call["data"]) >= 0
+    # gzip magic bytes — proves we sent a gzipped body, not raw JSON.
+    assert call["data"][:2] == b"\x1f\x8b"
     decoded = json.loads(gzip.decompress(call["data"]).decode("utf-8"))
     assert decoded["batch_id"] == "big-one"
     # Sanity: the raw body crosses the compression threshold.
@@ -218,6 +219,41 @@ def test_http_429_retries_honoring_retry_after() -> None:
     assert result.ok is True
     assert len(session.calls) == 2
     assert sleeps == [2.0]
+
+def test_http_retry_after_is_capped() -> None:
+    from cirron.core.ingest import MAX_RETRY_AFTER_SEC
+
+    sleeps: list[float] = []
+    # Simulate a hostile server demanding a 1-day delay.
+    session = _FakeSession([_Resp(429, headers={"Retry-After": "86400"}), _Resp(202)])
+    client = _make_client(session)
+    client._sleep = sleeps.append  # type: ignore[method-assign]
+
+    result = client.post_batch(_small_batch())
+    assert result.ok is True
+    assert sleeps == [MAX_RETRY_AFTER_SEC]
+
+
+def test_http_path_normalized_when_missing_leading_slash() -> None:
+    session = _FakeSession([_Resp(202)])
+    client = IngestClient(
+        api_endpoint="https://api.example.test",
+        api_key="k",
+        path="api/traces",
+        session=session,  # type: ignore[arg-type]
+        sleep=lambda _s: None,
+    )
+    client.post_batch(_small_batch())
+    assert session.calls[0]["url"] == "https://api.example.test/api/traces"
+
+
+def test_http_backoff_respects_max_with_jitter() -> None:
+    from cirron.core.ingest import MAX_BACKOFF_SEC
+
+    # Large attempt number pushes 2**attempt well past the cap.
+    for attempt in (10, 20, 30):
+        assert IngestClient._backoff(attempt) <= MAX_BACKOFF_SEC
+
 
 def test_http_idempotency_same_batch_id_on_retry() -> None:
     session = _FakeSession([_Resp(500), _Resp(500), _Resp(202)])
