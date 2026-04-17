@@ -153,6 +153,7 @@ class Cirron:
         sample_rate: float = 0.01,
         flush_interval: float = 1.0,
         spool_max_bytes: int = DEFAULT_SPOOL_MAX_BYTES,
+        ingest_path: str = "/api/traces",
     ) -> None:
         self.api_key = api_key
         self.api_endpoint = api_endpoint
@@ -162,6 +163,7 @@ class Cirron:
         self.sample_rate = sample_rate
         self.flush_interval = flush_interval
         self.spool_max_bytes = spool_max_bytes
+        self.ingest_path = ingest_path
         self._profile_config: dict[str, Any] = {}
 
     def profile(
