@@ -216,6 +216,29 @@ class ScopeStack:
     def drop_count(self) -> int:
         return self._state.drop_count
 
+    def close_scope(self, scope_obj: Scope) -> None:
+        """Close a specific scope regardless of stack position.
+
+        Used by ``Profiler.shutdown()`` (SDK-13) to close the root scope
+        from a thread that may differ from the one that opened it. Writes
+        directly into the owning thread's closed deque — ``deque.append``
+        is GIL-atomic, so this is safe from any thread. No-op if the scope
+        was already closed.
+        """
+        if scope_obj.end_ns is not None:
+            return
+        scope_obj.end_ns = time.time_ns()
+        scope_obj.cpu_ns = time.process_time_ns() - scope_obj.cpu_start_ns
+        with self._states_lock:
+            state = self._states.get(scope_obj.thread_id)
+        if state is None:
+            return
+        try:
+            state.stack.remove(scope_obj)
+        except ValueError:
+            pass
+        state.closed.append(scope_obj)
+
 
 _default_stack = ScopeStack()
 
