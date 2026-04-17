@@ -38,7 +38,11 @@ class Profiler:
         raise NotImplementedError("Profiler.health() lands in SDK-13.")
 
     def flush(self) -> None:
-        raise NotImplementedError("Profiler.flush() lands in SDK-13.")
+        # SDK-11 wired this to the spool; SDK-13 will also trigger transport
+        # flush once the full profile() lifecycle owns start_flush_thread().
+        from cirron.core.flush import flush_now
+
+        flush_now()
 
     def shutdown(self) -> None:
         raise NotImplementedError("Profiler.shutdown() lands in SDK-13.")
