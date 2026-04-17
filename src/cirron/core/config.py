@@ -3,7 +3,7 @@
 Merges the YAML loader previously at ``cirron/config/loader.py`` with the
 ``Cirron`` class skeleton described in spec §4.10. The runtime side of
 ``Cirron`` (profile, scope, mark, load, env, get_secret as methods) is
-scaffolded in sibling modules under ``_core/`` and ``hooks/``; this module
+scaffolded in sibling modules under ``core/`` and ``hooks/``; this module
 focuses on construction, YAML resolution, and the profile() scaffold wiring
 that ``tests/unit/test_profile.py`` asserts against.
 """
