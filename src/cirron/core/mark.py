@@ -15,6 +15,7 @@ import os
 import threading
 import time
 import warnings
+import weakref
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
@@ -49,8 +50,19 @@ class MarkBuffer:
     full.
     """
 
-    def __init__(self, capacity: int = DEFAULT_CAPACITY) -> None:
+    def __init__(
+        self, capacity: int = DEFAULT_CAPACITY, wake_event: threading.Event | None = None
+    ) -> None:
         self._capacity = capacity
+        # Optional cross-thread wake: set on buffer-full so the flush thread
+        # can drain ahead of the interval.
+        self._wake_event = wake_event
+        # Weak registry of every thread's ``_ThreadState`` on this buffer —
+        # lets a non-producer thread call ``drain_all()``. WeakSet so thread
+        # death evicts state automatically.
+        self._states_lock = threading.Lock()
+        self._all_states: weakref.WeakSet[Any] = weakref.WeakSet()
+        buf_self = self
 
         # Local threading.local subclass with the capacity baked in via
         # closure — ``threading.local`` re-runs ``__init__`` per thread,
@@ -61,6 +73,8 @@ class MarkBuffer:
                 self.buffer: deque[Mark] = deque(maxlen=capacity)
                 self.drop_count: int = 0
                 self.warned_overflow: bool = False
+                with buf_self._states_lock:
+                    buf_self._all_states.add(self)
 
         self._state = _ThreadState()
 
@@ -76,15 +90,40 @@ class MarkBuffer:
                     stacklevel=3,
                 )
                 state.warned_overflow = True
+            # Poke the flush thread so it can drain ahead of the interval
+            # and (hopefully) stop the bleeding before too many drops.
+            if self._wake_event is not None:
+                self._wake_event.set()
         # ``maxlen`` on ``deque`` makes append O(1) and drops from the
         # opposite end when full — exactly "drop oldest".
         buf.append(mark)
 
     def drain(self) -> list[Mark]:
+        """Drain *this thread's* marks (producer thread only)."""
         state = self._state
         old = state.buffer
         state.buffer = deque(maxlen=self._capacity)
         return list(old)
+
+    def drain_all(self) -> list[Mark]:
+        """Drain marks across every producer thread. Safe from any thread —
+        ``deque.popleft`` is atomic under the GIL, so a concurrent producer
+        append is not lost (it lands in the same deque and is picked up on
+        the next call)."""
+        out: list[Mark] = []
+        with self._states_lock:
+            states = list(self._all_states)
+        for s in states:
+            buf = s.buffer
+            while True:
+                try:
+                    out.append(buf.popleft())
+                except IndexError:
+                    break
+        return out
+
+    def set_wake_event(self, event: threading.Event | None) -> None:
+        self._wake_event = event
 
     def drop_count(self) -> int:
         return self._state.drop_count
