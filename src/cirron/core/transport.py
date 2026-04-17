@@ -47,6 +47,7 @@ class FileOnlyTransport:
     """No-op transport. The spool is the only destination."""
 
     def send(self, batch: dict[str, Any]) -> bool:
+        del batch
         return True
 
     def close(self) -> None:
