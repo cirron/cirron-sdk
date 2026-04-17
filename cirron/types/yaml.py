@@ -30,14 +30,20 @@ class ProfilingConfig(BaseModel):
 
 
 class CirronYaml(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    # populate_by_name lets us accept the YAML key "servingConfig" while
+    # exposing "serving_config" as the Python attribute.
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     name: str
     framework: Framework
     type: ModelType
     version: str
     description: Optional[str] = None
-    servingConfig: Optional[ServingConfig] = None
+    serving_config: Optional[ServingConfig] = Field(
+        default=None,
+        validation_alias="servingConfig",
+        serialization_alias="servingConfig",
+    )
     profiling: Optional[ProfilingConfig] = None
     env: Dict[str, str] = Field(default_factory=dict)
     secrets: List[str] = Field(default_factory=list)

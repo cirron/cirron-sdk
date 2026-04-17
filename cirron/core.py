@@ -209,6 +209,7 @@ class Cirron:
         )
 
         from .config.loader import load_profiling_config
+        from .types.yaml import ProfilingConfig
 
         resolved: Dict[str, Any] = {
             "snapshots": "stats",
@@ -217,11 +218,10 @@ class Cirron:
             "frameworks": None,
         }
 
-        if config is None:
-            resolved.update(load_profiling_config(path))
-        else:
+        # defaults -> YAML -> config dict -> explicit kwargs
+        resolved.update(load_profiling_config(path))
+        if config is not None:
             resolved.update(config)
-
         for key, value in (
             ("frameworks", frameworks),
             ("snapshots", snapshots),
@@ -231,7 +231,10 @@ class Cirron:
             if value is not None:
                 resolved[key] = value
 
-        self._profile_config = resolved
+        # Validate via the same Pydantic model used for YAML so constraints
+        # (enum membership, sample_rate bounds, flush_interval > 0) are
+        # enforced consistently regardless of which source supplied a value.
+        self._profile_config = ProfilingConfig.model_validate(resolved).model_dump()
         return self
 
     def deploy(
