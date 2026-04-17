@@ -46,6 +46,8 @@ cirron traces export --format parquet    # hand traces to DuckDB, pandas, Polars
 cirron traces export --format otel       # ship to Jaeger / Tempo / Honeycomb
 ```
 
+> **Status:** `ci.profile()`, the local spool writer, and the CLI surface are not yet live. The CLI entrypoint is currently a stub that exits with a "not implemented yet" message. `cirron spool inspect` and `cirron traces view` ship in **SDK-18**; `cirron traces export --format parquet|otel` is a post-launch commitment. Today's working surface is `load_cirron_yaml()` / `find_cirron_yaml()` / `ci.env()` / `ci.get_secret()` plus the YAML-config scaffold for `Cirron.profile()`. See the Status section below and `docs/refactor-stories.md` for the full story map.
+
 No lock-in. Your traces are yours. If you stop using Cirron, the `./.cirron/` directory still works with any analytics or observability tool that reads Parquet or OpenTelemetry.
 
 Connect to the platform when you want aggregation across runs, epoch diffing, cost attribution, live dashboards, and team visibility:

@@ -16,7 +16,7 @@ jobs:
         with:
           python-version: '3.13'
       - uses: astral-sh/setup-uv@v5
-      - run: uv sync --all-extras
+      - run: uv sync
       - run: uv run ruff check src tests
       - run: uv run ruff format --check src tests
 
@@ -29,7 +29,7 @@ jobs:
         with:
           python-version: '3.13'
       - uses: astral-sh/setup-uv@v5
-      - run: uv sync --all-extras
+      - run: uv sync
       - run: uv run mypy src
 
   test:

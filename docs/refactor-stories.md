@@ -547,6 +547,9 @@ Spec §4.7. The dispatcher routes by source type. Registered datasets are resolv
 - Return type conversion via `returns.py` (refactored from `adapters.py`)
 - Lazy loading: `lazy=True` returns a `LazyHandle` with `.collect()` method
 
+**Known issues from SDK-8 migration (PR #8 review)**
+- `NumpyAdapter.select_columns()` 1D empty-selection inconsistency: when selecting zero matching columns from a 1D array, `select_columns` returns `NumpyAdapter(np.array([]), [])`, but `NumpyAdapter.__init__` ignores `column_names` for 1D inputs and forces `["column_0"]` — so an empty selection surfaces as a one-column result. Fix: return a 2D empty slice with shape `(n_rows, 0)` and `column_names=[]`, or raise explicitly for the zero-match 1D case. Location: `src/cirron/data/returns.py:~111`.
+
 **Acceptance criteria**
 - Unit test: dispatcher routes by scheme correctly
 - Unit test: registered dataset resolution (mock platform API)
@@ -554,6 +557,7 @@ Spec §4.7. The dispatcher routes by source type. Registered datasets are resolv
 - Unit test: `as_="polars"` returns Polars DataFrame
 - Unit test: `lazy=True` defers loading until `.collect()`
 - Unit test: missing pandas/polars raises `CirronDependencyError` with install hint
+- Unit test: `NumpyAdapter.select_columns([])` on a 1D array returns an empty 0-column result (not a one-column `["column_0"]` result)
 
 ---
 
@@ -573,12 +577,21 @@ Spec §4.7 pattern matching. Extends existing `sources.py` S3/GCS/Azure/local so
 - `src/cirron/data/sources/s3.py`: list objects with prefix, apply match filter, load matched files, concatenate
 - Same pattern for `gcs.py`, `azure.py`, `local.py`
 
+**Known issues from SDK-8 migration (PR #8 review)**
+- **S3 pagination.** `S3DataSource.load()` calls `list_objects_v2` once and iterates `response["Contents"]`. S3 caps `list_objects_v2` at 1000 keys per response and requires pagination via `IsTruncated` + `ContinuationToken`. As-is, folders with >1000 objects silently return partial results. Fix: use `client.get_paginator("list_objects_v2")` and iterate all pages. Location: `src/cirron/data/sources/s3.py:~31`.
+- **Azure `account_url` architectural bug.** `AzureDataSource` builds `account_url` from `self.config.container_name`, but Azure Blob account URLs are based on the *storage account name* (`https://<account>.blob.core.windows.net`) — container name is a separate concept (a sub-path under the account). As-is, this will never connect to a real Azure deployment. Fix: add an `account_name` field to `SourceConfig` (or accept a full `account_url`) and construct the URL correctly. Locations: `src/cirron/data/sources/azure.py:~24` and `:~71`.
+- **GCS / Azure `validate()` returns True on non-exception.** Both backends call `bucket.exists()` / `container.exists()` but ignore the returned boolean, falling through to `return True` unless the call raises. A bucket/container that doesn't exist but whose `exists()` call simply returns `False` will be reported as valid. Fix: `return bucket.exists()` (GCS) and `return container.exists()` (Azure). Locations: `src/cirron/data/sources/gcs.py:~57`, `src/cirron/data/sources/azure.py:~71`.
+
 **Acceptance criteria**
 - Unit test: path glob filtering works
 - Unit test: filename regex filtering works
 - Unit test: column pushdown for Parquet
 - Unit test: extension shorthand works
-- Integration test: S3 source with match (mocked S3)
+- Integration test: S3 source with match (mocked S3), including >1000-key pagination case
+- Unit test: `S3DataSource.validate()` returns the actual bucket existence bool
+- Unit test: `GCSDataSource.validate()` returns the actual bucket existence bool
+- Unit test: `AzureDataSource` builds `account_url` from the storage-account-name field, not from `container_name`
+- Unit test: `AzureDataSource.validate()` returns the actual container existence bool
 
 ---
 
