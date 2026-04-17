@@ -170,3 +170,25 @@ def test_pop_on_empty_stack_is_safe():
     assert stack.pop() is None
     assert stack.pop() is None
     assert stack.depth() == 0
+
+
+def test_drain_closed_all_crosses_threads():
+    # Scopes closed on a worker thread must be visible to a drain called
+    # from a different (e.g. flush) thread. This is SDK-11's consumer pattern.
+    get_default_stack().drain_closed_all()  # clear anything lingering
+    worker_done = threading.Event()
+
+    def worker() -> None:
+        with ci.scope("worker-outer"):
+            with ci.scope("worker-inner"):
+                pass
+        worker_done.set()
+
+    t = threading.Thread(target=worker)
+    t.start()
+    t.join()
+    assert worker_done.is_set()
+
+    closed = get_default_stack().drain_closed_all()
+    names = sorted(s.name for s in closed)
+    assert names == ["worker-inner", "worker-outer"]
