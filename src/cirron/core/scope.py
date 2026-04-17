@@ -5,8 +5,11 @@ current thread's scope stack, and closes it on exit. The innermost open
 scope is the target for ``ci.mark()`` (SDK-10); closed scopes accumulate
 in a per-thread buffer that the flush thread (SDK-11) drains and ships.
 
-The hot path is lock-free by construction: all per-thread state lives in a
-``threading.local()`` subclass, so concurrent threads never contend.
+The hot path is lock-free: each thread gets its own ``_ScopeState`` object
+cached in a ``threading.local`` slot, so ``push``/``pop`` never contend.
+A shadow dict of every thread's state lets a consumer on a *different*
+thread (the flush worker) drain closed scopes across the process via
+``drain_closed_all()``.
 """
 
 from __future__ import annotations
@@ -17,7 +20,6 @@ import threading
 import time
 import uuid
 import warnings
-import weakref
 from collections import deque
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -54,6 +56,30 @@ class Scope:
     marks: list[Any] = field(default_factory=list)
 
 
+class _ScopeState:
+    """Per-thread scope state. Plain object (not ``threading.local``) so it
+    can be registered in a cross-thread weak registry — one distinct
+    instance per thread."""
+
+    __slots__ = (
+        "stack",
+        "closed",
+        "drop_count",
+        "warned_overflow",
+        "warned_underflow",
+        "__weakref__",
+    )
+
+    def __init__(self) -> None:
+        self.stack: list[Scope] = []
+        # ``deque`` so the consumer thread can ``popleft`` concurrently with
+        # the producer's ``append`` — both are atomic under the GIL.
+        self.closed: deque[Scope] = deque()
+        self.drop_count: int = 0
+        self.warned_overflow: bool = False
+        self.warned_underflow: bool = False
+
+
 def _resolve_rank() -> int:
     raw = os.environ.get("RANK") or os.environ.get("LOCAL_RANK") or "0"
     try:
@@ -71,34 +97,35 @@ class ScopeStack:
     def __init__(self) -> None:
         self._rank = _resolve_rank()
         self._pid = os.getpid()
-        # Weak registry of every thread's ``_ThreadState`` on this stack. Lets
-        # a non-producer thread (the flush thread) drain closed scopes from
-        # all producer threads via ``drain_closed_all()``. WeakSet so thread
-        # death automatically evicts the state.
+        # Per-thread state is stored in a plain dict keyed by thread id, with
+        # a ``threading.local`` fast-path cache so the hot path is a single
+        # attribute read. Weak values so that when a thread dies the entry
+        # clears automatically (nothing else holds a strong ref once the
+        # thread's ``_local`` slot is released).
+        self._local = threading.local()
         self._states_lock = threading.Lock()
-        self._all_states: weakref.WeakSet[Any] = weakref.WeakSet()
-        stack_self = self
+        # Plain dict rather than ``WeakValueDictionary``: the threading.local
+        # holds the only other strong reference, which is released the moment
+        # the thread dies — and it can die before the consumer has had a
+        # chance to drain. Leaking one small state per dead thread is the
+        # right trade vs. losing the thread's final scopes.
+        self._states: dict[int, _ScopeState] = {}
 
-        class _ThreadState(threading.local):
-            """Per-thread storage. ``threading.local`` re-runs ``__init__``
-            the first time each thread touches the instance, so every thread
-            gets fresh collections without per-call hasattr checks and
-            auto-registers with the owning ``ScopeStack``.
-            """
+    def _get_state(self) -> _ScopeState:
+        try:
+            return self._local.state  # type: ignore[no-any-return]
+        except AttributeError:
+            pass
+        state = _ScopeState()
+        tid = threading.get_ident()
+        with self._states_lock:
+            self._states[tid] = state
+        self._local.state = state
+        return state
 
-            def __init__(self) -> None:
-                # ``closed`` is a deque so the flush thread can pop items
-                # concurrently with producer appends without a lock — both
-                # ``append`` and ``popleft`` are atomic under the GIL.
-                self.stack: list[Scope] = []
-                self.closed: deque[Scope] = deque()
-                self.drop_count: int = 0
-                self.warned_overflow: bool = False
-                self.warned_underflow: bool = False
-                with stack_self._states_lock:
-                    stack_self._all_states.add(self)
-
-        self._state = _ThreadState()
+    @property
+    def _state(self) -> _ScopeState:
+        return self._get_state()
 
     def push(self, name: str, index: int | None = None, **attrs: Any) -> Scope | None:
         state = self._state
@@ -172,7 +199,11 @@ class ScopeStack:
         """
         out: list[Scope] = []
         with self._states_lock:
-            states = list(self._all_states)
+            states = list(self._states.values())
+        # Note: dead threads' states are kept so their trailing closed scopes
+        # remain drainable. Memory cost is ~200 bytes per thread that ever
+        # existed — fine for typical SDK workloads (main + a handful of
+        # workers). See ``_states`` in __init__ for the trade rationale.
         for s in states:
             buf = s.closed
             while True:

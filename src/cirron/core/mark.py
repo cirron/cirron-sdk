@@ -15,7 +15,6 @@ import os
 import threading
 import time
 import warnings
-import weakref
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
@@ -42,6 +41,19 @@ class Mark:
     ts_ns: int = 0
 
 
+class _MarkState:
+    """Per-thread mark state. One distinct instance per thread, held both
+    in a ``threading.local`` fast-path cache and in the owning buffer's
+    weak registry so cross-thread draining can enumerate every producer."""
+
+    __slots__ = ("buffer", "drop_count", "warned_overflow", "__weakref__")
+
+    def __init__(self, capacity: int) -> None:
+        self.buffer: deque[Mark] = deque(maxlen=capacity)
+        self.drop_count: int = 0
+        self.warned_overflow: bool = False
+
+
 class MarkBuffer:
     """Thread-local ring buffer. A single ``MarkBuffer`` instance is
     shared across threads; state lives behind a ``threading.local``
@@ -57,26 +69,34 @@ class MarkBuffer:
         # Optional cross-thread wake: set on buffer-full so the flush thread
         # can drain ahead of the interval.
         self._wake_event = wake_event
-        # Weak registry of every thread's ``_ThreadState`` on this buffer —
-        # lets a non-producer thread call ``drain_all()``. WeakSet so thread
-        # death evicts state automatically.
+        # Per-thread state lives in a ``WeakValueDictionary`` keyed by thread
+        # id, with a ``threading.local`` fast-path cache. Plain objects (not
+        # ``threading.local`` subclasses) so a drainer on a *different*
+        # thread can enumerate every producer's state — the flush thread's
+        # whole job.
+        self._local = threading.local()
         self._states_lock = threading.Lock()
-        self._all_states: weakref.WeakSet[Any] = weakref.WeakSet()
-        buf_self = self
+        # Plain dict rather than ``WeakValueDictionary`` — see the matching
+        # comment in ``ScopeStack.__init__``. We'd rather retain small
+        # empty-deque entries for dead threads than race thread death and
+        # lose the trailing marks.
+        self._states: dict[int, _MarkState] = {}
 
-        # Local threading.local subclass with the capacity baked in via
-        # closure — ``threading.local`` re-runs ``__init__`` per thread,
-        # so every thread that touches ``_state`` gets a fresh deque
-        # sized to ``capacity`` without per-call hasattr checks.
-        class _ThreadState(threading.local):
-            def __init__(self) -> None:
-                self.buffer: deque[Mark] = deque(maxlen=capacity)
-                self.drop_count: int = 0
-                self.warned_overflow: bool = False
-                with buf_self._states_lock:
-                    buf_self._all_states.add(self)
+    def _get_state(self) -> _MarkState:
+        try:
+            return self._local.state  # type: ignore[no-any-return]
+        except AttributeError:
+            pass
+        state = _MarkState(self._capacity)
+        tid = threading.get_ident()
+        with self._states_lock:
+            self._states[tid] = state
+        self._local.state = state
+        return state
 
-        self._state = _ThreadState()
+    @property
+    def _state(self) -> _MarkState:
+        return self._get_state()
 
     def append(self, mark: Mark) -> None:
         state = self._state
@@ -112,7 +132,7 @@ class MarkBuffer:
         the next call)."""
         out: list[Mark] = []
         with self._states_lock:
-            states = list(self._all_states)
+            states = list(self._states.values())
         for s in states:
             buf = s.buffer
             while True:
