@@ -26,8 +26,13 @@ def _get_default() -> Cirron:
 class Profiler:
     """Handle returned from ``ci.profile()``. SDK-13 adds health/flush/shutdown."""
 
-    def __init__(self, cirron: Cirron) -> None:
+    def __init__(self, cirron: Cirron, enabled: bool = True) -> None:
         self._cirron = cirron
+        self._enabled = enabled
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
 
     def health(self) -> dict[str, Any]:
         raise NotImplementedError("Profiler.health() lands in SDK-13.")
@@ -48,7 +53,14 @@ def profile(
     enabled: bool = True,
     path: str | None = None,
 ) -> Profiler:
-    """Resolve profiling config and return a handle. Scaffold — see ``Cirron.profile``."""
+    """Resolve profiling config and return a handle. Scaffold — see ``Cirron.profile``.
+
+    ``enabled=False`` short-circuits: no config resolution, no scaffold warning,
+    returns a disabled ``Profiler``. Hook installation and flush startup (SDK-13)
+    will honor this flag the same way.
+    """
+    if not enabled:
+        return Profiler(_get_default(), enabled=False)
     ci = _get_default()
     ci.profile(
         config=config,
@@ -58,4 +70,4 @@ def profile(
         flush_interval=flush_interval,
         path=path,
     )
-    return Profiler(ci)
+    return Profiler(ci, enabled=True)
