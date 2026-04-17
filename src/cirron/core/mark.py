@@ -11,9 +11,9 @@ locks and keeps attribute lookups local. Budget: 1M marks in < 3s.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
-import uuid
 import warnings
 from collections import deque
 from dataclasses import dataclass, field
@@ -51,6 +51,7 @@ class MarkBuffer:
 
     def __init__(self, capacity: int = DEFAULT_CAPACITY) -> None:
         self._capacity = capacity
+
         # Local threading.local subclass with the capacity baked in via
         # closure — ``threading.local`` re-runs ``__init__`` per thread,
         # so every thread that touches ``_state`` gets a fresh deque
@@ -100,11 +101,12 @@ _default_buffer = MarkBuffer()
 
 # Cache hot attribute lookups as module-level names. The 3μs/call budget
 # is tight enough that removing per-call attribute resolution matters.
-# These bindings are stable for the life of the process: the default
-# buffer instance never changes, and ``uuid.uuid4`` / ``time.time_ns``
-# are module-level functions in the stdlib.
+# Use ``os.urandom(16).hex()`` instead of ``uuid.uuid4().hex``: uuid4
+# internally calls urandom(16) and wraps the result in a UUID object
+# whose ``.hex`` formats the bytes — the wrapper is the slow part, and
+# for mark ids a 32-char hex string is just as unique.
 _append_default = _default_buffer.append
-_uuid4 = uuid.uuid4
+_urandom = os.urandom
 _time_ns = time.time_ns
 
 
@@ -124,6 +126,10 @@ def mark(name: str, value: float | int | str | bool, **attrs: Any) -> None:
     span — that sentinel will become the real root span once SDK-13
     wires ``ci.profile()`` to open one on entry.
     """
+    # ``type() is X`` is faster than ``isinstance`` for exact-type dispatch
+    # — on the float/int hot path this matters for the 3μs/call budget.
+    # Strings are rare and take the ``isinstance`` path so mypy can narrow
+    # the type correctly for ``.encode``.
     t = type(value)
     if t is float:
         value_type = "float"
@@ -131,35 +137,32 @@ def mark(name: str, value: float | int | str | bool, **attrs: Any) -> None:
         value_type = "bool"
     elif t is int:
         value_type = "int"
-    elif t is str:
+    elif isinstance(value, str):
         encoded = value.encode("utf-8")
         if len(encoded) > MAX_STRING_BYTES:
             # ``errors="ignore"`` drops any partial multibyte codepoint
             # left dangling at the truncation boundary.
             value = encoded[:MAX_STRING_BYTES].decode("utf-8", errors="ignore")
         value_type = "string"
+    elif isinstance(value, bool):
+        # Subclasses of the Python built-ins land here. Note that most
+        # NumPy scalar dtypes do *not* subclass the built-ins (``np.int64``
+        # is not ``isinstance(x, int)``); ``np.float64`` is the usual
+        # exception. Broader numeric support belongs behind an explicit
+        # adapter, not here on the hot path.
+        value_type = "bool"
+    elif isinstance(value, int):
+        value_type = "int"
+    elif isinstance(value, float):
+        value_type = "float"
     else:
-        # Fall back to isinstance for subclasses (numpy scalars,
-        # custom int/float subclasses, etc.).
-        if isinstance(value, bool):
-            value_type = "bool"
-        elif isinstance(value, int):
-            value_type = "int"
-        elif isinstance(value, float):
-            value_type = "float"
-        elif isinstance(value, str):
-            encoded = value.encode("utf-8")
-            if len(encoded) > MAX_STRING_BYTES:
-                value = encoded[:MAX_STRING_BYTES].decode("utf-8", errors="ignore")
-            value_type = "string"
-        else:
-            raise TypeError(
-                f"ci.mark() value must be float, int, str, or bool; got {type(value).__name__}"
-            )
+        raise TypeError(
+            f"ci.mark() value must be float, int, str, or bool; got {type(value).__name__}"
+        )
 
     scope = get_current_scope()
     span_id = scope.id if scope is not None else ROOT_SPAN_ID
-    mark_id = _uuid4().hex
+    mark_id = _urandom(16).hex()
     _append_default(
         Mark(
             id=mark_id,
