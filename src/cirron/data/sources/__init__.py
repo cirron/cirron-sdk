@@ -3,7 +3,8 @@
 Per spec §4.7, the ``source`` argument to ``ci.load()`` resolves through one
 of the scheme-specific modules here (``s3``, ``gcs``, ``azure``, ``local``,
 ``postgres``, ``databricks``, ``snowflake``) or via a registered-dataset
-lookup (``registered``). The real dispatch lands in SDK-13; today these
+lookup (``registered``). The real dispatch lands in SDK-28 (registered +
+filesystem sources) and SDK-30 (SQL / integration sources); today these
 modules carry scaffolded classes with signatures that match the intended
 surface.
 """
@@ -20,8 +21,8 @@ class SourceConfig:
     """Internal configuration for a single data-source load.
 
     Fields are a pragmatic union of what the scheme-specific backends need to
-    locate and decode a source. SDK-13 will reconcile this with the spec §4.7
-    public surface (``source`` + ``match`` + ``where`` + ``columns``).
+    locate and decode a source. SDK-28/29/30 will reconcile this with the
+    spec §4.7 public surface (``source`` + ``match`` + ``where`` + ``columns``).
     """
 
     source_type: str

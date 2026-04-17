@@ -1,10 +1,14 @@
 """Cirron SDK — Python-side profiler and data loader for the Cirron platform.
 
-Surface area is defined in ``docs/spec.md`` §4. Most runtime behavior lands in
-SDK-13 and beyond; the names below resolve to stubs that warn when invoked
-(``scope``/``mark``/``epochs``/``batches``/``inference``/``wrap``) or raise
-``NotImplementedError`` (``load``). ``profile`` is wired as a YAML-config
-scaffold per the existing contract in ``tests/unit/test_profile.py``.
+Surface area is defined in ``docs/spec.md`` §4. Runtime behavior lands
+story-by-story — scope in SDK-9, mark in SDK-10, flush in SDK-11, transport
+in SDK-12, ``profile()`` orchestration in SDK-13, wrappers in SDK-14,
+``Cirron`` config class in SDK-16, secrets in SDK-17, CLI in SDK-18, hooks
+in SDK-19–23, snapshots in SDK-24/25, inference in SDK-26/27, data loading
+in SDK-28–31. Until those land, the names below resolve to stubs that warn
+when invoked (``scope``/``mark``/``epochs``/``batches``/``inference``/``wrap``)
+or raise ``NotImplementedError`` (``load``). ``profile`` is wired as a
+YAML-config scaffold per the existing contract in ``tests/unit/test_profile.py``.
 """
 
 from cirron.core.config import (

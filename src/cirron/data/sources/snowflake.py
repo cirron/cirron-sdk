@@ -1,1 +1,1 @@
-"""Snowflake source backend — stub for SDK-13 (spec §4.7)."""
+"""Snowflake source backend — stub for SDK-30 (spec §4.7)."""

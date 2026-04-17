@@ -1,1 +1,1 @@
-"""Hook registry / framework autodetection — stub for SDK-13 (spec §4.8)."""
+"""Hook registry / framework autodetection — stub for SDK-19 (spec §4.8)."""

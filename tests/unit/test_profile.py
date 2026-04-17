@@ -1,9 +1,10 @@
 """Tests for Cirron.profile() YAML-config wiring.
 
 NOTE: These tests verify the *YAML-wiring contract* of the profile() scaffold
-only — NOT actual profiling behavior. Real profiling (framework autodetection,
-snapshot capture, flush pipeline) is SDK-13; tests for that behavior will be
-added alongside the real implementation.
+only — NOT actual profiling behavior. The orchestration (framework autodetection,
+hook install, flush start) is SDK-13, drawing on SDK-19–23 (hooks), SDK-24/25
+(snapshots), and SDK-11 (flush). Tests for that behavior will be added alongside
+the real implementations.
 """
 
 from pathlib import Path

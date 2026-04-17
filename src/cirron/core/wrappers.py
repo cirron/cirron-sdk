@@ -1,6 +1,6 @@
 """``ci.epochs(iterable)`` / ``ci.batches(iterable)`` — scaffold passthrough iterators.
 
-SDK-13 replaces these with scope-opening iterators (indexed epoch/batch spans,
+SDK-14 replaces these with scope-opening iterators (indexed epoch/batch spans,
 DataLoader stall attribution). Today they're plain passthroughs with a single
 warning on first use.
 """
@@ -21,7 +21,7 @@ def epochs(iterable: Iterable[T]) -> Iterator[T]:
     global _warned_epochs
     if not _warned_epochs:
         warnings.warn(
-            "cirron.epochs() runtime is not implemented yet (SDK-13); "
+            "cirron.epochs() runtime is not implemented yet (SDK-14); "
             "yielding passthrough without opening scopes.",
             stacklevel=2,
         )
@@ -33,7 +33,7 @@ def batches(iterable: Iterable[T]) -> Iterator[T]:
     global _warned_batches
     if not _warned_batches:
         warnings.warn(
-            "cirron.batches() runtime is not implemented yet (SDK-13); "
+            "cirron.batches() runtime is not implemented yet (SDK-14); "
             "yielding passthrough without opening scopes.",
             stacklevel=2,
         )
