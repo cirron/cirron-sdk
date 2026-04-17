@@ -204,6 +204,21 @@ The same pattern applies for running against multiple workspaces or control plan
 | scikit-learn         | ✓         | —         | Wrap estimators with `ci.wrap()`     |
 | JAX                  | planned   | planned   | —                                    |
 
+## Development
+
+Run the `cirron.yaml` test suite:
+
+```bash
+python -m pytest tests/test_yaml.py tests/test_loader.py tests/test_profile.py -v
+```
+
+To also cross-validate the Pydantic model against the real sample models repo, set `CIRRON_SAMPLE_MODELS_PATH`:
+
+```bash
+CIRRON_SAMPLE_MODELS_PATH=/path/to/cirron-sample-models/models \
+  python -m pytest tests/test_yaml.py tests/test_loader.py tests/test_profile.py -v
+```
+
 ## Further reading
 
 - Platform documentation: [docs.cirron.dev](https://docs.cirron.dev)
