@@ -40,8 +40,15 @@ class Profiler:
     def flush(self) -> None:
         # SDK-11 wired this to the spool; SDK-13 will also trigger transport
         # flush once the full profile() lifecycle owns start_flush_thread().
-        from cirron.core.flush import flush_now
+        # Idempotently ensure the flush singleton is configured from this
+        # profiler's ``Cirron`` so output lands in the user's configured
+        # directory, not the fallback ``./.cirron/``.
+        from cirron.core.flush import flush_now, start_flush_thread
 
+        start_flush_thread(
+            output_dir=self._cirron.output_dir,
+            spool_max_bytes=self._cirron.spool_max_bytes,
+        )
         flush_now()
 
     def shutdown(self) -> None:
