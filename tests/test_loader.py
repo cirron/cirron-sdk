@@ -1,5 +1,4 @@
 """Tests for the cirron.yaml loader (find + load + ancestor walk)."""
-import os
 from pathlib import Path
 
 import pytest
@@ -48,17 +47,13 @@ def test_ancestor_walk_finds_parent_config(tmp_path, monkeypatch):
     assert found == (tmp_path / "cirron.yaml").resolve()
 
 
-def test_returns_none_when_no_config(tmp_path, monkeypatch):
-    """No cirron.* anywhere up to root — load_cirron_yaml returns None."""
+def test_returns_none_when_no_config(tmp_path):
+    """No cirron.* under the isolated start directory returns None."""
     isolated = tmp_path / "isolated"
     isolated.mkdir()
-    monkeypatch.chdir(isolated)
-    # Can't prevent ancestor walk from finding a real config on the dev machine,
-    # so verify load_cirron_yaml doesn't crash and find_cirron_yaml returns a
-    # path OR None — either is a defined outcome. We only assert that calling
-    # without args doesn't raise.
-    result = load_cirron_yaml()
-    assert result is None or result.name
+    # Pass start= explicitly so we don't inherit ancestor-walk results from
+    # the dev machine's filesystem (which may have a real cirron.yaml upstream).
+    assert find_cirron_yaml(start=isolated) is None
 
 
 def test_yaml_precedence_over_yml_and_json(tmp_path, monkeypatch):
