@@ -90,6 +90,12 @@ def test_explicit_frameworks_filter_unknown_names():
     assert p.installed_hooks == ["sklearn"]
 
 
+def test_explicit_empty_frameworks_installs_none():
+    """frameworks=[] explicitly requests 'install no hooks', not autodetect."""
+    p = cirron.profile(frameworks=[])
+    assert p.installed_hooks == []
+
+
 def test_config_resolution_order_kwargs_win(tmp_path, monkeypatch):
     from pathlib import Path
 
