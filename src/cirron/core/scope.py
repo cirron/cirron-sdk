@@ -8,14 +8,15 @@ passthrough that emits a single warning on first use.
 from __future__ import annotations
 
 import warnings
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any, Iterator, Optional
+from typing import Any
 
 _warned = False
 
 
 @contextmanager
-def scope(name: str, index: Optional[int] = None, **attrs: Any) -> Iterator[None]:
+def scope(name: str, index: int | None = None, **attrs: Any) -> Iterator[None]:
     global _warned
     if not _warned:
         warnings.warn(

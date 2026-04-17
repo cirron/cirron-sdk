@@ -1,4 +1,3 @@
-
 """Module-level ``profile()`` and ``Profiler`` handle.
 
 Per spec §4.2, ``ci.profile()`` is called once per process and returns a
@@ -10,11 +9,11 @@ so ``tests/unit/test_profile.py`` keeps passing.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Literal
 
 from cirron.core.config import Cirron
 
-_default_cirron: Optional[Cirron] = None
+_default_cirron: Cirron | None = None
 
 
 def _get_default() -> Cirron:
@@ -30,7 +29,7 @@ class Profiler:
     def __init__(self, cirron: Cirron) -> None:
         self._cirron = cirron
 
-    def health(self) -> Dict[str, Any]:
+    def health(self) -> dict[str, Any]:
         raise NotImplementedError("Profiler.health() lands in SDK-13.")
 
     def flush(self) -> None:
@@ -41,13 +40,13 @@ class Profiler:
 
 
 def profile(
-    config: Optional[Dict[str, Any]] = None,
-    frameworks: Optional[List[str]] = None,
-    snapshots: Optional[Literal["stats", "sampled", "full"]] = None,
-    sample_rate: Optional[float] = None,
-    flush_interval: Optional[float] = None,
+    config: dict[str, Any] | None = None,
+    frameworks: list[str] | None = None,
+    snapshots: Literal["stats", "sampled", "full"] | None = None,
+    sample_rate: float | None = None,
+    flush_interval: float | None = None,
     enabled: bool = True,
-    path: Optional[str] = None,
+    path: str | None = None,
 ) -> Profiler:
     """Resolve profiling config and return a handle. Scaffold — see ``Cirron.profile``."""
     ci = _get_default()

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict
+from typing import Any
 
 from cirron.data.sources import DataSource
 
@@ -27,28 +27,26 @@ class S3DataSource(DataSource):
             if "Contents" not in response:
                 return []
             return [
-                self._parse(
-                    client.get_object(Bucket=self.config.bucket_name, Key=obj["Key"])
-                )
+                self._parse(client.get_object(Bucket=self.config.bucket_name, Key=obj["Key"]))
                 for obj in response["Contents"]
             ]
 
-        obj = client.get_object(
-            Bucket=self.config.bucket_name, Key=self.config.path or ""
-        )
+        obj = client.get_object(Bucket=self.config.bucket_name, Key=self.config.path or "")
         return self._parse(obj)
 
-    def _parse(self, obj_response: Dict[str, Any]) -> Any:
+    def _parse(self, obj_response: dict[str, Any]) -> Any:
         body = obj_response["Body"].read()
         fmt = self.config.format
         if fmt == "csv":
-            import pandas as pd
             from io import StringIO
+
+            import pandas as pd
 
             return pd.read_csv(StringIO(body.decode("utf-8")))
         if fmt == "parquet":
-            import pandas as pd
             from io import BytesIO
+
+            import pandas as pd
 
             return pd.read_parquet(BytesIO(body))
         if fmt == "json":

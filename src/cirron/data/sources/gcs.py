@@ -16,8 +16,7 @@ class GCSDataSource(DataSource):
             from google.cloud import storage
         except ImportError as e:
             raise ImportError(
-                "google-cloud-storage is required. "
-                "Install with: pip install google-cloud-storage"
+                "google-cloud-storage is required. Install with: pip install google-cloud-storage"
             ) from e
 
         client = storage.Client()
@@ -33,13 +32,15 @@ class GCSDataSource(DataSource):
         content = blob.download_as_bytes()
         fmt = self.config.format
         if fmt == "csv":
-            import pandas as pd
             from io import StringIO
+
+            import pandas as pd
 
             return pd.read_csv(StringIO(content.decode("utf-8")))
         if fmt == "parquet":
-            import pandas as pd
             from io import BytesIO
+
+            import pandas as pd
 
             return pd.read_parquet(BytesIO(content))
         if fmt == "json":

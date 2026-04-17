@@ -9,18 +9,19 @@ resolution via the platform — lands in SDK-13+.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Iterator, List, Literal, Optional, Union
+from collections.abc import Callable
+from typing import Any, Literal
 
-Source = Union[str, List[Union[str, Dict[str, Any]]]]
+Source = str | list[str | dict[str, Any]]
 As = Literal["pandas", "polars", "iter", "tensor", "hf"]
 
 
 def load(
     source: Source,
-    match: Optional[Dict[str, Any]] = None,
-    where: Optional[str] = None,
-    columns: Optional[List[str]] = None,
-    map: Optional[Callable[..., Any]] = None,
+    match: dict[str, Any] | None = None,
+    where: str | None = None,
+    columns: list[str] | None = None,
+    map: Callable[..., Any] | None = None,
     as_: As = "pandas",
     lazy: bool = False,
     batch_size: int = 10_000,

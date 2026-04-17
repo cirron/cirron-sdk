@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import warnings
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 import yaml as pyyaml
 from pydantic import ValidationError
@@ -39,7 +39,7 @@ def _collect_known_fields() -> set:
 _KNOWN_TOP_LEVEL_FIELDS = _collect_known_fields()
 
 
-def find_cirron_yaml(start: Optional[Union[str, Path]] = None) -> Optional[Path]:
+def find_cirron_yaml(start: str | Path | None = None) -> Path | None:
     """Walk upward from *start* (default cwd) looking for a cirron config file."""
     current = Path(start).resolve() if start else Path.cwd().resolve()
     if current.is_file():
@@ -55,7 +55,7 @@ def find_cirron_yaml(start: Optional[Union[str, Path]] = None) -> Optional[Path]
         current = current.parent
 
 
-def _parse_file(path: Path) -> Dict[str, Any]:
+def _parse_file(path: Path) -> dict[str, Any]:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as e:
@@ -78,7 +78,7 @@ def _parse_file(path: Path) -> Dict[str, Any]:
     return data
 
 
-def _warn_on_unknown_fields(data: Dict[str, Any], path: Path) -> None:
+def _warn_on_unknown_fields(data: dict[str, Any], path: Path) -> None:
     unknown = set(data.keys()) - _KNOWN_TOP_LEVEL_FIELDS
     if unknown:
         fields = ", ".join(sorted(unknown))
@@ -89,7 +89,7 @@ def _warn_on_unknown_fields(data: Dict[str, Any], path: Path) -> None:
         )
 
 
-def load_cirron_yaml(path: Optional[Union[str, Path]] = None) -> Optional[CirronYaml]:
+def load_cirron_yaml(path: str | Path | None = None) -> CirronYaml | None:
     """Load and validate a cirron config file.
 
     If *path* is given, load that file directly. Otherwise walk up from cwd.
@@ -117,8 +117,8 @@ def load_cirron_yaml(path: Optional[Union[str, Path]] = None) -> Optional[Cirron
 
 
 def load_profiling_config(
-    path: Optional[Union[str, Path]] = None,
-) -> Dict[str, Any]:
+    path: str | Path | None = None,
+) -> dict[str, Any]:
     """Return the profiling section of cirron.yaml as a dict, or ``{}`` on miss."""
     try:
         model = load_cirron_yaml(path)
@@ -143,9 +143,9 @@ class Cirron:
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
         api_endpoint: str = "https://api.cirron.dev",
-        workspace_id: Optional[str] = None,
+        workspace_id: str | None = None,
         output_dir: str = "./.cirron/",
         snapshots: str = "stats",
         sample_rate: float = 0.01,
@@ -158,17 +158,17 @@ class Cirron:
         self.snapshots = snapshots
         self.sample_rate = sample_rate
         self.flush_interval = flush_interval
-        self._profile_config: Dict[str, Any] = {}
+        self._profile_config: dict[str, Any] = {}
 
     def profile(
         self,
-        config: Optional[Dict[str, Any]] = None,
+        config: dict[str, Any] | None = None,
         *,
-        frameworks: Optional[List[str]] = None,
-        snapshots: Optional[str] = None,
-        sample_rate: Optional[float] = None,
-        flush_interval: Optional[float] = None,
-        path: Optional[str] = None,
+        frameworks: list[str] | None = None,
+        snapshots: str | None = None,
+        sample_rate: float | None = None,
+        flush_interval: float | None = None,
+        path: str | None = None,
     ) -> Cirron:
         """Resolve profiling config from kwargs / dict / cirron.yaml / defaults.
 
@@ -182,7 +182,7 @@ class Cirron:
             stacklevel=2,
         )
 
-        resolved: Dict[str, Any] = {
+        resolved: dict[str, Any] = {
             "snapshots": "stats",
             "sample_rate": 0.01,
             "flush_interval": 1.0,
