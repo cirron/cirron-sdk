@@ -11,6 +11,8 @@ setup(
     install_requires=[
         "numpy>=1.19.0",
         "pandas>=1.0.0",
+        "pyyaml>=5.1",
+        "pydantic>=2.0",
     ],
     extras_require={
         "dev": [
