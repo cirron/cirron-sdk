@@ -179,18 +179,11 @@ class Cirron:
     ) -> Cirron:
         """Resolve profiling config from kwargs / dict / cirron.yaml / defaults.
 
-        NOTE: YAML-wiring scaffold only — no framework hooks, no snapshots, no
-        flush pipeline. See SDK-13 for ``profile()`` orchestration, SDK-19–23
-        for hook installation, SDK-24/25 for snapshot capture, and SDK-11 for
-        the flush pipeline. Resolution priority:
+        Pure config resolution — orchestration (transport selection, framework
+        hook install, flush-thread startup, root scope) lives in
+        :func:`cirron.core.profiler.profile`. Resolution priority:
         ``explicit kwargs > config dict > cirron.yaml profiling section > defaults``.
         """
-        warnings.warn(
-            "cirron.profile() is a scaffold for YAML-config wiring only; "
-            "actual profiling runtime is not implemented yet (SDK-13).",
-            stacklevel=2,
-        )
-
         resolved: dict[str, Any] = {
             "snapshots": "stats",
             "sample_rate": 0.01,
