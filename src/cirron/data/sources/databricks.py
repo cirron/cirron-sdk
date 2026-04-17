@@ -1,1 +1,1 @@
-"""Databricks source backend — stub for SDK-13 (spec §4.7)."""
+"""Databricks source backend — stub for SDK-30 (spec §4.7)."""

@@ -1,7 +1,7 @@
 """``ci.wrap()`` — sklearn opt-in estimator wrapper.
 
 Per spec §4.8: no auto-hook for sklearn; users call ``ci.wrap(estimator)`` to
-open a scope around ``fit``. SDK-13 provides the real wrapping; today this is
+open a scope around ``fit``. SDK-23 provides the real wrapping; today this is
 a passthrough that warns once.
 """
 
@@ -17,7 +17,7 @@ def wrap(estimator: Any) -> Any:
     global _warned
     if not _warned:
         warnings.warn(
-            "cirron.wrap() runtime is not implemented yet (SDK-13); "
+            "cirron.wrap() runtime is not implemented yet (SDK-23); "
             "estimator is returned unchanged.",
             stacklevel=2,
         )

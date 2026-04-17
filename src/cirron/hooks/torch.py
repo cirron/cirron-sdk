@@ -1,4 +1,4 @@
-"""PyTorch hooks — stub for SDK-13.
+"""PyTorch hooks — stub for SDK-20.
 
 Per spec §4.8: forward-pass (``nn.Module.__call__``), backward-pass (autograd
 ``Tensor.backward``), optimizer step (``optim.Optimizer.step``), DataLoader
