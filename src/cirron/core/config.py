@@ -137,8 +137,9 @@ class Cirron:
     Most runtime methods (``scope``, ``mark``, ``load``, ``get_secret``,
     ``inference``, ``wrap``, ``epochs``, ``batches``) are exposed via the
     module-level ``cirron.*`` sugar in ``cirron/__init__.py``. This class
-    currently only wires the ``profile()`` YAML-config scaffold; remaining
-    behavior lands in SDK-13.
+    currently only wires the ``profile()`` YAML-config scaffold (SDK-13);
+    the full configuration class with per-method delegation, ``~/.cirron/
+    config.toml`` parsing, and multi-workspace support lands in SDK-16.
     """
 
     def __init__(
@@ -173,7 +174,9 @@ class Cirron:
         """Resolve profiling config from kwargs / dict / cirron.yaml / defaults.
 
         NOTE: YAML-wiring scaffold only — no framework hooks, no snapshots, no
-        flush pipeline. See SDK-13 for the real runtime. Resolution priority:
+        flush pipeline. See SDK-13 for ``profile()`` orchestration, SDK-19–23
+        for hook installation, SDK-24/25 for snapshot capture, and SDK-11 for
+        the flush pipeline. Resolution priority:
         ``explicit kwargs > config dict > cirron.yaml profiling section > defaults``.
         """
         warnings.warn(

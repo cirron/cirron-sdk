@@ -2,7 +2,7 @@
 
 Per spec §4.6, wraps a serving function with profiling: opens a ``request``
 scope, invokes the function, closes the scope. Accepts an optional ``config``
-dict for user-controlled capture toggles. SDK-13 implements the real runtime;
+dict for user-controlled capture toggles. SDK-26 implements the real runtime;
 today the decorator is a passthrough that warns once.
 """
 
@@ -27,7 +27,7 @@ def inference(
             global _warned
             if not _warned:
                 warnings.warn(
-                    "cirron.inference runtime is not implemented yet (SDK-13); "
+                    "cirron.inference runtime is not implemented yet (SDK-26); "
                     "calls pass through without tracing.",
                     stacklevel=2,
                 )

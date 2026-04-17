@@ -1,4 +1,4 @@
-"""Background flush thread — stub for SDK-13.
+"""Background flush thread — stub for SDK-11.
 
 Responsibilities (per spec §3.3):
 - batch scope closes + marks

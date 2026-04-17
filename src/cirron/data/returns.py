@@ -5,7 +5,7 @@ normalize access patterns (columns, shape, dtypes, conversion) across pandas,
 polars, Arrow, NumPy, and Dask, so the ``as_=`` parameter in ``ci.load()``
 can swap return types without rewriting downstream code.
 
-SDK-13 hooks these into the real ``load()`` dispatcher.
+SDK-28 hooks these into the real ``load()`` dispatcher.
 """
 
 from __future__ import annotations

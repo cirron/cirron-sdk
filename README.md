@@ -227,7 +227,7 @@ CIRRON_SAMPLE_MODELS_PATH=/path/to/cirron-sample-models/models \
 
 ### Status
 
-This is the SDK-00 scaffold. The public surface in `src/cirron/__init__.py` matches the spec (`docs/spec.md` §4), but most runtime behavior is deferred: `ci.scope` / `mark` / `epochs` / `batches` / `inference` / `wrap` are no-ops that warn once, and `ci.load` raises `NotImplementedError`. The YAML-config wiring for `Cirron.profile()` is real (see `tests/unit/test_profile.py`). Framework hooks, snapshot capture, and the flush pipeline land in SDK-13.
+This is the SDK-8 scaffold. The public surface in `src/cirron/__init__.py` matches the spec (`docs/spec.md` §4), but most runtime behavior is deferred: `ci.scope` / `mark` / `epochs` / `batches` / `inference` / `wrap` are no-ops that warn once, and `ci.load` raises `NotImplementedError`. The YAML-config wiring for `Cirron.profile()` is real (see `tests/unit/test_profile.py`). Runtime lands story-by-story — scope in SDK-9, mark in SDK-10, flush in SDK-11, transport in SDK-12, `profile()` orchestration in SDK-13, wrappers in SDK-14, hooks in SDK-19–23, snapshots in SDK-24/25, inference in SDK-26/27, data loading in SDK-28–31. See `docs/refactor-stories.md`.
 
 ## Further reading
 

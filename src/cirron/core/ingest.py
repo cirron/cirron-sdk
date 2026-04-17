@@ -1,1 +1,1 @@
-"""HTTP client for ``POST /v1/traces`` — stub for SDK-13 (spec §5.2)."""
+"""HTTP client for ``POST /v1/traces`` — stub for SDK-12 (spec §5.2)."""
