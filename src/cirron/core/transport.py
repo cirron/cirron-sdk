@@ -19,19 +19,16 @@ just means the batch will be re-sent by a later flush.
 from __future__ import annotations
 
 import json
-import logging
 import os
 import sys
 import threading
 from typing import TYPE_CHECKING, Any, Protocol
 
 from cirron.core.flush import SPOOL_SCHEMA_VERSION
-from cirron.core.ingest import IngestClient, _sdk_version
+from cirron.core.ingest import DEFAULT_INGEST_PATH, IngestClient, _sdk_version
 
 if TYPE_CHECKING:
     from cirron.core.config import Cirron
-
-log = logging.getLogger("cirron.transport")
 
 EVENT_STREAM_MARKER = "__cirron_event__"
 EVENT_TYPE_TRACE_BATCH = "trace_batch"
@@ -115,7 +112,7 @@ def select_transport(config: Cirron) -> Transport:
         return EventStreamTransport()
     api_key = getattr(config, "api_key", None)
     if api_key:
-        path = getattr(config, "ingest_path", "/api/traces")
+        path = getattr(config, "ingest_path", DEFAULT_INGEST_PATH)
         client = IngestClient(
             api_endpoint=config.api_endpoint,
             api_key=api_key,
