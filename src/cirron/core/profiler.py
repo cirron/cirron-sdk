@@ -18,10 +18,9 @@ import logging
 import os
 import sys
 import threading
+import tomllib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
-
-import tomllib
 
 from cirron.core.config import Cirron
 from cirron.core.flush import flush_now, start_flush_thread, stop_flush_thread
@@ -163,8 +162,8 @@ class Profiler:
             }
         return {
             "enabled": True,
-            "scope_drop_count": _safe(lambda: get_default_stack().drop_count(), 0),
-            "mark_drop_count": _safe(lambda: get_default_mark_buffer().drop_count(), 0),
+            "scope_drop_count": _safe(lambda: get_default_stack().drop_count_all(), 0),
+            "mark_drop_count": _safe(lambda: get_default_mark_buffer().drop_count_all(), 0),
             "spool_drop_count": _safe(_spool_drop_count, 0),
             "spool_dir": _safe(_spool_dir_str, None),
             "spool_bytes": _safe(_spool_bytes, 0),
@@ -198,7 +197,7 @@ class Profiler:
             return
         if self._root_scope is not None:
             try:
-                get_default_stack().close_scope(self._root_scope)
+                _close_root_scope(self._root_scope)
             except Exception:
                 log.warning("cirron: closing root scope failed", exc_info=True)
         try:
@@ -217,6 +216,27 @@ class Profiler:
         with _profiler_lock:
             if _profiler is self:
                 _profiler = None
+
+
+def _close_root_scope(root: Scope) -> None:
+    """Close the session root scope at shutdown.
+
+    If shutdown is running on the same thread that opened the scope (the
+    common case — profile() and shutdown() are both called from the main
+    thread), we unwind the stack with regular ``pop()`` so any user scopes
+    left open above the root are closed too, and the stack doesn't retain
+    a dangling reference. Cross-thread shutdown falls back to
+    ``close_scope``, which only marks ``end_ns`` + appends to the owning
+    thread's closed deque without mutating that thread's stack list.
+    """
+    stack = get_default_stack()
+    if threading.get_ident() == root.thread_id:
+        while stack.depth() > 0 and stack.current() is not root:
+            stack.pop()
+        if stack.depth() > 0 and stack.current() is root:
+            stack.pop()
+        return
+    stack.close_scope(root)
 
 
 def _safe(fn: Any, default: Any) -> Any:
@@ -328,14 +348,16 @@ def profile(
         platform_context = _read_platform_context()
         transport = select_transport(ci)
 
-        if frameworks is None:
+        if frameworks is not None:
+            # Explicit kwarg wins, including an empty list meaning "install none".
+            detected = list(frameworks)
+        else:
             resolved_frameworks = ci._profile_config.get("frameworks")
-            if resolved_frameworks:
+            if resolved_frameworks is not None:
+                # Explicit YAML/config value (including []) is respected.
                 detected = list(resolved_frameworks)
             else:
                 detected = detect_frameworks()
-        else:
-            detected = list(frameworks)
 
         # install_hooks is a SDK-13 stub — real install lands in SDK-19+.
         installed = install_hooks(detected, profiler=None)
@@ -356,6 +378,15 @@ def profile(
         for key, value in platform_context.items():
             root_attrs[f"cirron.{key}"] = value
         root_scope = get_default_stack().push("cirron.session", **root_attrs)
+        if root_scope is None:
+            # Only possible if the caller already had ``MAX_DEPTH`` scopes open
+            # on this thread before ``ci.profile()``. Unusual but not fatal —
+            # the profiler continues without a root span; shutdown's
+            # ``_root_scope is None`` branch handles this cleanly.
+            log.warning(
+                "cirron.profile(): could not open root scope — caller's thread "
+                "already at MAX_DEPTH. Continuing without a session span."
+            )
 
         _profiler = Profiler(
             ci,
