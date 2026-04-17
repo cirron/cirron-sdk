@@ -1,3 +1,4 @@
+
 """Module-level ``profile()`` and ``Profiler`` handle.
 
 Per spec §4.2, ``ci.profile()`` is called once per process and returns a
@@ -11,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional
 
-from cirron._core.config import Cirron
+from cirron.core.config import Cirron
 
 _default_cirron: Optional[Cirron] = None
 
