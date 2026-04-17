@@ -18,9 +18,10 @@ import logging
 import os
 import sys
 import threading
-import tomllib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
+
+import tomllib
 
 from cirron.core.config import Cirron
 from cirron.core.flush import flush_now, start_flush_thread, stop_flush_thread
@@ -439,5 +440,3 @@ def _reset_for_tests() -> None:
         get_default_mark_buffer().drain_all()
     except Exception:
         pass
-
-
