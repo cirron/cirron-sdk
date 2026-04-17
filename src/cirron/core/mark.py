@@ -44,7 +44,7 @@ class Mark:
 class _MarkState:
     """Per-thread mark state. One distinct instance per thread, held both
     in a ``threading.local`` fast-path cache and in the owning buffer's
-    weak registry so cross-thread draining can enumerate every producer."""
+    registry so cross-thread draining can enumerate every producer."""
 
     __slots__ = ("buffer", "drop_count", "warned_overflow", "__weakref__")
 
@@ -56,10 +56,11 @@ class _MarkState:
 
 class MarkBuffer:
     """Thread-local ring buffer. A single ``MarkBuffer`` instance is
-    shared across threads; state lives behind a ``threading.local``
-    instance created per buffer so each thread gets its own independent
-    deque. ``deque(maxlen=capacity)`` gives lock-free drop-oldest when
-    full.
+    shared across threads; each thread gets its own ``_MarkState`` via a
+    ``threading.local`` cache. ``deque(maxlen=capacity)`` gives lock-free
+    drop-oldest when full. A shadow dict of every thread's state lets a
+    consumer (the SDK-11 flush thread) enumerate all producers via
+    ``drain_all()``.
     """
 
     def __init__(
@@ -69,17 +70,12 @@ class MarkBuffer:
         # Optional cross-thread wake: set on buffer-full so the flush thread
         # can drain ahead of the interval.
         self._wake_event = wake_event
-        # Per-thread state lives in a ``WeakValueDictionary`` keyed by thread
-        # id, with a ``threading.local`` fast-path cache. Plain objects (not
-        # ``threading.local`` subclasses) so a drainer on a *different*
-        # thread can enumerate every producer's state — the flush thread's
-        # whole job.
+        # Per-thread state keyed by thread id with a ``threading.local``
+        # fast-path cache. Plain dict (not ``WeakValueDictionary``) — see
+        # the matching rationale in ``ScopeStack.__init__``: trailing marks
+        # on a dying thread must remain drainable.
         self._local = threading.local()
         self._states_lock = threading.Lock()
-        # Plain dict rather than ``WeakValueDictionary`` — see the matching
-        # comment in ``ScopeStack.__init__``. We'd rather retain small
-        # empty-deque entries for dead threads than race thread death and
-        # lose the trailing marks.
         self._states: dict[int, _MarkState] = {}
 
     def _get_state(self) -> _MarkState:
