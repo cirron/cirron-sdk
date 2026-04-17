@@ -51,6 +51,7 @@ class MarkBuffer:
 
     def __init__(self, capacity: int = DEFAULT_CAPACITY) -> None:
         self._capacity = capacity
+
         # Local threading.local subclass with the capacity baked in via
         # closure — ``threading.local`` re-runs ``__init__`` per thread,
         # so every thread that touches ``_state`` gets a fresh deque
@@ -125,6 +126,10 @@ def mark(name: str, value: float | int | str | bool, **attrs: Any) -> None:
     span — that sentinel will become the real root span once SDK-13
     wires ``ci.profile()`` to open one on entry.
     """
+    # ``type() is X`` is faster than ``isinstance`` for exact-type dispatch
+    # — on the float/int hot path this matters for the 3μs/call budget.
+    # Strings are rare and take the ``isinstance`` path so mypy can narrow
+    # the type correctly for ``.encode``.
     t = type(value)
     if t is float:
         value_type = "float"
@@ -132,31 +137,24 @@ def mark(name: str, value: float | int | str | bool, **attrs: Any) -> None:
         value_type = "bool"
     elif t is int:
         value_type = "int"
-    elif t is str:
+    elif isinstance(value, str):
         encoded = value.encode("utf-8")
         if len(encoded) > MAX_STRING_BYTES:
             # ``errors="ignore"`` drops any partial multibyte codepoint
             # left dangling at the truncation boundary.
             value = encoded[:MAX_STRING_BYTES].decode("utf-8", errors="ignore")
         value_type = "string"
+    elif isinstance(value, bool):
+        # Subclasses of bool / int / float land here (numpy scalars, etc).
+        value_type = "bool"
+    elif isinstance(value, int):
+        value_type = "int"
+    elif isinstance(value, float):
+        value_type = "float"
     else:
-        # Fall back to isinstance for subclasses (numpy scalars,
-        # custom int/float subclasses, etc.).
-        if isinstance(value, bool):
-            value_type = "bool"
-        elif isinstance(value, int):
-            value_type = "int"
-        elif isinstance(value, float):
-            value_type = "float"
-        elif isinstance(value, str):
-            encoded = value.encode("utf-8")
-            if len(encoded) > MAX_STRING_BYTES:
-                value = encoded[:MAX_STRING_BYTES].decode("utf-8", errors="ignore")
-            value_type = "string"
-        else:
-            raise TypeError(
-                f"ci.mark() value must be float, int, str, or bool; got {type(value).__name__}"
-            )
+        raise TypeError(
+            f"ci.mark() value must be float, int, str, or bool; got {type(value).__name__}"
+        )
 
     scope = get_current_scope()
     span_id = scope.id if scope is not None else ROOT_SPAN_ID
