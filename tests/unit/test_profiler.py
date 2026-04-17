@@ -26,7 +26,12 @@ def _reset(monkeypatch, tmp_path):
     # Point HOME at tmp so stray config.toml reads don't leak across tests.
     monkeypatch.setenv("HOME", str(tmp_path))
     # Drop platform-context env vars that the outer environment might have.
-    for key in ("CIRRON_RUN_ID", "CIRRON_PIPELINE_ID", "CIRRON_DEPLOYMENT_ID", "CIRRON_WORKSPACE_ID"):
+    for key in (
+        "CIRRON_RUN_ID",
+        "CIRRON_PIPELINE_ID",
+        "CIRRON_DEPLOYMENT_ID",
+        "CIRRON_WORKSPACE_ID",
+    ):
         monkeypatch.delenv(key, raising=False)
     profiler_mod._reset_for_tests()
     yield

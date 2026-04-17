@@ -15,7 +15,12 @@ from cirron.core import profiler as profiler_mod
 def _reset(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path / "home")
-    for key in ("CIRRON_RUN_ID", "CIRRON_PIPELINE_ID", "CIRRON_DEPLOYMENT_ID", "CIRRON_WORKSPACE_ID"):
+    for key in (
+        "CIRRON_RUN_ID",
+        "CIRRON_PIPELINE_ID",
+        "CIRRON_DEPLOYMENT_ID",
+        "CIRRON_WORKSPACE_ID",
+    ):
         monkeypatch.delenv(key, raising=False)
     profiler_mod._reset_for_tests()
     yield
