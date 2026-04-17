@@ -19,6 +19,7 @@ import yaml as pyyaml
 from pydantic import ValidationError
 
 from cirron.core.flush import DEFAULT_SPOOL_MAX_BYTES
+from cirron.core.ingest import DEFAULT_INGEST_PATH
 from cirron.core.yaml_types import CirronYaml, ProfilingConfig
 
 CONFIG_FILENAMES = ("cirron.yaml", "cirron.yml", "cirron.json")
@@ -153,7 +154,7 @@ class Cirron:
         sample_rate: float = 0.01,
         flush_interval: float = 1.0,
         spool_max_bytes: int = DEFAULT_SPOOL_MAX_BYTES,
-        ingest_path: str = "/api/traces",
+        ingest_path: str = DEFAULT_INGEST_PATH,
     ) -> None:
         self.api_key = api_key
         self.api_endpoint = api_endpoint
