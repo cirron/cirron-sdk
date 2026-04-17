@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Union
 import yaml as pyyaml
 from pydantic import ValidationError
 
-from cirron._core.yaml_types import CirronYaml, ProfilingConfig
+from cirron.core.yaml_types import CirronYaml, ProfilingConfig
 
 CONFIG_FILENAMES = ("cirron.yaml", "cirron.yml", "cirron.json")
 
