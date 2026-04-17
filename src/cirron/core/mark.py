@@ -145,7 +145,11 @@ def mark(name: str, value: float | int | str | bool, **attrs: Any) -> None:
             value = encoded[:MAX_STRING_BYTES].decode("utf-8", errors="ignore")
         value_type = "string"
     elif isinstance(value, bool):
-        # Subclasses of bool / int / float land here (numpy scalars, etc).
+        # Subclasses of the Python built-ins land here. Note that most
+        # NumPy scalar dtypes do *not* subclass the built-ins (``np.int64``
+        # is not ``isinstance(x, int)``); ``np.float64`` is the usual
+        # exception. Broader numeric support belongs behind an explicit
+        # adapter, not here on the hot path.
         value_type = "bool"
     elif isinstance(value, int):
         value_type = "int"
