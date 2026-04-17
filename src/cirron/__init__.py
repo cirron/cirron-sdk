@@ -27,7 +27,7 @@ from cirron.core.errors import (
     CirronSecretNotFound,
 )
 from cirron.core.mark import mark
-from cirron.core.profiler import Profiler, profile
+from cirron.core.profiler import Profiler, flush, health, profile, shutdown
 from cirron.core.scope import scope
 from cirron.core.wrappers import batches, epochs
 from cirron.core.yaml_types import CirronYaml, ProfilingConfig, ServingConfig
@@ -55,12 +55,15 @@ __all__ = [
     "env",
     "epochs",
     "find_cirron_yaml",
+    "flush",
     "get_secret",
+    "health",
     "inference",
     "load",
     "load_cirron_yaml",
     "mark",
     "profile",
     "scope",
+    "shutdown",
     "wrap",
 ]
