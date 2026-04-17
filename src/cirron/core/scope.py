@@ -89,26 +89,26 @@ def _resolve_rank() -> int:
 
 
 class ScopeStack:
-    """Thread-local scope stack. A single ``ScopeStack`` instance is shared
-    across threads; the ``_state`` attribute is a ``threading.local`` and
-    hands each thread its own independent stack / closed buffer.
+    """Process-wide scope stack, thread-local on the hot path.
+
+    A single ``ScopeStack`` instance is shared across threads. Each thread
+    gets its own ``_ScopeState`` via a ``threading.local`` cache; the same
+    state objects are also tracked in ``_states`` so the flush thread
+    (SDK-11) can enumerate every producer's closed-scope deque via
+    ``drain_closed_all()``.
     """
 
     def __init__(self) -> None:
         self._rank = _resolve_rank()
         self._pid = os.getpid()
-        # Per-thread state is stored in a plain dict keyed by thread id, with
-        # a ``threading.local`` fast-path cache so the hot path is a single
-        # attribute read. Weak values so that when a thread dies the entry
-        # clears automatically (nothing else holds a strong ref once the
-        # thread's ``_local`` slot is released).
+        # Per-thread state keyed by thread id, with a ``threading.local``
+        # fast-path cache so the hot path is one attribute read. A plain
+        # dict (not ``WeakValueDictionary``) — if a producer thread dies
+        # before the consumer drains, the weak-ref path would evict its
+        # state first and trailing closed scopes would be lost. The dict
+        # holds one small ``_ScopeState`` per thread that ever existed.
         self._local = threading.local()
         self._states_lock = threading.Lock()
-        # Plain dict rather than ``WeakValueDictionary``: the threading.local
-        # holds the only other strong reference, which is released the moment
-        # the thread dies — and it can die before the consumer has had a
-        # chance to drain. Leaking one small state per dead thread is the
-        # right trade vs. losing the thread's final scopes.
         self._states: dict[int, _ScopeState] = {}
 
     def _get_state(self) -> _ScopeState:
