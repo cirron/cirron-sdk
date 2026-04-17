@@ -11,6 +11,9 @@ or raise ``NotImplementedError`` (``load``). ``profile`` is wired as a
 YAML-config scaffold per the existing contract in ``tests/unit/test_profile.py``.
 """
 
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
+
 from cirron.core.config import (
     Cirron,
     CirronYamlError,
@@ -33,7 +36,10 @@ from cirron.hooks.sklearn import wrap
 from cirron.inference.decorator import inference
 from cirron.secrets.client import get_secret
 
-__version__ = "0.1.0"
+try:
+    __version__ = _pkg_version("cirron-sdk")
+except PackageNotFoundError:  # not installed (e.g. running from a source tree)
+    __version__ = "0.0.0+unknown"
 
 __all__ = [
     "Cirron",
