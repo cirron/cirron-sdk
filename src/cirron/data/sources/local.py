@@ -38,14 +38,17 @@ class LocalDataSource(DataSource):
             return f.read()
 
     def _load_image(self) -> Any:
+        path = self.config.path
+        if not path:
+            raise ValueError("Path is required for local data source")
+
         try:
             from PIL import Image
         except ImportError:
             logger.warning("PIL not available, loading image as bytes")
-            with open(self.config.path, "rb") as f:
+            with open(path, "rb") as f:
                 return f.read()
 
-        path = self.config.path
         if os.path.isfile(path):
             return Image.open(path)
         if os.path.isdir(path):
