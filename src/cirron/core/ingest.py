@@ -49,6 +49,21 @@ class IngestResult:
     status: int | None = None
 
 
+@dataclass(frozen=True)
+class _Attempt:
+    done: bool
+    result: IngestResult | None = None
+    sleep_for: float = 0.0
+
+    @classmethod
+    def finish(cls, result: IngestResult) -> _Attempt:
+        return cls(done=True, result=result)
+
+    @classmethod
+    def retry(cls, sleep_for: float) -> _Attempt:
+        return cls(done=False, sleep_for=sleep_for)
+
+
 def _parse_retry_after(value: str | None) -> float | None:
     if not value:
         return None
@@ -106,7 +121,7 @@ class IngestClient:
         payload, headers = self._build_request(batch)
         for attempt in range(self._max_retries + 1):
             outcome = self._attempt_once(payload, headers, attempt)
-            if outcome.done:
+            if outcome.done and outcome.result is not None:
                 return outcome.result
             self._sleep(outcome.sleep_for)
         return IngestResult(ok=False, retryable=True)
