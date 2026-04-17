@@ -1,10 +1,12 @@
 # Cirron SDK
 
-Deep instrumentation for ML workloads running on the Cirron platform.
+Deep instrumentation for ML training and inference workloads.
 
-The SDK attaches to your training and inference code and reports what's happening inside it — per-epoch compute time, weight and gradient statistics, data loader stalls, GPU memory, cost attribution — back to the platform, where it's correlated with the pipeline, deployment, and run context Cirron already manages.
+The SDK attaches to your code and records what's happening inside it — per-epoch compute time, weight and gradient statistics, data loader stalls, GPU memory, cost attribution. It produces the same open artifacts whether it's running on your laptop with no network, in an air-gapped cluster, or connected to the Cirron platform.
 
-It is not a model framework. It is not a tracking dashboard. It is a profiler wired into a platform.
+It is not a model framework. It is not a tracking dashboard. It is a profiler. When connected to the Cirron platform, it gains aggregation across runs, epoch-over-epoch diffing, cost attribution, live streaming, and team visibility — but the SDK itself is standalone-usable.
+
+> The SDK works standalone. The platform makes it powerful. (Same relationship as `git` to GitHub — the repo is portable; the collaboration is where the value is.)
 
 ## The wedge
 
@@ -33,6 +35,28 @@ That's the whole integration. On the platform you now get:
 
 When epoch 10 goes sideways, you see where the time went, what the weights looked like compared to epoch 9, and whether the same thing happened last Tuesday.
 
+## Standalone or platform
+
+The SDK is useful on its own. `ci.profile()` with no credentials writes traces to `./.cirron/` as structured JSON span records and safetensors snapshots (both open formats — documented, versioned, consumable by any tool):
+
+```bash
+cirron traces view                       # text flamegraph of the scope tree in your terminal
+cirron spool inspect                     # file listing, sizes, timestamps
+cirron traces export --format parquet    # hand traces to DuckDB, pandas, Polars
+cirron traces export --format otel       # ship to Jaeger / Tempo / Honeycomb
+```
+
+No lock-in. Your traces are yours. If you stop using Cirron, the `./.cirron/` directory still works with any analytics or observability tool that reads Parquet or OpenTelemetry.
+
+Connect to the platform when you want aggregation across runs, epoch diffing, cost attribution, live dashboards, and team visibility:
+
+```bash
+cirron login                             # store API key + endpoint
+ci.profile()                             # now traces flow to the platform as well
+```
+
+Both modes produce the same artifacts — the platform just adds features that only make sense across many runs and many users.
+
 ## Install
 
 ```bash
@@ -50,13 +74,13 @@ Or with `uv`:
 uv add cirron-sdk[torch,pandas]
 ```
 
-Authenticate with a workspace API key:
+Authentication is optional — skip this for standalone use. To connect to the platform, set an API key:
 
 ```bash
 export CIRRON_API_KEY=...
 ```
 
-When running inside a Cirron pipeline or deployment, the pipeline/deployment/run context is injected automatically. When running locally, the SDK writes to `./.cirron/` and syncs on next platform contact.
+When running inside a Cirron pipeline or deployment, the pipeline/deployment/run context is injected automatically. When running locally with credentials, the SDK writes to `./.cirron/` and syncs on next platform contact. When running locally *without* credentials, the SDK writes the same artifacts to `./.cirron/` — they stay there, fully usable, until you either run `cirron traces view` / `export` on them or connect a workspace and `cirron spool flush` them.
 
 ## `profile()` — the 80% case
 

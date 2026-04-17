@@ -9,11 +9,11 @@
 
 ## 1. Purpose
 
-The Cirron SDK is the Python-side deep instrumentation layer for the Cirron platform. It attaches to user training and inference processes and reports what's happening inside them — per-epoch and per-batch timing, weight and gradient statistics, data loader behavior, GPU utilization, cost attribution — back to the platform, where it is correlated with the pipeline, deployment, and run context the platform already manages.
+The Cirron SDK is the Python-side deep instrumentation layer that records what's happening inside user training and inference processes — per-epoch and per-batch timing, weight and gradient statistics, data loader behavior, GPU utilization, cost attribution. The SDK runs standalone on a developer's laptop, in an air-gapped gov cluster, or connected to the Cirron platform; in all three modes the SDK produces the same artifacts in the same open formats.
 
-It is not a model framework. It is not a tracking dashboard. It is not a registration client. It is a profiler wired into a platform.
+It is not a model framework. It is not a tracking dashboard. It is not a registration client. It is a profiler that happens to have a first-class integration with the Cirron platform.
 
-The SDK produces data. The platform stores, aggregates, and renders it. This spec covers both sides: the Python SDK surface and the platform ingestion, storage, and dashboard changes required to make the data useful.
+The SDK produces data in standard formats (JSON span records, safetensors snapshots, optional OpenTelemetry export). The platform stores, aggregates, correlates with run/pipeline/deployment context, attributes cost, and renders it. The pitch is "the SDK works standalone; the platform makes it powerful" — the same relationship as `git` to GitHub. No user is trapped, because traces aren't in a proprietary format. This spec covers both sides: the Python SDK surface and the platform ingestion, storage, and dashboard changes required to make the data useful.
 
 ## 2. Design principles
 
@@ -25,6 +25,8 @@ These constrain every decision below. When a question is ambiguous, resolve towa
 
 **Graceful degradation.** No API key, no network, no platform contact — everything still runs. Traces spool locally and sync on next platform contact. This is load-bearing for air-gapped customers and for the dev loop.
 
+**Standalone-usable. Platform-amplified.** The SDK is not a thin client whose output is only meaningful after the platform consumes it. Running `ci.profile()` on a laptop with no credentials produces immediately useful local artifacts: structured JSON span records, safetensors weight/gradient snapshots, and a terminal trace viewer (`cirron traces view`) that renders the scope tree without touching the network. Users see value before they authenticate — adoption starts locally. The platform adds aggregation across runs, epoch-over-epoch diffing, cost attribution, live streaming, resource linking, and team visibility — features that can't be replicated with local files. What the SDK does *not* ship locally: a dashboard, a query engine, a cost calculator. Those are platform features. The local experience is inspect + export; the platform experience is visualize + analyze + collaborate + attribute. The pitch mirrors git vs GitHub — Git works without GitHub, the repo is portable, and nobody calls that a lock-in play.
+
 **Correctness over coverage.** A profiler that misreports cost or drops scopes silently destroys trust in a way no UI can recover. All instrumentation paths must be idempotent, overhead-bounded, and self-reporting.
 
 **Overhead is a first-class concern.** Default configuration must be cheap enough to leave on in production. Expensive modes are opt-in and documented.
@@ -33,7 +35,7 @@ These constrain every decision below. When a question is ambiguous, resolve towa
 
 **No new infrastructure.** The platform already runs Kafka, MySQL (PlanetScale), Redis, S3, and BullMQ workers. The SDK uses these. No ClickHouse, no TimescaleDB, no new databases or services.
 
-**Standard artifacts.** Traces are stored as structured records in MySQL and as Parquet/safetensors in object storage. No proprietary format.
+**Standard artifacts.** Traces are stored as structured records in MySQL and as Parquet/safetensors in object storage. No proprietary format. The local spool schema (JSON span records, safetensors snapshots, directory layout) is documented as public API — downstream tools can consume it without reverse-engineering, and `cirron traces export` converts it to Parquet (for analytics tools like DuckDB, pandas, Polars) or OpenTelemetry (for Jaeger/Tempo/Honeycomb).
 
 ## 3. Architecture overview
 
@@ -584,14 +586,18 @@ The global default reads from environment variables, then `~/.cirron/config.toml
 ### 4.11 CLI
 
 ```bash
-cirron login                    # interactive auth, writes ~/.cirron/config.toml
-cirron status                   # connection health, current workspace
-cirron spool inspect            # show local spool contents
-cirron spool flush              # force flush spool to platform
-cirron spool clear              # clear local spool
+cirron login                                    # interactive auth, writes ~/.cirron/config.toml
+cirron status                                   # connection health, current workspace
+cirron spool inspect                            # show local spool contents
+cirron spool flush                              # force flush spool to platform
+cirron spool clear                              # clear local spool
+
+cirron traces view [--run <id>]                 # render the scope tree as a text flamegraph in the terminal
+cirron traces export --format parquet --out traces.parquet
+cirron traces export --format otel --endpoint http://collector:4318
 ```
 
-The CLI is a thin wrapper over the `Cirron` class. It's the setup path for external runs (dev laptops, notebooks, customer servers).
+The CLI is a thin wrapper over the `Cirron` class. It's the setup path for external runs (dev laptops, notebooks, customer servers) **and the standalone-use surface**. `cirron traces view` is a launch requirement — it's what makes `ci.profile()` useful on a disconnected laptop, and is scoped into SDK-18. `cirron traces export` is a post-launch commitment: Parquet and OpenTelemetry are the two export targets that make the "no lock-in" story concrete.
 
 ## 5. Platform changes
 
@@ -977,7 +983,11 @@ No new apps. No new infrastructure. No new databases.
 
 **MySQL row volume at scale.** At launch: fine. At 100M+ rows per workspace: aggregation queries will slow. Mitigation: retention pruning + Redis caching. If this becomes a real bottleneck post-launch, evaluate ClickHouse or TimescaleDB as a targeted migration for the trace tables only — the `@cirron/traces` package is the abstraction layer that would contain that change.
 
-**OTEL export.** The scope model is OpenTelemetry-compatible. Shipping an OTEL exporter (send traces to Jaeger/Tempo/Honeycomb too) is a low-effort "no lock-in" differentiator. Not launch-critical but worth deciding scope.
+**OTEL export.** The scope model is OpenTelemetry-compatible. Shipping an OTEL exporter (send traces to Jaeger/Tempo/Honeycomb too) is a post-launch commitment, not launch-critical — but committed, not an open question. Implementation is a new transport backend plus span-to-OTEL conversion in `cirron traces export --format otel`. No-lock-in is load-bearing for defense and gov customers who explicitly ask "what happens if we stop using Cirron?"
+
+**Configurable ingestion transports.** Post-seed, users should be able to configure where traces go — Cirron platform (default), their own OTEL collector, a custom webhook, an S3 bucket, or a combination. The transport abstraction (§3.1) is already built for this; additional backends slot in without touching the hot path. Not launch-critical.
+
+**Spool format as public API.** The local spool format (JSON spans in `./.cirron/spool/<timestamp>-<batch_id>.json`, safetensors snapshots at `./.cirron/snapshots/<span_id>/<tensor>.safetensors`) is documented and versioned as public API. Downstream tools and `cirron traces export` rely on it. Schema lives in `docs/spool-format.md` (to be added alongside SDK-11); version bumps follow the SDK's SemVer with the `X-Cirron-SDK-Version` header tagging every batch file.
 
 **DataLoader hook reliability.** Monkey-patching `DataLoader.__iter__` / `__next__` works for standard usage but may break custom DataLoader subclasses or `IterableDataset` with worker processes. Need to test against common patterns and degrade gracefully on edge cases.
 
@@ -991,4 +1001,6 @@ No new apps. No new infrastructure. No new databases.
 - Config-driven model construction (`ci.Model(dict)`)
 - All old decorators (`@ci.experiments`, `@ci.deploy_ready`, `@ci.version`, `@ci.track`, `@ci.model`)
 - Non-Python SDKs
-- OTEL exporter as first-class feature (open question)
+- Local visualization beyond the terminal (`cirron traces view`) — no local dashboard, no local query engine, no local cost calculator. Those are platform features.
+- Configurable ingestion transports beyond platform + file-only (user OTEL collectors, custom webhooks, S3) — post-seed
+- OTEL export CLI (`cirron traces export --format otel`) — post-launch commitment, not launch-critical
