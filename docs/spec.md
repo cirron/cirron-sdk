@@ -3,7 +3,7 @@
 **Status:** Draft v3
 **Scope:** Full launch surface
 **Repos touched:** `cirron-sdk` (Python), `cirron` (platform monorepo — ingestion routes, Kafka topics, worker, dashboard), `cirron-kernels` (kernels for compute infrastructure), `cirron-runtimes` (runtimes for deployments), `cirron-cli` (CLI for the platform, deeply connected to SDK)
-**Local Directories**: /Users/devinlynch/Desktop/{Cirron, Repos}
+**Local Directories**: ./{Cirron, Repos}/
 
 ---
 
