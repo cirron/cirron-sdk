@@ -1,0 +1,35 @@
+name: sentiment-rnn
+framework: tensorflow
+type: classification
+version: "1.0.0"
+description: Bidirectional LSTM sentiment classifier
+
+servingConfig:
+  runtime: onnx
+  class_labels:
+    - negative
+    - positive
+    - neutral
+  feature_order:
+    - text
+  input_schema:
+    type: object
+    properties:
+      text:
+        type: string
+        title: Text
+        description: Text to analyze sentiment
+    required:
+      - text
+  output_schema:
+    type: object
+    properties:
+      prediction:
+        type: string
+        title: Sentiment
+      confidence:
+        type: number
+        title: Confidence
+      probabilities:
+        type: object
+        title: Class Probabilities
