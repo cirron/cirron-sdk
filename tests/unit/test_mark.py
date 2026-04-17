@@ -185,6 +185,37 @@ def test_threads_have_isolated_buffers():
     assert counts == {"a": 3, "b": 5}
 
 
+def test_drain_all_crosses_threads():
+    # Marks emitted on a worker thread are drainable from any thread via
+    # drain_all() — required for the SDK-11 flush thread.
+    get_default_mark_buffer().drain_all()  # clear lingering
+    get_default_stack().drain_closed_all()
+
+    def worker() -> None:
+        with ci.scope("worker"):
+            ci.mark("from_worker", 1.25)
+
+    t = threading.Thread(target=worker)
+    t.start()
+    t.join()
+
+    drained = get_default_mark_buffer().drain_all()
+    assert any(m.name == "from_worker" and m.value == 1.25 for m in drained)
+
+
+def test_buffer_full_sets_wake_event():
+    wake = threading.Event()
+    buf = MarkBuffer(capacity=2, wake_event=wake)
+    buf.append(Mark(id="a", span_id="s", name="n", value_type="int", value=0))
+    buf.append(Mark(id="b", span_id="s", name="n", value_type="int", value=1))
+    assert not wake.is_set()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        buf.append(Mark(id="c", span_id="s", name="n", value_type="int", value=2))
+    # Third append is on a full buffer — should signal the consumer.
+    assert wake.is_set()
+
+
 def test_drain_empties_buffer():
     with ci.scope("s"):
         ci.mark("x", 1)

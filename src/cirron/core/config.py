@@ -18,6 +18,7 @@ from typing import Any
 import yaml as pyyaml
 from pydantic import ValidationError
 
+from cirron.core.flush import DEFAULT_SPOOL_MAX_BYTES
 from cirron.core.yaml_types import CirronYaml, ProfilingConfig
 
 CONFIG_FILENAMES = ("cirron.yaml", "cirron.yml", "cirron.json")
@@ -151,6 +152,7 @@ class Cirron:
         snapshots: str = "stats",
         sample_rate: float = 0.01,
         flush_interval: float = 1.0,
+        spool_max_bytes: int = DEFAULT_SPOOL_MAX_BYTES,
     ) -> None:
         self.api_key = api_key
         self.api_endpoint = api_endpoint
@@ -159,6 +161,7 @@ class Cirron:
         self.snapshots = snapshots
         self.sample_rate = sample_rate
         self.flush_interval = flush_interval
+        self.spool_max_bytes = spool_max_bytes
         self._profile_config: dict[str, Any] = {}
 
     def profile(
