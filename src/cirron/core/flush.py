@@ -235,8 +235,11 @@ class FlushThread(threading.Thread):
                 log.warning("cirron transport.send failed; batch remains in spool", exc_info=True)
 
     def drain_once(self) -> Batch | None:
-        scopes = self._scope_stack.drain_closed()
-        marks = self._mark_buffer.drain()
+        # Drain across all producer threads — ``ScopeStack``/``MarkBuffer``
+        # state is ``threading.local`` per thread; the ``*_all()`` variants
+        # walk every registered thread's state.
+        scopes = self._scope_stack.drain_closed_all()
+        marks = self._mark_buffer.drain_all()
         if not scopes and not marks:
             return None
         return Batch(
@@ -406,6 +409,10 @@ def start_flush_thread(
         _wake_event = threading.Event()
         stack = get_default_stack()
         buf = get_default_mark_buffer()
+        # Wire producer-side buffer-full signaling into the shared wake event
+        # so the flush thread can drain ahead of its interval when pressure
+        # builds up.
+        buf.set_wake_event(_wake_event)
         resolved_interval = interval
         writer_ref = _writer
         wake_ref = _wake_event
@@ -426,21 +433,24 @@ def stop_flush_thread(timeout: float = 5.0) -> None:
         sup = _supervisor
         _supervisor = None
         _writer = None
+        # Detach the wake hookup so a dangling reference can't poke a
+        # stopped supervisor's event.
+        get_default_mark_buffer().set_wake_event(None)
         _wake_event = None
     if sup is not None:
         sup.stop(timeout=timeout)
 
 
 def flush_now() -> Path | None:
-    """Drain buffers and write one batch synchronously.
+    """Drain every producer thread's buffers and write one batch synchronously.
 
     Safe from any thread and from ``atexit``. If no flush thread is running
     an ad-hoc writer at ``./.cirron/spool/`` is used so data from short-lived
     scripts isn't lost.
     """
     writer = _writer if _writer is not None else SpoolWriter(Path("./.cirron/spool/"))
-    scopes = get_default_stack().drain_closed()
-    marks = get_default_mark_buffer().drain()
+    scopes = get_default_stack().drain_closed_all()
+    marks = get_default_mark_buffer().drain_all()
     if not scopes and not marks:
         return None
     batch = Batch(
@@ -487,6 +497,10 @@ def _shutdown() -> None:
 def _signal_handler(signum: int, frame: Any) -> None:
     _shutdown()
     prior = _prior_sigterm if signum == signal.SIGTERM else _prior_sigint
+    if prior == signal.SIG_IGN:
+        # The host application had intentionally ignored this signal; honor
+        # that after we've flushed rather than forcing termination.
+        return
     if callable(prior):
         prior(signum, frame)
         return
