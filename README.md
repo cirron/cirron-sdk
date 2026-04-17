@@ -206,18 +206,28 @@ The same pattern applies for running against multiple workspaces or control plan
 
 ## Development
 
-Run the `cirron.yaml` test suite:
+The SDK uses `uv` for dependency management (mirroring `cirron-kernels` and `cirron-runtimes`).
 
 ```bash
-python -m pytest tests/test_yaml.py tests/test_loader.py tests/test_profile.py -v
+uv sync                          # core + dev deps
+uv sync --all-extras             # + pandas, polars, torch, tensorflow, transformers, hf
+
+uv run pytest tests/unit -v      # run unit tests
+uv run ruff check src tests      # lint
+uv run ruff format --check src tests
+uv run mypy src                  # typecheck
 ```
 
-To also cross-validate the Pydantic model against the real sample models repo, set `CIRRON_SAMPLE_MODELS_PATH`:
+Cross-validate the Pydantic model against a real `cirron-sample-models` checkout:
 
 ```bash
 CIRRON_SAMPLE_MODELS_PATH=/path/to/cirron-sample-models/models \
-  python -m pytest tests/test_yaml.py tests/test_loader.py tests/test_profile.py -v
+  uv run pytest tests/unit -v
 ```
+
+### Status
+
+This is the SDK-00 scaffold. The public surface in `src/cirron/__init__.py` matches the spec (`docs/spec.md` §4), but most runtime behavior is deferred: `ci.scope` / `mark` / `epochs` / `batches` / `inference` / `wrap` are no-ops that warn once, and `ci.load` raises `NotImplementedError`. The YAML-config wiring for `Cirron.profile()` is real (see `tests/unit/test_profile.py`). Framework hooks, snapshot capture, and the flush pipeline land in SDK-13.
 
 ## Further reading
 
