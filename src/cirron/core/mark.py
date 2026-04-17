@@ -41,28 +41,58 @@ class Mark:
     ts_ns: int = 0
 
 
+class _MarkState:
+    """Per-thread mark state. One distinct instance per thread, held both
+    in a ``threading.local`` fast-path cache and in the owning buffer's
+    registry so cross-thread draining can enumerate every producer."""
+
+    __slots__ = ("buffer", "drop_count", "warned_overflow", "__weakref__")
+
+    def __init__(self, capacity: int) -> None:
+        self.buffer: deque[Mark] = deque(maxlen=capacity)
+        self.drop_count: int = 0
+        self.warned_overflow: bool = False
+
+
 class MarkBuffer:
     """Thread-local ring buffer. A single ``MarkBuffer`` instance is
-    shared across threads; state lives behind a ``threading.local``
-    instance created per buffer so each thread gets its own independent
-    deque. ``deque(maxlen=capacity)`` gives lock-free drop-oldest when
-    full.
+    shared across threads; each thread gets its own ``_MarkState`` via a
+    ``threading.local`` cache. ``deque(maxlen=capacity)`` gives lock-free
+    drop-oldest when full. A shadow dict of every thread's state lets a
+    consumer (the SDK-11 flush thread) enumerate all producers via
+    ``drain_all()``.
     """
 
-    def __init__(self, capacity: int = DEFAULT_CAPACITY) -> None:
+    def __init__(
+        self, capacity: int = DEFAULT_CAPACITY, wake_event: threading.Event | None = None
+    ) -> None:
         self._capacity = capacity
+        # Optional cross-thread wake: set on buffer-full so the flush thread
+        # can drain ahead of the interval.
+        self._wake_event = wake_event
+        # Per-thread state keyed by thread id with a ``threading.local``
+        # fast-path cache. Plain dict (not ``WeakValueDictionary``) — see
+        # the matching rationale in ``ScopeStack.__init__``: trailing marks
+        # on a dying thread must remain drainable.
+        self._local = threading.local()
+        self._states_lock = threading.Lock()
+        self._states: dict[int, _MarkState] = {}
 
-        # Local threading.local subclass with the capacity baked in via
-        # closure — ``threading.local`` re-runs ``__init__`` per thread,
-        # so every thread that touches ``_state`` gets a fresh deque
-        # sized to ``capacity`` without per-call hasattr checks.
-        class _ThreadState(threading.local):
-            def __init__(self) -> None:
-                self.buffer: deque[Mark] = deque(maxlen=capacity)
-                self.drop_count: int = 0
-                self.warned_overflow: bool = False
+    def _get_state(self) -> _MarkState:
+        try:
+            return self._local.state  # type: ignore[no-any-return]
+        except AttributeError:
+            pass
+        state = _MarkState(self._capacity)
+        tid = threading.get_ident()
+        with self._states_lock:
+            self._states[tid] = state
+        self._local.state = state
+        return state
 
-        self._state = _ThreadState()
+    @property
+    def _state(self) -> _MarkState:
+        return self._get_state()
 
     def append(self, mark: Mark) -> None:
         state = self._state
@@ -76,15 +106,40 @@ class MarkBuffer:
                     stacklevel=3,
                 )
                 state.warned_overflow = True
+            # Poke the flush thread so it can drain ahead of the interval
+            # and (hopefully) stop the bleeding before too many drops.
+            if self._wake_event is not None:
+                self._wake_event.set()
         # ``maxlen`` on ``deque`` makes append O(1) and drops from the
         # opposite end when full — exactly "drop oldest".
         buf.append(mark)
 
     def drain(self) -> list[Mark]:
+        """Drain *this thread's* marks (producer thread only)."""
         state = self._state
         old = state.buffer
         state.buffer = deque(maxlen=self._capacity)
         return list(old)
+
+    def drain_all(self) -> list[Mark]:
+        """Drain marks across every producer thread. Safe from any thread —
+        ``deque.popleft`` is atomic under the GIL, so a concurrent producer
+        append is not lost (it lands in the same deque and is picked up on
+        the next call)."""
+        out: list[Mark] = []
+        with self._states_lock:
+            states = list(self._states.values())
+        for s in states:
+            buf = s.buffer
+            while True:
+                try:
+                    out.append(buf.popleft())
+                except IndexError:
+                    break
+        return out
+
+    def set_wake_event(self, event: threading.Event | None) -> None:
+        self._wake_event = event
 
     def drop_count(self) -> int:
         return self._state.drop_count
