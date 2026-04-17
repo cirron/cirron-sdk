@@ -10,7 +10,17 @@ from ..types.yaml import CirronYaml
 
 CONFIG_FILENAMES = ("cirron.yaml", "cirron.yml", "cirron.json")
 
-_KNOWN_TOP_LEVEL_FIELDS = set(CirronYaml.model_fields.keys())
+def _collect_known_fields() -> set:
+    """Include each field's Python name AND its validation alias (e.g. serving_config/servingConfig)."""
+    known: set = set()
+    for name, info in CirronYaml.model_fields.items():
+        known.add(name)
+        if info.validation_alias is not None:
+            known.add(str(info.validation_alias))
+    return known
+
+
+_KNOWN_TOP_LEVEL_FIELDS = _collect_known_fields()
 
 
 class CirronYamlError(Exception):
@@ -66,7 +76,7 @@ def _warn_on_unknown_fields(data: Dict[str, Any], path: Path) -> None:
         fields = ", ".join(sorted(unknown))
         warnings.warn(
             f"Unknown top-level field(s) in {path.name}: {fields}. "
-            "These are ignored by the current SDK (forward-compat).",
+            "These are not interpreted by the current SDK (forward-compat).",
             stacklevel=3,
         )
 

@@ -1,4 +1,5 @@
 """Pydantic model tests for cirron.yaml."""
+import os
 from pathlib import Path
 
 import pytest
@@ -8,9 +9,11 @@ from pydantic import ValidationError
 from cirron.types.yaml import CirronYaml
 
 FIXTURES = Path(__file__).parent / "fixtures"
-SAMPLE_MODELS_DIR = Path(
-    "/Users/devinlynch/Desktop/Repos/cirron-sample-models/models"
-)
+# Optional: point at a local checkout of cirron-sample-models to cross-validate
+# the schema against real-world cirron.yaml files. Skipped in CI / anywhere the
+# env var is unset.
+_SAMPLE_MODELS_ENV = os.environ.get("CIRRON_SAMPLE_MODELS_PATH")
+SAMPLE_MODELS_DIR = Path(_SAMPLE_MODELS_ENV) if _SAMPLE_MODELS_ENV else None
 
 
 def _load(path: Path) -> dict:
@@ -23,8 +26,8 @@ def test_minimal_yaml_validates():
     assert model.name == "sentiment-rnn"
     assert model.framework == "tensorflow"
     assert model.type == "classification"
-    assert model.servingConfig is not None
-    assert model.servingConfig.runtime == "onnx"
+    assert model.serving_config is not None
+    assert model.serving_config.runtime == "onnx"
     assert model.profiling is None
     assert model.env == {}
     assert model.secrets == []
@@ -96,14 +99,19 @@ def test_invalid_runtime_raises():
         CirronYaml.model_validate(data)
 
 
+_sample_paths = (
+    sorted(SAMPLE_MODELS_DIR.glob("*/cirron.yaml"))
+    if SAMPLE_MODELS_DIR and SAMPLE_MODELS_DIR.exists()
+    else []
+)
+
+
 @pytest.mark.skipif(
-    not SAMPLE_MODELS_DIR.exists(),
-    reason="Sample models repo not available locally",
+    not _sample_paths,
+    reason="Set CIRRON_SAMPLE_MODELS_PATH to a cirron-sample-models checkout to run",
 )
 @pytest.mark.parametrize(
-    "sample_path",
-    sorted(SAMPLE_MODELS_DIR.glob("*/cirron.yaml")) if SAMPLE_MODELS_DIR.exists() else [],
-    ids=lambda p: p.parent.name,
+    "sample_path", _sample_paths, ids=lambda p: p.parent.name
 )
 def test_real_sample_cirron_yaml_validates(sample_path):
     data = pyyaml.safe_load(sample_path.read_text())
