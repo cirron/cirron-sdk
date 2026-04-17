@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 
-from cirron._core.errors import CirronSecretNotFound
+from cirron.core.errors import CirronSecretNotFound
 
 
 def get_secret(name: str) -> str:
