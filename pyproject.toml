@@ -28,6 +28,8 @@ dev = [
     "pytest-cov>=4.0",
     "ruff>=0.5",
     "mypy>=1.0",
+    "types-PyYAML>=6.0",
+    "types-requests>=2.31",
 ]
 
 [project.scripts]
@@ -53,6 +55,10 @@ ignore = ["E501"]
 
 [tool.mypy]
 python_version = "3.10"
-warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true
+
+# The SDK wraps pandas/polars/torch/tensorflow/transformers, all of which are
+# typed as Any under ignore_missing_imports. no-any-return would fire on every
+# thin adapter/wrapper call; disable it rather than paper over with casts.
+disable_error_code = ["no-any-return"]
