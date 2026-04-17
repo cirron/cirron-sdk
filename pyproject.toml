@@ -1,0 +1,64 @@
+[project]
+name = "cirron-sdk"
+version = "0.0.1"
+description = "Python SDK for the Cirron platform — profiler, data loader, inference instrumentation"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "Devin Lynch", email = "devin@cirron.com" },
+]
+dependencies = [
+    "pyyaml>=6.0",
+    "pydantic>=2.0",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+pandas = ["pandas>=2.0"]
+polars = ["polars>=0.20"]
+torch = ["torch>=2.0"]
+tensorflow = ["tensorflow>=2.14"]
+transformers = ["transformers>=4.30"]
+hf = ["datasets>=2.14"]
+all = ["cirron-sdk[pandas,polars,torch,tensorflow,transformers,hf]"]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.5",
+    "mypy>=1.0",
+    "types-PyYAML>=6.0",
+    "types-requests>=2.31",
+]
+
+[project.scripts]
+cirron = "cirron.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cirron"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_unused_configs = true
+ignore_missing_imports = true
+
+# The SDK wraps pandas/polars/torch/tensorflow/transformers, all of which are
+# typed as Any under ignore_missing_imports. no-any-return would fire on every
+# thin adapter/wrapper call; disable it rather than paper over with casts.
+disable_error_code = ["no-any-return"]
