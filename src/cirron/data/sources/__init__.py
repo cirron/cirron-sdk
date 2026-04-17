@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any
 
 
 @dataclass
@@ -25,13 +25,13 @@ class SourceConfig:
     """
 
     source_type: str
-    format: Optional[str] = None
-    path: Optional[str] = None
-    cloud_provider: Optional[str] = None
-    bucket_name: Optional[str] = None
-    container_name: Optional[str] = None
-    folder_path: Optional[str] = None
-    extra: Optional[Dict[str, Any]] = None
+    format: str | None = None
+    path: str | None = None
+    cloud_provider: str | None = None
+    bucket_name: str | None = None
+    container_name: str | None = None
+    folder_path: str | None = None
+    extra: dict[str, Any] | None = None
 
 
 class DataSource(ABC):

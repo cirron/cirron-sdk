@@ -16,8 +16,7 @@ class AzureDataSource(DataSource):
             from azure.storage.blob import BlobServiceClient
         except ImportError as e:
             raise ImportError(
-                "azure-storage-blob is required. "
-                "Install with: pip install azure-storage-blob"
+                "azure-storage-blob is required. Install with: pip install azure-storage-blob"
             ) from e
 
         service = BlobServiceClient(
@@ -28,9 +27,7 @@ class AzureDataSource(DataSource):
             container = service.get_container_client(self.config.container_name)
             return [
                 self._parse(
-                    service.get_blob_client(
-                        container=self.config.container_name, blob=blob.name
-                    )
+                    service.get_blob_client(container=self.config.container_name, blob=blob.name)
                 )
                 for blob in container.list_blobs(name_starts_with=self.config.folder_path)
             ]
@@ -44,13 +41,15 @@ class AzureDataSource(DataSource):
         content = blob_client.download_blob().readall()
         fmt = self.config.format
         if fmt == "csv":
-            import pandas as pd
             from io import StringIO
+
+            import pandas as pd
 
             return pd.read_csv(StringIO(content.decode("utf-8")))
         if fmt == "parquet":
-            import pandas as pd
             from io import BytesIO
+
+            import pandas as pd
 
             return pd.read_parquet(BytesIO(content))
         if fmt == "json":

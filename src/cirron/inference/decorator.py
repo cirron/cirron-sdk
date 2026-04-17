@@ -10,15 +10,16 @@ from __future__ import annotations
 
 import functools
 import warnings
-from typing import Any, Callable, Dict, Optional
+from collections.abc import Callable
+from typing import Any
 
 _warned = False
 
 
 def inference(
-    fn: Optional[Callable[..., Any]] = None,
+    fn: Callable[..., Any] | None = None,
     *,
-    config: Optional[Dict[str, Any]] = None,
+    config: dict[str, Any] | None = None,
 ) -> Callable[..., Any]:
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         @functools.wraps(func)
