@@ -370,8 +370,10 @@ def profile(
 
 
 def _disabled_health() -> dict[str, Any]:
+    # Reuse the default Cirron so we don't pay repeated TOML/env config
+    # reads every time ``health()`` is polled without an active profiler.
     return Profiler(
-        Cirron(),
+        get_default(),
         enabled=False,
         transport=None,
         installed_hooks=[],
