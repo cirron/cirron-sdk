@@ -177,27 +177,6 @@ _DEFAULTS: dict[str, Any] = {
 }
 
 
-class _UnsetType:
-    """Sentinel type so ``__init__`` can distinguish "user passed the
-    default value explicitly" from "user didn't pass the argument at all"."""
-
-    _instance: _UnsetType | None = None
-
-    def __new__(cls) -> _UnsetType:
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
-
-    def __repr__(self) -> str:
-        return "<UNSET>"
-
-    def __bool__(self) -> bool:
-        return False
-
-
-_UNSET: Any = _UnsetType()
-
-
 def _coerce_str(value: Any) -> str | None:
     if isinstance(value, str) and value:
         return value
@@ -306,12 +285,19 @@ def _resolve_config(
     *,
     toml_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Merge config layers, last-wins: defaults → TOML → env → explicit."""
+    """Merge config layers, last-wins: defaults → TOML → env → explicit.
+
+    ``None`` in *explicit* is treated as "not passed" so the lower layers
+    can supply a value. Explicit ``None`` for ``api_key`` / ``workspace_id``
+    (the only fields whose resolved type is ``str | None``) is
+    indistinguishable from "not passed" — that's fine because both cases
+    mean "fall back to env / TOML / default (= None)".
+    """
     merged: dict[str, Any] = dict(_DEFAULTS)
     merged.update(_read_home_config_toml(toml_path))
     merged.update(_read_env_overrides())
     for key, value in explicit.items():
-        if value is not _UNSET:
+        if value is not None:
             merged[key] = value
     return merged
 
@@ -330,15 +316,15 @@ class Cirron:
 
     def __init__(
         self,
-        api_key: str | None = _UNSET,
-        api_endpoint: str = _UNSET,
-        workspace_id: str | None = _UNSET,
-        output_dir: str = _UNSET,
-        snapshots: str = _UNSET,
-        sample_rate: float = _UNSET,
-        flush_interval: float = _UNSET,
-        spool_max_bytes: int = _UNSET,
-        ingest_path: str = _UNSET,
+        api_key: str | None = None,
+        api_endpoint: str | None = None,
+        workspace_id: str | None = None,
+        output_dir: str | None = None,
+        snapshots: str | None = None,
+        sample_rate: float | None = None,
+        flush_interval: float | None = None,
+        spool_max_bytes: int | None = None,
+        ingest_path: str | None = None,
     ) -> None:
         merged = _resolve_config(
             {
