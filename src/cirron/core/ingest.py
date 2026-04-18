@@ -14,6 +14,7 @@ import json
 import logging
 import random
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -101,7 +102,7 @@ class IngestClient:
         max_retries: int = 5,
         *,
         session: requests.Session | None = None,
-        sleep: Any = time.sleep,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         if not path.startswith("/"):
             path = "/" + path
@@ -134,7 +135,7 @@ class IngestClient:
     def _build_request(self, batch: dict[str, Any]) -> tuple[bytes, dict[str, str]]:
         body = json.dumps(batch, separators=(",", ":")).encode("utf-8")
         compressed = len(body) >= GZIP_MIN_BYTES
-        payload = gzip.compress(body) if compressed else body
+        payload = gzip.compress(body, mtime=0) if compressed else body
         headers = {
             AUTH_HEADER: self._api_key,
             "Content-Type": "application/json",
@@ -164,7 +165,12 @@ class IngestClient:
         if 200 <= status < 300:
             return _Attempt.finish(IngestResult(ok=True, status=status))
         if status in (400, 413):
-            log.warning("cirron ingest rejected (%d): %s", status, (resp.text or "")[:512])
+            log.warning(
+                "cirron ingest rejected (%d %s); not retrying",
+                status,
+                getattr(resp, "reason", "") or "",
+            )
+            log.debug("cirron ingest rejected body: %s", (resp.text or "")[:512])
             return _Attempt.finish(IngestResult(ok=False, retryable=False, status=status))
         if status in (401, 403):
             self._warn_auth_once(status)
