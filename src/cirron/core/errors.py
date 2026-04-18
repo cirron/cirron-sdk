@@ -3,7 +3,7 @@ class CirronError(Exception):
 
 
 class CirronSecretNotFound(CirronError):
-    """Raised by ``ci.get_secret`` when the requested secret is not mounted."""
+    """Raised by ``ci.secret`` when the requested secret is not mounted."""
 
 
 class CirronDependencyError(CirronError):

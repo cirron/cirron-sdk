@@ -86,8 +86,8 @@ def env(key: str, default: Any = None) -> Any:
     return get_default().env(key, default)
 
 
-def get_secret(name: str) -> str:
-    return get_default().get_secret(name)
+def secret(name: str) -> str:
+    return get_default().secret(name)
 
 
 def load(*args: Any, **kwargs: Any) -> Any:
@@ -122,7 +122,6 @@ __all__ = [
     "find_cirron_yaml",
     "flush",
     "get_default",
-    "get_secret",
     "health",
     "inference",
     "load",
@@ -130,6 +129,7 @@ __all__ = [
     "mark",
     "profile",
     "scope",
+    "secret",
     "shutdown",
     "wrap",
 ]
