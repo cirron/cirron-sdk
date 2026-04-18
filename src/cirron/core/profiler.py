@@ -30,6 +30,7 @@ from cirron.hooks._registry import detect_frameworks, install_hooks
 if TYPE_CHECKING:
     from cirron.core.flush import _Supervisor
     from cirron.core.transport import Transport
+    from cirron.hooks._registry import HookHandle
 
 log = logging.getLogger("cirron.profiler")
 
@@ -80,7 +81,7 @@ class Profiler:
         *,
         enabled: bool,
         transport: Transport | None,
-        installed_hooks: list[str],
+        hook_handles: list[HookHandle],
         platform_context: dict[str, str],
         root_scope: Scope | None,
         supervisor: _Supervisor | None,
@@ -88,7 +89,7 @@ class Profiler:
         self._cirron = cirron
         self._enabled = enabled
         self._transport = transport
-        self._installed_hooks = list(installed_hooks)
+        self._hook_handles: list[HookHandle] = list(hook_handles)
         self._platform_context = dict(platform_context)
         self._root_scope = root_scope
         self._supervisor = supervisor
@@ -104,7 +105,11 @@ class Profiler:
 
     @property
     def installed_hooks(self) -> list[str]:
-        return list(self._installed_hooks)
+        return [h.name for h in self._hook_handles]
+
+    @property
+    def hook_handles(self) -> list[HookHandle]:
+        return list(self._hook_handles)
 
     @property
     def platform_context(self) -> dict[str, str]:
@@ -136,7 +141,7 @@ class Profiler:
             "flush_mode": _safe(_flush_mode, "stopped"),
             "flush_restart_count": _safe(_flush_restart_count, 0),
             "transport": type(self._transport).__name__ if self._transport else None,
-            "installed_hooks": list(self._installed_hooks),
+            "installed_hooks": [h.name for h in self._hook_handles],
             "platform_context": dict(self._platform_context),
         }
 
@@ -166,6 +171,19 @@ class Profiler:
                 _close_root_scope(self._root_scope)
             except Exception:
                 log.warning("cirron: closing root scope failed", exc_info=True)
+        # Uninstall hooks in reverse order so layered installs (e.g.
+        # transformers on top of torch) unwind cleanly. Failures are logged
+        # and swallowed — one bad uninstall must not block shutdown.
+        for handle in reversed(self._hook_handles):
+            try:
+                handle.uninstall()
+            except Exception:
+                log.warning(
+                    "cirron: uninstall for hook %r failed",
+                    getattr(handle, "name", "?"),
+                    exc_info=True,
+                )
+        self._hook_handles = []
         try:
             flush_now()
         except Exception:
@@ -294,7 +312,7 @@ def profile(
                 cirron if cirron is not None else get_default(),
                 enabled=False,
                 transport=None,
-                installed_hooks=[],
+                hook_handles=[],
                 platform_context={},
                 root_scope=None,
                 supervisor=None,
@@ -325,8 +343,7 @@ def profile(
             else:
                 detected = detect_frameworks()
 
-        # install_hooks is a SDK-13 stub — real install lands in SDK-19+.
-        installed = install_hooks(detected, profiler=None)
+        installed = install_hooks(detected, get_default_stack(), ci)
 
         resolved_interval = ci._profile_config.get("flush_interval", ci.flush_interval)
         supervisor = start_flush_thread(
@@ -358,7 +375,7 @@ def profile(
             ci,
             enabled=True,
             transport=transport,
-            installed_hooks=installed,
+            hook_handles=installed,
             platform_context=platform_context,
             root_scope=root_scope,
             supervisor=supervisor,
@@ -376,7 +393,7 @@ def _disabled_health() -> dict[str, Any]:
         get_default(),
         enabled=False,
         transport=None,
-        installed_hooks=[],
+        hook_handles=[],
         platform_context={},
         root_scope=None,
         supervisor=None,
