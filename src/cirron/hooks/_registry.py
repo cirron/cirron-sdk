@@ -122,8 +122,19 @@ def install_hooks(
     # Make sure framework hook modules have had a chance to self-register.
     # Importing the package executes ``hooks/__init__.py``, which pulls in
     # the per-framework submodules. Use importlib to avoid shadowing the
-    # local ``cirron`` parameter with the top-level package name.
-    importlib.import_module("cirron.hooks")
+    # local ``cirron`` parameter with the top-level package name. A broken
+    # framework submodule (e.g. SDK-20+ accidentally importing ``torch`` at
+    # module top) must not propagate — log and continue with whatever was
+    # already registered.
+    try:
+        importlib.import_module("cirron.hooks")
+    except Exception:
+        log.warning(
+            "cirron.hooks: failed to import framework hook package; "
+            "continuing with already-registered installers (%s).",
+            sorted(_REGISTRY.names()),
+            exc_info=True,
+        )
 
     handles: list[HookHandle] = []
     for name in names:

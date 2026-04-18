@@ -92,6 +92,12 @@ def test_install_hooks_unknown_name_warns_and_skips(caplog):
 def test_install_hooks_known_but_unregistered_warns(caplog):
     """A name in FRAMEWORK_MODULES with no registered installer warns
     distinctly from an unknown name and still doesn't crash."""
+    # Force the package init (and its self-registration side effects) to
+    # run *before* we snapshot/clear the registry. Otherwise install_hooks
+    # would re-import cirron.hooks during the call and repopulate torch
+    # mid-test, masking the "registered=False" branch we want to exercise.
+    import cirron.hooks  # noqa: F401
+
     registry = get_registry()
     saved = dict(registry._installers)
     try:
