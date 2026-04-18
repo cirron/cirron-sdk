@@ -13,8 +13,8 @@ from __future__ import annotations
 import gzip
 import io
 import json
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -43,12 +43,8 @@ from cirron.core.transport import (
 @dataclass
 class _Resp:
     status_code: int
-    headers: dict[str, str] = None  # type: ignore[assignment]
+    headers: dict[str, str] = field(default_factory=dict)
     text: str = ""
-
-    def __post_init__(self) -> None:
-        if self.headers is None:
-            self.headers = {}
 
 
 class _FakeSession:
@@ -160,7 +156,7 @@ def _make_client(session: _FakeSession, **kwargs: Any) -> IngestClient:
         api_endpoint="https://api.example.test",
         api_key="secret-key",
         path="/api/traces",
-        session=session,  # type: ignore[arg-type]
+        session=cast(requests.Session, session),
         sleep=lambda _s: None,
         **kwargs,
     )
@@ -255,7 +251,7 @@ def test_http_path_normalized_when_missing_leading_slash() -> None:
         api_endpoint="https://api.example.test",
         api_key="k",
         path="api/traces",
-        session=session,  # type: ignore[arg-type]
+        session=cast(requests.Session, session),
         sleep=lambda _s: None,
     )
     client.post_batch(_small_batch())
