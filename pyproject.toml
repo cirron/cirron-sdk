@@ -16,11 +16,16 @@ dependencies = [
 [project.optional-dependencies]
 pandas = ["pandas>=2.0"]
 polars = ["polars>=0.20"]
+arrow = ["pyarrow>=14.0"]
 torch = ["torch>=2.0"]
 tensorflow = ["tensorflow>=2.14"]
 transformers = ["transformers>=4.30"]
 hf = ["datasets>=2.14"]
-all = ["cirron-sdk[pandas,polars,torch,tensorflow,transformers,hf]"]
+image = ["pillow>=10.0"]
+s3 = ["boto3>=1.28"]
+gcs = ["google-cloud-storage>=2.10"]
+azure = ["azure-storage-blob>=12.19"]
+all = ["cirron-sdk[pandas,polars,arrow,torch,tensorflow,transformers,hf,image,s3,gcs,azure]"]
 
 [dependency-groups]
 dev = [
