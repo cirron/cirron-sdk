@@ -504,7 +504,7 @@ model.fit(X, y)  # opens a scope around fit
 
 ### 4.9 Secrets and environment
 
-**`ci.get_secret(name: str) -> str`**
+**`ci.secret(name: str) -> str`**
 
 Reads a secret injected by the platform runtime. Secrets are mounted as environment variables with a `CIRRON_SECRET_` prefix in cloud/on-prem, or via file mount in air-gapped. The SDK abstracts the mechanism.
 
@@ -567,7 +567,7 @@ class Cirron:
     def mark(self, ...) -> None: ...
     def load(self, ...) -> Any: ...
     def env(self, key: str, default=None) -> Any: ...
-    def get_secret(self, name: str) -> str: ...
+    def secret(self, name: str) -> str: ...
     def epochs(self, iterable) -> Iterator: ...
     def batches(self, iterable) -> Iterator: ...
     def inference(self, ...) -> Callable: ...
@@ -926,7 +926,7 @@ cirron-sdk/
       match.py               # pattern matching
       returns.py             # as_= conversion
     secrets/
-      client.py              # ci.get_secret
+      client.py              # ci.secret
     cli/
       __init__.py            # cirron login, status, spool
   tests/

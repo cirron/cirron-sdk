@@ -22,7 +22,7 @@ The new `cirron-sdk` repo replaces the existing SDK codebase. The old model cons
 **Implementation**
 - Initialize `cirron-sdk/` with `pyproject.toml` using the extras defined in the spec: `pandas`, `polars`, `torch`, `tensorflow`, `transformers`, `hf`, `all`
 - Create the full directory structure under `src/cirron/`: `_core/`, `hooks/`, `snapshots/`, `inference/`, `data/`, `secrets/`, `cli/`
-- Create `src/cirron/__init__.py` exposing module-level sugar: `profile`, `scope`, `mark`, `epochs`, `batches`, `inference`, `load`, `env`, `get_secret`, `wrap`
+- Create `src/cirron/__init__.py` exposing module-level sugar: `profile`, `scope`, `mark`, `epochs`, `batches`, `inference`, `load`, `env`, `secret`, `wrap`
 - Migrate `adapters.py` → `src/cirron/data/returns.py`
 - Migrate `sources.py` → `src/cirron/data/sources/` (split into `local.py`, `s3.py`, `gcs.py`, `azure.py`)
 - Migrate core of `constructor.py` → `src/cirron/data/load.py` (strip preprocessing, keep multi-source dispatch)
@@ -236,7 +236,7 @@ Spec §4.10. Module-level functions are sugar over a default global `Cirron()` i
 **Implementation**
 - `src/cirron/_core/config.py`
 - `Cirron` class with `__init__(api_key, api_endpoint, workspace_id, output_dir, snapshots, sample_rate, flush_interval)`
-- All methods mirror module-level functions: `profile()`, `scope()`, `mark()`, `load()`, `env()`, `get_secret()`, `epochs()`, `batches()`, `inference()`, `wrap()`
+- All methods mirror module-level functions: `profile()`, `scope()`, `mark()`, `load()`, `env()`, `secret()`, `epochs()`, `batches()`, `inference()`, `wrap()`
 - Module-level `_default_instance: Cirron | None` — lazily created on first use
 - Module-level functions delegate to `_default_instance`
 - Config resolution: explicit constructor args → environment variables → `~/.cirron/config.toml` → hardcoded defaults
@@ -251,18 +251,18 @@ Spec §4.10. Module-level functions are sugar over a default global `Cirron()` i
 
 ---
 
-### `SDK-17` `ci.get_secret()` — secret reader
+### `SDK-17` `ci.secret()` — secret reader
 
 **User story**
-As an ML engineer, when I call `ci.get_secret("openai-api-key")` inside a Cirron deployment, I want the SDK to read the secret from the platform's injected secret store so that I never hardcode credentials.
+As an ML engineer, when I call `ci.secret("openai-api-key")` inside a Cirron deployment, I want the SDK to read the secret from the platform's injected secret store so that I never hardcode credentials.
 
 **Context**
 Spec §4.9. Secrets are mounted as `CIRRON_SECRET_` prefixed env vars or via file mount in air-gapped. Never logged, never traced.
 
 **Implementation**
 - `src/cirron/secrets/client.py`
-- `get_secret(name: str) -> str`
-- Resolution order: (1) `os.environ[f"CIRRON_SECRET_{name.upper()}"]`, (2) file at `/etc/cirron/secrets/{name}` (for air-gapped file-mount), (3) raise `CirronSecretNotFound` with helpful message
+- `secret(name: str) -> str`
+- Resolution order: (1) `os.environ[f"CIRRON_SECRET_{name.upper()}"]` (hyphens mapped to underscores), (2) file at `/etc/cirron/secrets/{name}` (for air-gapped file-mount; trailing newline stripped), (3) raise `CirronSecretNotFound` with helpful message
 - Secret values are never logged, never included in mark values, never written to spool
 - `CirronSecretNotFound` message includes: "Set this secret in the pipeline/deployment configuration on the Cirron dashboard"
 
