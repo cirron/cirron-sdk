@@ -5,7 +5,7 @@ Merges the YAML loader previously at ``cirron/config/loader.py`` with the
 (defaults → ``~/.cirron/config.toml`` → ``CIRRON_*`` env vars → explicit
 constructor kwargs) drives ``__init__``; instance methods mirror the
 module-level functions in ``cirron/__init__.py``, most as pure delegators
-(``scope``, ``mark``, ``env``, ``get_secret``, ``epochs``, ``batches``,
+(``scope``, ``mark``, ``env``, ``secret``, ``epochs``, ``batches``,
 ``inference``, ``wrap``, ``load``). The one exception is ``profile()`` —
 it delegates to :func:`cirron.core.profiler.profile` with ``cirron=self``
 so an explicitly-constructed ``Cirron`` drives transport selection,
@@ -467,10 +467,10 @@ class Cirron:
 
         return _env(key, default)
 
-    def get_secret(self, name: str) -> str:
-        from cirron.secrets.client import get_secret as _get_secret
+    def secret(self, name: str) -> str:
+        from cirron.secrets.client import secret as _secret
 
-        return _get_secret(name)
+        return _secret(name)
 
     def load(self, *args: Any, **kwargs: Any) -> Any:
         from cirron.data.load import load as _load
