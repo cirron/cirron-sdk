@@ -153,15 +153,15 @@ _VALID_SNAPSHOTS = ("stats", "sampled", "full")
 
 # Ordered so iteration over the map is deterministic for tests.
 _ENV_MAP: dict[str, str] = {
-    "api_key":         "CIRRON_API_KEY",
-    "api_endpoint":    "CIRRON_API_ENDPOINT",
-    "workspace_id":    "CIRRON_WORKSPACE_ID",
-    "output_dir":      "CIRRON_OUTPUT_DIR",
-    "snapshots":       "CIRRON_SNAPSHOTS",
-    "sample_rate":     "CIRRON_SAMPLE_RATE",
-    "flush_interval":  "CIRRON_FLUSH_INTERVAL",
+    "api_key": "CIRRON_API_KEY",
+    "api_endpoint": "CIRRON_API_ENDPOINT",
+    "workspace_id": "CIRRON_WORKSPACE_ID",
+    "output_dir": "CIRRON_OUTPUT_DIR",
+    "snapshots": "CIRRON_SNAPSHOTS",
+    "sample_rate": "CIRRON_SAMPLE_RATE",
+    "flush_interval": "CIRRON_FLUSH_INTERVAL",
     "spool_max_bytes": "CIRRON_SPOOL_MAX_BYTES",
-    "ingest_path":     "CIRRON_INGEST_PATH",
+    "ingest_path": "CIRRON_INGEST_PATH",
 }
 
 _DEFAULTS: dict[str, Any] = {
