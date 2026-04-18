@@ -16,6 +16,7 @@ import json
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -30,6 +31,7 @@ from cirron.core.flush import (
 )
 from cirron.core.mark import MarkBuffer, get_default_mark_buffer
 from cirron.core.scope import ScopeStack, get_default_stack
+from cirron.core.transport import Transport
 
 
 @pytest.fixture(autouse=True)
@@ -179,9 +181,9 @@ def test_live_flush_thread_drains_cross_thread(tmp_path):
     writer = _make_writer(tmp_path)
     sent: list[dict] = []
 
-    class FakeTransport:
-        def send(self, payload: dict) -> bool:
-            sent.append(payload)
+    class FakeTransport(Transport):
+        def send(self, batch: dict[str, Any]) -> bool:
+            sent.append(batch)
             return True
 
         def close(self) -> None:
@@ -293,8 +295,8 @@ def test_three_deaths_in_window_flip_to_spool_only(tmp_path):
         return clock[0]
 
     # Non-running supervisor; we drive _record_death directly.
-    class _FakeTransport:
-        def send(self, _payload):  # pragma: no cover - should never be called
+    class _FakeTransport(Transport):
+        def send(self, batch: dict[str, Any]) -> bool:  # pragma: no cover - never called
             return True
 
         def close(self) -> None:

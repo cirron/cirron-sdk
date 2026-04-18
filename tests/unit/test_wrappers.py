@@ -7,6 +7,8 @@ DataLoader stall-time attribution.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 import cirron as ci
@@ -87,9 +89,9 @@ def test_dataloader_stall_time_attr():
         def __len__(self) -> int:
             return 3
 
-        def __getitem__(self, idx: int) -> int:
+        def __getitem__(self, index: Any) -> int:
             time.sleep(0.005)
-            return idx
+            return int(index)
 
     loader = DataLoader(SlowDataset(), batch_size=1, num_workers=0)
     list(ci.batches(loader))

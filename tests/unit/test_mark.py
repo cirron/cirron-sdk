@@ -51,7 +51,9 @@ def test_mark_attaches_to_current_scope():
 
 def test_mark_attaches_to_innermost_scope():
     with ci.scope("outer") as outer:
+        assert outer is not None
         with ci.scope("inner") as inner:
+            assert inner is not None
             ci.mark("x", 1)
         ci.mark("y", 2)
 
@@ -137,6 +139,7 @@ def test_coercion_string_truncation_ascii():
         ci.mark("n", long)
     m = get_default_mark_buffer().drain()[0]
     assert m.value_type == "string"
+    assert isinstance(m.value, str)
     assert len(m.value.encode("utf-8")) <= MAX_STRING_BYTES
     assert m.value == "x" * MAX_STRING_BYTES
 
@@ -149,6 +152,7 @@ def test_coercion_string_truncation_multibyte_clean():
         ci.mark("n", s)
     m = get_default_mark_buffer().drain()[0]
     assert m.value_type == "string"
+    assert isinstance(m.value, str)
     encoded = m.value.encode("utf-8")
     assert len(encoded) <= MAX_STRING_BYTES
     # round-trip is clean — no UnicodeDecodeError, no replacement chars
@@ -158,7 +162,7 @@ def test_coercion_string_truncation_multibyte_clean():
 
 def test_coercion_rejects_unsupported_type():
     with pytest.raises(TypeError, match="float, int, str, or bool"):
-        ci.mark("bad", [1, 2, 3])  # type: ignore[arg-type]
+        ci.mark("bad", [1, 2, 3])  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
 
 
 def test_threads_have_isolated_buffers():
