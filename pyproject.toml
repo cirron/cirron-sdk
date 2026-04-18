@@ -25,7 +25,8 @@ image = ["pillow>=10.0"]
 s3 = ["boto3>=1.28"]
 gcs = ["google-cloud-storage>=2.10"]
 azure = ["azure-storage-blob>=12.19"]
-all = ["cirron-sdk[pandas,polars,arrow,torch,tensorflow,transformers,hf,image,s3,gcs,azure]"]
+dotenv = ["python-dotenv>=1.0"]
+all = ["cirron-sdk[pandas,polars,arrow,torch,tensorflow,transformers,hf,image,s3,gcs,azure,dotenv]"]
 
 [dependency-groups]
 dev = [
