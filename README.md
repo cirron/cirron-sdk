@@ -46,7 +46,7 @@ cirron traces export --format parquet    # hand traces to DuckDB, pandas, Polars
 cirron traces export --format otel       # ship to Jaeger / Tempo / Honeycomb
 ```
 
-> **Status:** `ci.profile()`, the local spool writer, and the CLI surface are not yet live. The CLI entrypoint is currently a stub that exits with a "not implemented yet" message. `cirron spool inspect` and `cirron traces view` ship in **SDK-18**; `cirron traces export --format parquet|otel` is a post-launch commitment. Today's working surface is `load_cirron_yaml()` / `find_cirron_yaml()` / `ci.env()` / `ci.get_secret()` plus the YAML-config scaffold for `Cirron.profile()`. See the Status section below and `docs/refactor-stories.md` for the full story map.
+> **Status:** `ci.profile()`, the local spool writer, and the CLI surface are not yet live. The CLI entrypoint is currently a stub that exits with a "not implemented yet" message. `cirron spool inspect` and `cirron traces view` ship in **SDK-18**; `cirron traces export --format parquet|otel` is a post-launch commitment. Today's working surface is `load_cirron_yaml()` / `find_cirron_yaml()` / `ci.env()` / `ci.secret()` plus the YAML-config scaffold for `Cirron.profile()`. See the Status section below and `docs/refactor-stories.md` for the full story map.
 
 No lock-in. Your traces are yours. If you stop using Cirron, the `./.cirron/` directory still works with any analytics or observability tool that reads Parquet or OpenTelemetry.
 
@@ -217,10 +217,10 @@ workspace_id  = ci.env("CIRRON_WORKSPACE_ID")
 
 `ci.env()` is not a proprietary config system — it's functionally equivalent to `os.environ.get()` plus `.env` loading and JSON auto-parse. Users who prefer `os.environ` or `python-decouple` can use those instead; the SDK accepts config from any source.
 
-`ci.get_secret()` reads platform-mounted secrets. In cloud and on-prem deployments, secrets are injected as env vars with a `CIRRON_SECRET_` prefix; in air-gapped environments they mount as files. The SDK abstracts the mechanism:
+`ci.secret()` reads platform-mounted secrets. In cloud and on-prem deployments, secrets are injected as env vars with a `CIRRON_SECRET_` prefix; in air-gapped environments they mount as files under `/etc/cirron/secrets/`. The SDK abstracts the mechanism:
 
 ```python
-api_key = ci.get_secret("openai-api-key")    # mounted by the platform at runtime
+api_key = ci.secret("openai-api-key")    # mounted by the platform at runtime
 ```
 
 Secrets are scoped on the platform (workspace, pipeline, deployment), are never logged, never included in traces, and never flushed to disk. Raises `CirronSecretNotFound` with a clear message if the secret isn't mounted.
