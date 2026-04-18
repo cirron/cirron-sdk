@@ -23,6 +23,7 @@ def test_load_minimal_fixture():
 def test_load_full_fixture():
     model = load_cirron_yaml(FIXTURES / "cirron-full.yaml")
     assert model is not None
+    assert model.profiling is not None
     assert model.profiling.sample_rate == 0.05
 
 
@@ -67,6 +68,7 @@ def test_yaml_precedence_over_yml_and_json(tmp_path, monkeypatch):
     )
     monkeypatch.chdir(tmp_path)
     model = load_cirron_yaml()
+    assert model is not None
     assert model.name == "yaml-wins"
 
 
@@ -79,6 +81,7 @@ def test_yml_precedence_over_json(tmp_path, monkeypatch):
     )
     monkeypatch.chdir(tmp_path)
     model = load_cirron_yaml()
+    assert model is not None
     assert model.name == "yml-wins"
 
 
@@ -88,6 +91,7 @@ def test_loads_json_file(tmp_path, monkeypatch):
     )
     monkeypatch.chdir(tmp_path)
     model = load_cirron_yaml()
+    assert model is not None
     assert model.name == "json-only"
 
 
@@ -117,6 +121,7 @@ def test_unknown_fields_emit_warning(tmp_path):
     )
     with pytest.warns(UserWarning, match="future_thing"):
         model = load_cirron_yaml(path)
+    assert model is not None
     assert model.name == "x"
 
 
