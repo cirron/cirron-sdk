@@ -81,13 +81,15 @@ def test_framework_autodetection_with_mocked_spec(monkeypatch):
 
 
 def test_explicit_frameworks_skips_autodetect():
-    p = cirron.profile(frameworks=["sklearn"])
-    assert p.installed_hooks == ["sklearn"]
+    p = cirron.profile(frameworks=["torch"])
+    assert p.installed_hooks == ["torch"]
 
 
-def test_explicit_frameworks_filter_unknown_names():
-    p = cirron.profile(frameworks=["sklearn", "made_up"])
-    assert p.installed_hooks == ["sklearn"]
+def test_explicit_frameworks_filter_unknown_names(caplog):
+    with caplog.at_level("WARNING", logger="cirron.hooks"):
+        p = cirron.profile(frameworks=["torch", "made_up"])
+    assert p.installed_hooks == ["torch"]
+    assert any("made_up" in r.message for r in caplog.records)
 
 
 def test_explicit_empty_frameworks_installs_none():
