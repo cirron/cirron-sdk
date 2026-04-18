@@ -2,9 +2,10 @@
 
 Surface area is defined in ``docs/spec.md`` §4. Module-level ``ci.*``
 functions are thin delegators over the process-wide default ``Cirron``
-instance (spec §4.10) — instantiating ``Cirron(api_endpoint=...)``
-explicitly overrides that instance for self-hosted endpoints,
-multi-workspace scenarios, and test harnesses.
+instance (spec §4.10). Constructing ``Cirron(api_endpoint=...)``
+explicitly gives you a separate instance — methods on that instance use
+its config, without disturbing the default. This is the path for
+self-hosted endpoints, multi-workspace scenarios, and test harnesses.
 
 Runtime behavior lands story-by-story — scope in SDK-9, mark in SDK-10,
 flush in SDK-11, transport in SDK-12, ``profile()`` orchestration in
