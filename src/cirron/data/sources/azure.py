@@ -23,22 +23,16 @@ class AzureDataSource(DataSource):
         if container_name is None:
             raise ValueError("container_name is required for Azure blob source")
 
-        service = BlobServiceClient(
-            account_url=f"https://{container_name}.blob.core.windows.net"
-        )
+        service = BlobServiceClient(account_url=f"https://{container_name}.blob.core.windows.net")
 
         if self.config.folder_path:
             container = service.get_container_client(container_name)
             return [
-                self._parse(
-                    service.get_blob_client(container=container_name, blob=blob.name)
-                )
+                self._parse(service.get_blob_client(container=container_name, blob=blob.name))
                 for blob in container.list_blobs(name_starts_with=self.config.folder_path)
             ]
 
-        blob_client = service.get_blob_client(
-            container=container_name, blob=self.config.path or ""
-        )
+        blob_client = service.get_blob_client(container=container_name, blob=self.config.path or "")
         return self._parse(blob_client)
 
     def _parse(self, blob_client: Any) -> Any:
