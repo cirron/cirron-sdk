@@ -18,11 +18,9 @@ import logging
 import os
 import sys
 import threading
-import tomllib
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from cirron.core.config import Cirron
+from cirron.core.config import Cirron, get_default
 from cirron.core.flush import flush_now, start_flush_thread, stop_flush_thread
 from cirron.core.mark import get_default_mark_buffer
 from cirron.core.scope import Scope, get_default_stack
@@ -45,38 +43,6 @@ _PLATFORM_ENV_KEYS = (
 _profiler: Profiler | None = None
 _profiler_lock = threading.Lock()
 _atexit_registered = False
-
-
-def _read_home_config_toml(path: Path | None = None) -> dict[str, Any]:
-    """Read ``~/.cirron/config.toml`` ``[default]`` table, tolerantly.
-
-    Full layered config (workspace overlays, env interpolation) lands in
-    SDK-16. For now we pull only ``api_key``, ``api_endpoint``,
-    ``workspace_id`` — enough to authenticate an external run. Any I/O or
-    parse failure silently returns ``{}``; the SDK should never crash
-    because a user's home TOML is malformed.
-    """
-    if path is None:
-        try:
-            path = Path.home() / ".cirron" / "config.toml"
-        except (RuntimeError, OSError):
-            return {}
-    if not path.is_file():
-        return {}
-    try:
-        with path.open("rb") as fh:
-            data = tomllib.load(fh)
-    except (OSError, tomllib.TOMLDecodeError):
-        return {}
-    default = data.get("default")
-    if not isinstance(default, dict):
-        return {}
-    out: dict[str, Any] = {}
-    for key in ("api_key", "api_endpoint", "workspace_id"):
-        value = default.get(key)
-        if isinstance(value, str) and value:
-            out[key] = value
-    return out
 
 
 def _rank_from_env() -> int:
@@ -299,6 +265,7 @@ def profile(
     flush_interval: float | None = None,
     enabled: bool = True,
     path: str | None = None,
+    cirron: Cirron | None = None,
 ) -> Profiler:
     """Attach the profiler to the current process (spec §4.2).
 
@@ -324,7 +291,7 @@ def profile(
 
         if not enabled:
             _profiler = Profiler(
-                Cirron(),
+                cirron if cirron is not None else get_default(),
                 enabled=False,
                 transport=None,
                 installed_hooks=[],
@@ -334,9 +301,8 @@ def profile(
             )
             return _profiler
 
-        home_seed = _read_home_config_toml()
-        ci = Cirron(**home_seed)
-        ci.profile(
+        ci = cirron if cirron is not None else get_default()
+        ci._resolve_profile_config(
             config=config,
             frameworks=frameworks,
             snapshots=snapshots,
@@ -404,8 +370,10 @@ def profile(
 
 
 def _disabled_health() -> dict[str, Any]:
+    # Reuse the default Cirron so we don't pay repeated TOML/env config
+    # reads every time ``health()`` is polled without an active profiler.
     return Profiler(
-        Cirron(),
+        get_default(),
         enabled=False,
         transport=None,
         installed_hooks=[],
@@ -450,8 +418,11 @@ def _atexit_clear_singleton() -> None:
 
 
 def _reset_for_tests() -> None:
-    """Test-only: shut down the active profiler, drain global buffers, and
-    stop the flush thread. Ensures no state leaks across tests."""
+    """Test-only: shut down the active profiler, drain global buffers, stop
+    the flush thread, and clear the module-level default ``Cirron``.
+    Ensures no state leaks across tests."""
+    from cirron.core.config import _reset_default_for_tests
+
     global _profiler
     with _profiler_lock:
         active = _profiler
@@ -471,3 +442,4 @@ def _reset_for_tests() -> None:
         get_default_mark_buffer().drain_all()
     except Exception:
         pass
+    _reset_default_for_tests()
