@@ -7,8 +7,6 @@ DataLoader stall-time attribution.
 
 from __future__ import annotations
 
-import importlib.util
-
 import pytest
 
 import cirron as ci
@@ -79,10 +77,10 @@ def test_early_break_closes_scope():
     assert closed[0].end_ns is not None
 
 
-@pytest.mark.skipif(importlib.util.find_spec("torch") is None, reason="torch not installed")
 def test_dataloader_stall_time_attr():
     import time
 
+    pytest.importorskip("torch")
     from torch.utils.data import DataLoader, Dataset
 
     class SlowDataset(Dataset):
