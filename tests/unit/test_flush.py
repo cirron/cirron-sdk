@@ -158,6 +158,9 @@ def test_tick_writes_spool_and_invokes_transport(tmp_path):
             sent.append(payload)
             return True
 
+        def close(self) -> None:
+            return None
+
     thread = _make_thread(tmp_path, writer=writer, transport=FakeTransport())
     with ci.scope("s"):
         ci.mark("x", 1)
@@ -180,6 +183,9 @@ def test_live_flush_thread_drains_cross_thread(tmp_path):
         def send(self, payload: dict) -> bool:
             sent.append(payload)
             return True
+
+        def close(self) -> None:
+            return None
 
     wake = threading.Event()
     thread = FlushThread(
@@ -290,6 +296,9 @@ def test_three_deaths_in_window_flip_to_spool_only(tmp_path):
     class _FakeTransport:
         def send(self, _payload):  # pragma: no cover - should never be called
             return True
+
+        def close(self) -> None:
+            return None
 
     transport = _FakeTransport()
     sup = _Supervisor(factory, transport=transport, sleep=lambda s: None, monotonic=monotonic)
