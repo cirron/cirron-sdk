@@ -1,10 +1,12 @@
 """``ci.epochs()`` / ``ci.batches()`` — Tier-2 loop wrappers (spec §4.3, SDK-14).
 
 Transparent generator iterators that open an indexed ``epoch`` or ``batch``
-scope per iteration and close it on the next iteration (or on early break /
-exhaustion, via generator ``__exit__`` semantics). ``ci.batches()`` additionally
-attributes DataLoader stall time — the wall time spent inside ``__next__`` —
-as a ``data_load_ns`` attribute on each ``batch`` span.
+scope per iteration and close it on the next iteration (or on exhaustion /
+early break: the generator is finalized via ``close()``, which raises
+``GeneratorExit`` at the paused ``yield`` and unwinds the enclosing
+``with scope(...)`` block). ``ci.batches()`` additionally attributes
+DataLoader stall time — the wall time spent inside ``__next__`` — as a
+``data_load_ns`` attribute on each ``batch`` span.
 """
 
 from __future__ import annotations
@@ -35,10 +37,12 @@ def _get_dataloader_cls() -> Any:
         return None
     try:
         from torch.utils.data import DataLoader
-
-        _torch_dataloader_cls = DataLoader
-    except Exception:
-        _torch_dataloader_cls = None
+    except ImportError:
+        # Narrow to ImportError only: a broken torch install raising
+        # OSError (missing CUDA shared libs) or RuntimeError should surface,
+        # not be silently swallowed.
+        return None
+    _torch_dataloader_cls = DataLoader
     return _torch_dataloader_cls
 
 
