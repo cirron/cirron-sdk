@@ -166,7 +166,7 @@ _ENV_MAP: dict[str, str] = {
 
 _DEFAULTS: dict[str, Any] = {
     "api_key": None,
-    "api_endpoint": "https://api.cirron.dev",
+    "api_endpoint": "https://api.cirron.com",
     "workspace_id": None,
     "output_dir": "./.cirron/",
     "snapshots": "stats",
@@ -266,9 +266,15 @@ def _read_env_overrides() -> dict[str, Any]:
     """Read ``CIRRON_*`` env vars for each SDK-16 field, with coercion.
 
     Same coercion rules as TOML — malformed values are dropped, not
-    raised. The env layer exists so operators can flip endpoints /
-    credentials without editing ``~/.cirron/config.toml`` or user code.
+    raised. ``.env`` loading runs eagerly at ``cirron.core.env`` import
+    time, so ``os.environ`` already reflects the project ``.env`` here.
+    We also call :func:`cirron.core.env._load_dotenv_once` defensively
+    to cover the test-reset case where ``_dotenv_loaded`` was flipped
+    back to ``False`` to re-trigger the load against a different cwd.
     """
+    from cirron.core.env import _load_dotenv_once
+
+    _load_dotenv_once()
     out: dict[str, Any] = {}
     for key, env_name in _ENV_MAP.items():
         raw = os.environ.get(env_name)

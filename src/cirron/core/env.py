@@ -1,15 +1,19 @@
 """``ci.env(key, default=None)`` — read env vars with JSON auto-parsing.
 
-Per spec §4.9: if the value of an env var starts with ``{`` or ``[``, parse it
-as JSON and return the parsed object. Otherwise return the raw string. Users
-who don't want auto-parsing can call ``os.environ.get`` directly.
+Per spec §4.9: if the value of an env var starts with ``{`` or ``[``, parse
+it as JSON and return the parsed object. Otherwise return the raw string.
+Users who don't want auto-parsing can call ``os.environ.get`` directly.
 
-On the first call in a process, attempts to load a ``.env`` file from the
-current working directory using ``python-dotenv`` (an optional dependency).
-Container-injected environment variables win over ``.env`` entries
-(``load_dotenv(override=False)``), so deployments that set env vars through
-their runtime are never shadowed by a stray local file. If ``python-dotenv``
-is not installed, the ``.env`` load is skipped silently.
+``.env`` loading happens eagerly at module import so every env reader in
+the SDK (``ci.env()``, ``Cirron.__init__``'s ``CIRRON_*`` overlay, user
+code calling ``os.environ.get`` directly) sees the same ``os.environ``.
+The load also runs on the first ``ci.env()`` call when the import-time
+trigger was bypassed (tests reset ``_dotenv_loaded`` to re-trigger
+against a different cwd). Container-injected environment variables win
+over ``.env`` entries (``override=False``), so deployments that set
+env vars through their runtime are never shadowed by a stray local
+file. If ``python-dotenv`` is not installed, the ``.env`` load is
+skipped silently.
 """
 
 from __future__ import annotations
@@ -35,11 +39,21 @@ def _load_dotenv_once() -> None:
         except ImportError:
             _dotenv_loaded = True
             return
-        # Explicit CWD path: ``load_dotenv()`` with no args walks up from the
-        # caller's file, which would pick up .env files outside the user's
-        # project. Spec §4.9 says "load from current working directory".
+        # Explicit CWD path: ``load_dotenv()`` with no args walks up from
+        # the caller's file, which would pick up .env files outside the
+        # user's project. Spec §4.9 says "load from current working
+        # directory".
         load_dotenv(dotenv_path=os.path.join(os.getcwd(), ".env"), override=False)
         _dotenv_loaded = True
+
+
+# Eager load at import so the ``.env`` file is reflected in
+# ``os.environ`` before any downstream code (including
+# ``Cirron.__init__``) reads an env var. Tests that need to re-trigger
+# the load against a different cwd reset ``_dotenv_loaded`` to False
+# and call ``_load_dotenv_once()`` (or any ``ci.env()`` / ``Cirron()``,
+# since both funnel through this sentinel).
+_load_dotenv_once()
 
 
 def env(key: str, default: Any = None) -> Any:
