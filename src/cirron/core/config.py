@@ -506,8 +506,18 @@ def get_default() -> Cirron:
     that ``ci.profile()`` and ``Cirron().profile()`` share a single
     profiler singleton. ``Cirron()`` is only constructed once per process;
     the underlying config layers (TOML, env) are read at that point.
+
+    Double-checked locking: the steady-state fast path reads
+    ``_default_instance`` without touching the lock (the module-level
+    name read is atomic under the GIL), so hot-path callers like
+    ``ci.scope()`` / ``ci.mark()`` don't contend after initialization.
+    The lock only gates the one-time construction.
     """
     global _default_instance
+    instance = _default_instance
+    if instance is not None:
+        return instance
+
     with _default_lock:
         if _default_instance is None:
             _default_instance = Cirron()
