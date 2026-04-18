@@ -56,6 +56,36 @@ def test_raises_with_descriptive_message(tmp_path, monkeypatch):
     )
 
 
+def test_rejects_path_traversal_and_separators(monkeypatch, tmp_path):
+    monkeypatch.setattr(client, "_SECRETS_DIR", tmp_path)
+    for bad in ("../passwd", "/etc/passwd", "..", ".", "", "sub/dir", "a\\b"):
+        with pytest.raises(CirronSecretNotFound) as exc_info:
+            secret(bad)
+        assert "invalid" in str(exc_info.value).lower()
+
+
+def test_strips_windows_crlf(monkeypatch, tmp_path):
+    monkeypatch.setattr(client, "_SECRETS_DIR", tmp_path)
+    (tmp_path / "api-key").write_bytes(b"sk-windows\r\n")
+    assert secret("api-key") == "sk-windows"
+
+
+def test_permission_error_raises_distinct_message(monkeypatch, tmp_path):
+    monkeypatch.setattr(client, "_SECRETS_DIR", tmp_path)
+    (tmp_path / "locked-key").write_text("sk-locked")
+
+    def _deny(*_a, **_kw):
+        raise PermissionError("EACCES")
+
+    monkeypatch.setattr(client.Path, "read_text", _deny)
+    with pytest.raises(CirronSecretNotFound) as exc_info:
+        secret("locked-key")
+    msg = str(exc_info.value)
+    assert "not readable" in msg
+    assert "locked-key" in msg
+    assert "CIRRON_SECRET_LOCKED_KEY" in msg
+
+
 def test_secret_never_appears_in_logs(monkeypatch, tmp_path, caplog):
     """Neither successful reads nor the not-found path should emit the secret value via logging."""
     caplog.set_level(logging.DEBUG)

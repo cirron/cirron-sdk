@@ -7,8 +7,8 @@ Per spec §4.9, secrets are mounted two ways:
   secret mount convention — filename matches the secret key verbatim).
 
 Resolution order is env var → file mount → raise ``CirronSecretNotFound``.
-This module never logs the secret value or name; callers should never pass
-the returned string to ``ci.mark()`` or into the spool.
+This module never logs or includes the secret *value* in exceptions; callers
+should never pass the returned string to ``ci.mark()`` or into the spool.
 """
 
 from __future__ import annotations
@@ -21,6 +21,10 @@ from cirron.core.errors import CirronSecretNotFound
 
 _SECRETS_DIR = Path("/etc/cirron/secrets")
 
+# Secret names are single keys, not paths. Reject anything that could escape
+# the mount dir (path separators, parent traversal, absolute paths, empty).
+_INVALID_NAME_RE = re.compile(r"[/\\]|(^|/)\.\.(/|$)")
+
 
 def _env_key(name: str) -> str:
     """Map a user-facing secret name to its mounted env var.
@@ -32,7 +36,17 @@ def _env_key(name: str) -> str:
     return "CIRRON_SECRET_" + re.sub(r"[^A-Z0-9_]", "_", name.upper())
 
 
+def _validate_name(name: str) -> None:
+    if not name or _INVALID_NAME_RE.search(name) or name in (".", ".."):
+        raise CirronSecretNotFound(
+            f"Secret name {name!r} is invalid — names must be a single key "
+            "without path separators or parent traversal."
+        )
+
+
 def secret(name: str) -> str:
+    _validate_name(name)
+
     env_key = _env_key(name)
     value = os.environ.get(env_key)
     if value is not None:
@@ -40,11 +54,20 @@ def secret(name: str) -> str:
 
     path = _SECRETS_DIR / name
     try:
-        text: str | None = path.read_text()
-    except (FileNotFoundError, NotADirectoryError, PermissionError, IsADirectoryError):
+        text = path.read_text()
+    except (FileNotFoundError, NotADirectoryError):
         text = None
+    except PermissionError as exc:
+        # Mount exists but is unreadable — distinguish from "not mounted" so
+        # ops can debug the permission / SELinux / mount-mode issue.
+        raise CirronSecretNotFound(
+            f"Secret {name!r} is mounted at {path} but is not readable. "
+            f"Also looked for env var {env_key}. "
+            "Check the secret mount and file permissions in the runtime environment."
+        ) from exc
+
     if text is not None:
-        return text.rstrip("\n")
+        return text.rstrip("\r\n")
 
     raise CirronSecretNotFound(
         f"Secret {name!r} is not mounted (looked for env var {env_key} "
