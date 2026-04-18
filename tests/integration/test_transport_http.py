@@ -23,37 +23,45 @@ from cirron.core.ingest import (
 )
 
 
+class _RecordingServer(ThreadingHTTPServer):
+    received: list[dict[str, Any]]
+    script: list[int]
+    retry_after_sent: bool
+
+
 class _RecordingHandler(BaseHTTPRequestHandler):
     """Records each request and replies with scripted status codes."""
+
+    server: _RecordingServer
 
     def do_POST(self) -> None:  # noqa: N802 (stdlib naming)
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length) if length else b""
-        self.server.received.append(  # type: ignore[attr-defined]
+        self.server.received.append(
             {
                 "path": self.path,
                 "headers": {k: v for k, v in self.headers.items()},
                 "body": body,
             }
         )
-        status = self.server.script.pop(0)  # type: ignore[attr-defined]
+        status = self.server.script.pop(0)
         self.send_response(status)
-        if status == 429 and self.server.retry_after_sent is False:  # type: ignore[attr-defined]
+        if status == 429 and self.server.retry_after_sent is False:
             self.send_header("Retry-After", "0")
-            self.server.retry_after_sent = True  # type: ignore[attr-defined]
+            self.server.retry_after_sent = True
         self.send_header("Content-Length", "0")
         self.end_headers()
 
-    def log_message(self, *_args: Any) -> None:
+    def log_message(self, format: str, *args: Any) -> None:
         return None
 
 
 @pytest.fixture
 def server() -> Any:
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), _RecordingHandler)
-    srv.received = []  # type: ignore[attr-defined]
-    srv.script = []  # type: ignore[attr-defined]
-    srv.retry_after_sent = False  # type: ignore[attr-defined]
+    srv = _RecordingServer(("127.0.0.1", 0), _RecordingHandler)
+    srv.received = []
+    srv.script = []
+    srv.retry_after_sent = False
     thread = threading.Thread(target=srv.serve_forever, daemon=True)
     thread.start()
     try:
@@ -65,7 +73,8 @@ def server() -> Any:
 
 
 def _endpoint(srv: ThreadingHTTPServer) -> str:
-    host, port = srv.server_address
+    host = srv.server_address[0]
+    port = srv.server_address[1]
     return f"http://{host}:{port}"
 
 
