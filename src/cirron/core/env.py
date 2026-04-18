@@ -35,7 +35,10 @@ def _load_dotenv_once() -> None:
         except ImportError:
             _dotenv_loaded = True
             return
-        load_dotenv(override=False)
+        # Explicit CWD path: ``load_dotenv()`` with no args walks up from the
+        # caller's file, which would pick up .env files outside the user's
+        # project. Spec §4.9 says "load from current working directory".
+        load_dotenv(dotenv_path=os.path.join(os.getcwd(), ".env"), override=False)
         _dotenv_loaded = True
 
 
