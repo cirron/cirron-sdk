@@ -201,7 +201,7 @@ def test_precedence_explicit_over_env_over_toml_over_default(monkeypatch):
 
     monkeypatch.setattr(_config_mod, "_read_home_config_toml", lambda path=None: {})
     c_default = Cirron()
-    assert c_default.api_endpoint == "https://api.cirron.dev"
+    assert c_default.api_endpoint == "https://api.cirron.com"
 
 
 # -- singleton reset ----------------------------------------------------------
