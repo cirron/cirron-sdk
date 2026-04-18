@@ -19,21 +19,25 @@ class AzureDataSource(DataSource):
                 "azure-storage-blob is required. Install with: pip install azure-storage-blob"
             ) from e
 
+        container_name = self.config.container_name
+        if container_name is None:
+            raise ValueError("container_name is required for Azure blob source")
+
         service = BlobServiceClient(
-            account_url=f"https://{self.config.container_name}.blob.core.windows.net"
+            account_url=f"https://{container_name}.blob.core.windows.net"
         )
 
         if self.config.folder_path:
-            container = service.get_container_client(self.config.container_name)
+            container = service.get_container_client(container_name)
             return [
                 self._parse(
-                    service.get_blob_client(container=self.config.container_name, blob=blob.name)
+                    service.get_blob_client(container=container_name, blob=blob.name)
                 )
                 for blob in container.list_blobs(name_starts_with=self.config.folder_path)
             ]
 
         blob_client = service.get_blob_client(
-            container=self.config.container_name, blob=self.config.path or ""
+            container=container_name, blob=self.config.path or ""
         )
         return self._parse(blob_client)
 
@@ -62,9 +66,12 @@ class AzureDataSource(DataSource):
         try:
             from azure.storage.blob import BlobServiceClient
 
+            container_name = self.config.container_name
+            if container_name is None:
+                return False
             BlobServiceClient(
-                account_url=f"https://{self.config.container_name}.blob.core.windows.net"
-            ).get_container_client(self.config.container_name).exists()
+                account_url=f"https://{container_name}.blob.core.windows.net"
+            ).get_container_client(container_name).exists()
             return True
         except Exception as e:
             logger.warning(f"Azure validation failed: {e}")
