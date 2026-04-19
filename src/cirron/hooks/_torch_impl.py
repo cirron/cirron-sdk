@@ -393,25 +393,28 @@ def install(scope_stack: ScopeStack, cirron: Cirron) -> TorchHookHandle:
         return _wrap_iter(base_iter)
 
     def _wrap_iter(base_iter: Any) -> Any:
+        import time as _t
+
         class _CirronDLIter:
             def __iter__(self) -> Any:
                 return self
 
             def __next__(self) -> Any:
-                scope_obj = _open("data_load")
-                import time as _t
-
+                # Time the fetch first, then open a data_load span only if
+                # it produced a value. A trailing ``StopIteration`` must not
+                # emit an empty span — that inflates data_load counts and
+                # clutters the timeline.
                 t0 = _t.perf_counter_ns()
-                try:
-                    return next(base_iter)
-                finally:
-                    dt = _t.perf_counter_ns() - t0
-                    if scope_obj is not None:
-                        try:
-                            scope_obj.attrs["data_load_ns"] = dt
-                        except Exception:
-                            pass
-                    _close(scope_obj)
+                item = next(base_iter)
+                dt = _t.perf_counter_ns() - t0
+                scope_obj = _open("data_load")
+                if scope_obj is not None:
+                    try:
+                        scope_obj.attrs["data_load_ns"] = dt
+                    except Exception:
+                        pass
+                _close(scope_obj)
+                return item
 
             def __getattr__(self, name: str) -> Any:
                 return getattr(base_iter, name)
@@ -432,10 +435,7 @@ def install(scope_stack: ScopeStack, cirron: Cirron) -> TorchHookHandle:
     def _close_open_epoch() -> None:
         sc = epoch_state["scope"]
         if sc is not None:
-            try:
-                scope_stack.close_scope(sc)
-            except Exception:
-                log.warning("cirron.hooks.torch: final epoch close failed", exc_info=True)
+            _unwind_through(sc)
             epoch_state["scope"] = None
 
     handle.add_undo("close_open_epoch", _close_open_epoch)
