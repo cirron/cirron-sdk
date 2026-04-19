@@ -208,6 +208,114 @@ def test_no_torch_usage_after_uninstall_produces_no_spans(stack, ci):
     assert closed == []
 
 
+def test_many_epochs_do_not_blow_stack_depth(stack, ci):
+    """Regression for PR#20 comments #1/#2: rotating epochs must actually
+    leave the stack, not just be close_scope'd in place. A long run should
+    stay well below ``MAX_DEPTH`` after uninstall."""
+    h = torch_install(stack, ci)
+    try:
+        xs = torch.zeros(2, 4)
+        ys = torch.zeros(2, 2)
+        loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(xs, ys), batch_size=1)
+        for _ in range(50):
+            for _ in loader:
+                pass
+    finally:
+        h.uninstall()
+    # After uninstall, no scopes should be left open on the current thread.
+    assert stack.current() is None
+    # All 50 epoch spans should be drainable.
+    closed = stack.drain_closed_all()
+    epochs = [s for s in closed if s.name == "epoch"]
+    assert len(epochs) == 50
+    assert [s.index for s in epochs] == list(range(50))
+
+
+def test_epoch_scopes_are_siblings_not_nested(stack, ci):
+    """PR#20 #1: consecutive epochs must not be parent-child of each other."""
+    h = torch_install(stack, ci)
+    try:
+        xs = torch.zeros(2, 4)
+        ys = torch.zeros(2, 2)
+        loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(xs, ys), batch_size=2)
+        for _ in range(3):
+            for _ in loader:
+                pass
+    finally:
+        h.uninstall()
+    epochs = [s for s in stack.drain_closed_all() if s.name == "epoch"]
+    assert len(epochs) == 3
+    # No epoch should claim another epoch as its parent.
+    epoch_ids = {s.id for s in epochs}
+    for s in epochs:
+        assert s.parent_id not in epoch_ids, f"epoch {s.index} is nested under another epoch"
+
+
+def test_stopiteration_does_not_emit_data_load_span(stack, ci):
+    """PR#20 #3: exhausting the iterator must not produce a trailing span."""
+    h = torch_install(stack, ci)
+    try:
+        xs = torch.zeros(4, 4)
+        ys = torch.zeros(4, 2)
+        loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(xs, ys), batch_size=2)
+        # 4 samples / batch 2 = exactly 2 batches → 2 data_load spans, not 3.
+        for _ in loader:
+            pass
+    finally:
+        h.uninstall()
+    data_loads = [s for s in stack.drain_closed_all() if s.name == "data_load"]
+    assert len(data_loads) == 2
+
+
+def test_close_preserves_unrelated_scope_on_top(stack, ci):
+    """PR#20 #4: if a user scope was opened on top of our forward span,
+    _close must fall back to close_scope rather than popping the user's
+    scope. The user scope must survive until they close it themselves."""
+    from cirron.core.scope import get_current_scope  # local import: uses default stack
+
+    h = torch_install(stack, ci)
+    try:
+        # Mirror the hook's manual sequence by pushing a scope via our
+        # local stack, then simulating a "user opened something on top"
+        # before _close runs. We use the real forward hook entry point
+        # to exercise the same _close path the framework uses.
+        model = torch.nn.Linear(4, 2)
+
+        # Monkey-patch the post-hook path indirectly by opening a scope
+        # inside forward. nn.Module forward hooks fire around __call__,
+        # so opening a scope from within Linear.forward isn't possible
+        # without subclassing — subclass it.
+        class Wrapped(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.fc = model
+
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
+                out = self.fc(x)
+                # User opens a scope before the outer forward post-hook
+                # fires. The post-hook's _close should not pop this.
+                stack.push("user", foo="bar")
+                return out
+
+        Wrapped()(torch.zeros(1, 4))
+        # The user scope should still be on the stack; the forward scope
+        # should already be closed via close_scope.
+        cur = stack.current()
+        assert cur is not None and cur.name == "user", (
+            f"user scope was popped by _close; got {cur!r}"
+        )
+        # Clean up the user scope so subsequent asserts see a clean stack.
+        stack.pop()
+    finally:
+        h.uninstall()
+    names = [s.name for s in stack.drain_closed_all()]
+    # Both the forward span (closed via close_scope) and the user span
+    # (closed via pop) should have landed.
+    assert "forward" in names
+    assert "user" in names
+    del get_current_scope  # silence unused-import warning
+
+
 def test_epoch_step_threshold_fallback(stack, tmp_path):
     """Without a DataLoader, optimizer steps past the threshold rotate the epoch."""
     ci = Cirron(output_dir=str(tmp_path))
