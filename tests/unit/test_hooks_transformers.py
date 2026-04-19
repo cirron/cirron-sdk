@@ -16,6 +16,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 transformers = pytest.importorskip("transformers")
+pytest.importorskip("accelerate")  # transformers Trainer (PyTorch) requires it
 
 import torch.nn as nn  # noqa: E402
 from torch.utils.data import Dataset  # noqa: E402
