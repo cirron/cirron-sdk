@@ -155,13 +155,18 @@ def install(scope_stack: ScopeStack, cirron: Cirron) -> TorchHookHandle:
         if scope_obj is None:
             return
         try:
-            # pop() closes the innermost open scope; if user code opened
-            # something inside (unlikely for forward/backward/step), it'll
-            # be closed too. close_scope is the surgical path but only
-            # the flush thread uses it — on the hot path, pop() is enough.
-            scope_stack.pop()
+            # Fast path: our scope is still on top — a single pop closes it
+            # and keeps the stack list in sync. If something else was opened
+            # on top between our _open and _close (user scope, another
+            # framework hook), pop() would close the wrong span; fall back
+            # to close_scope which only marks end_ns + appends to the
+            # thread's closed deque without mutating anyone's stack.
+            if scope_stack.current() is scope_obj:
+                scope_stack.pop()
+            else:
+                scope_stack.close_scope(scope_obj)
         except Exception:
-            log.warning("cirron.hooks.torch: pop failed", exc_info=True)
+            log.warning("cirron.hooks.torch: scope close failed", exc_info=True)
 
     def _maybe_start_cuda(scope_obj: Scope | None) -> Any:
         if scope_obj is None or pending_cuda is None:
@@ -336,13 +341,39 @@ def install(scope_stack: ScopeStack, cirron: Cirron) -> TorchHookHandle:
 
     # --- DataLoader ---------------------------------------------------------
 
+    def _unwind_through(scope_obj: Scope) -> None:
+        """Pop scopes until ``scope_obj`` is off the stack.
+
+        Epoch scopes are long-lived and must actually leave the stack on
+        rotation — otherwise every new epoch stacks on top of the closed
+        previous one and a long run hits ``MAX_DEPTH``. Cross-thread
+        rotation (very unlikely) can't mutate another thread's stack, so
+        we fall back to ``close_scope`` (marks ``end_ns`` only).
+        """
+        try:
+            if threading.get_ident() != scope_obj.thread_id:
+                scope_stack.close_scope(scope_obj)
+                return
+            # Pop any scopes opened on top of the epoch (defensive — the
+            # DataLoader iteration pattern closes data_load before the next
+            # __iter__ fires, so typically epoch is already on top).
+            guard = 128
+            while guard > 0 and scope_stack.current() is not None:
+                guard -= 1
+                top = scope_stack.current()
+                scope_stack.pop()
+                if top is scope_obj:
+                    return
+            # Scope wasn't found on the stack — mark it closed so the
+            # span still lands in the drained output.
+            scope_stack.close_scope(scope_obj)
+        except Exception:
+            log.warning("cirron.hooks.torch: unwind epoch failed", exc_info=True)
+
     def _rotate_epoch() -> None:
         prev = epoch_state["scope"]
         if prev is not None:
-            try:
-                scope_stack.close_scope(prev)
-            except Exception:
-                log.warning("cirron.hooks.torch: close epoch scope failed", exc_info=True)
+            _unwind_through(prev)
         new_scope = _open("epoch", index=epoch_state["index"])
         epoch_state["scope"] = new_scope
         epoch_state["index"] += 1
