@@ -132,6 +132,22 @@ def test_wrap_twice_is_idempotent(xy):
     assert len(fit_scopes) == 1
 
 
+def test_wrap_raw_estimator_twice_returns_same_proxy(xy):
+    # Regression: calling ci.wrap() a second time with the *raw* (unwrapped)
+    # estimator used to return the bare estimator, silently disabling
+    # instrumentation. It must return the original proxy instead.
+    X, y = xy
+    est = LogisticRegression(max_iter=200)
+    first = ci.wrap(est)
+    second = ci.wrap(est)
+    assert second is first
+    assert isinstance(second, _WrappedEstimator)
+
+    second.fit(X, y)
+    fit_scopes = [s for s in get_default_stack().drain_closed_all() if s.name == "fit"]
+    assert len(fit_scopes) == 1
+
+
 def test_wrap_returns_proxy_type():
     est = LogisticRegression()
     model = ci.wrap(est)
