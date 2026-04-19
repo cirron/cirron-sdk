@@ -1,8 +1,8 @@
 """TensorFlow / Keras hook implementation (SDK-21, spec §4.8).
 
 Kept out of ``tensorflow.py`` so self-registration at package import
-stays cheap — ``import tensorflow`` only happens when :func:`install`
-is called by ``ci.profile()``.
+stays cheap — ``install()`` defers ``import keras`` until called by
+``ci.profile()``.
 
 Auto-attaches a ``keras.callbacks.Callback`` to every ``Model.fit`` call
 so users get ``epoch`` / ``batch`` scopes plus metric marks from the
@@ -160,11 +160,12 @@ def install(scope_stack: ScopeStack, cirron: Cirron) -> TFHookHandle:
 
     def _fit(self: Any, *args: Any, **kwargs: Any) -> Any:
         cbs = kwargs.get("callbacks")
-        # Normalize to a list we can append to without surprising the caller.
+        # Always build a fresh list — never mutate the caller's container.
+        # Appending our callback to an aliased user list leaks the
+        # instrumentation across later unrelated ``fit`` calls that share
+        # the list.
         if cbs is None:
             cbs_list: list[Any] = []
-        elif isinstance(cbs, list):
-            cbs_list = cbs
         else:
             try:
                 cbs_list = list(cbs)
