@@ -44,15 +44,6 @@ class _WrappedEstimator:
 
     def __init__(self, estimator: Any) -> None:
         object.__setattr__(self, "_estimator", estimator)
-        # Marker lives on the underlying estimator so ``ci.wrap(proxy)``
-        # can detect idempotency without needing to peek at ``_estimator``.
-        try:
-            object.__setattr__(estimator, _WRAPPED_ATTR, True)
-        except (AttributeError, TypeError):
-            # Some estimators (those with restrictive __slots__) won't
-            # accept arbitrary attributes. That's fine — the proxy itself
-            # carries the marker via ``isinstance`` checks below.
-            pass
 
     def __getattr__(self, name: str) -> Any:
         est = object.__getattribute__(self, "_estimator")
@@ -100,7 +91,6 @@ def _wrap_pipeline_steps(estimator: Any) -> None:
                 and len(item) == 2
                 and isinstance(item[0], str)
                 and not isinstance(item[1], _WrappedEstimator)
-                and not getattr(item[1], _WRAPPED_ATTR, False)
             ):
                 name, sub = item
                 container[i] = (name, wrap(sub))
@@ -109,14 +99,32 @@ def _wrap_pipeline_steps(estimator: Any) -> None:
 def wrap(estimator: Any) -> Any:
     """Wrap an sklearn estimator so its fit/predict/etc. calls produce scopes.
 
-    Idempotent: ``wrap(wrap(est))`` returns the same proxy. For
-    pipelines, recursively wraps each step so per-step scopes nest
-    under the pipeline's top-level scope.
+    Idempotent across both call shapes:
+    - ``ci.wrap(proxy)`` returns the same proxy (``isinstance`` short-circuit).
+    - ``ci.wrap(est)`` called twice with the same raw estimator returns the
+      same proxy both times. The marker stashes the proxy itself on the
+      underlying estimator (rather than a bare ``True``) so the second
+      call finds and returns it instead of silently handing back the
+      raw, uninstrumented estimator.
+
+    For pipelines, each step is recursively wrapped so per-step scopes
+    nest under the pipeline's top-level scope.
     """
     if isinstance(estimator, _WrappedEstimator):
         return estimator
-    if getattr(estimator, _WRAPPED_ATTR, False):
-        return estimator
+
+    existing = getattr(estimator, _WRAPPED_ATTR, None)
+    if isinstance(existing, _WrappedEstimator):
+        return existing
 
     _wrap_pipeline_steps(estimator)
-    return _WrappedEstimator(estimator)
+    proxy = _WrappedEstimator(estimator)
+    # Best-effort: some estimators use restrictive ``__slots__`` and reject
+    # arbitrary attributes. That only costs us the raw-estimator
+    # idempotency shortcut; the ``isinstance`` check still covers
+    # ``wrap(proxy)``.
+    try:
+        object.__setattr__(estimator, _WRAPPED_ATTR, proxy)
+    except (AttributeError, TypeError):
+        pass
+    return proxy
