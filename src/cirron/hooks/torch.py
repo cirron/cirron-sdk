@@ -1,13 +1,13 @@
-"""PyTorch hooks — registration scaffold (SDK-19); real bodies in SDK-20.
+"""PyTorch hooks (SDK-20, spec §4.8).
 
-Per spec §4.8: forward-pass (``nn.Module.__call__``), backward-pass (autograd
-``Tensor.backward``), optimizer step (``optim.Optimizer.step``), DataLoader
-iteration, CUDA timing. Installed automatically by ``ci.profile()`` when
-``torch`` is importable.
+Registered at package import; the real install body lives in
+``_torch_impl`` so we can defer ``import torch`` until ``ci.profile()``
+actually needs it.
 """
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from cirron.hooks._registry import HookHandle, NoopHookHandle, register_installer
@@ -16,11 +16,28 @@ if TYPE_CHECKING:
     from cirron.core.config import Cirron
     from cirron.core.scope import ScopeStack
 
+log = logging.getLogger("cirron.hooks.torch")
+
 
 def install(scope_stack: ScopeStack, cirron: Cirron) -> HookHandle:
-    """Stub installer — SDK-20 replaces with real module/optimizer/DataLoader hooks."""
-    del scope_stack, cirron
-    return NoopHookHandle("torch")
+    """Install PyTorch forward/backward/optimizer/DataLoader hooks."""
+    try:
+        from cirron.hooks._torch_impl import install as _install
+    except Exception:
+        log.warning(
+            "cirron.hooks.torch: failed to load torch hook implementation; "
+            "returning a no-op handle.",
+            exc_info=True,
+        )
+        return NoopHookHandle("torch")
+    try:
+        return _install(scope_stack, cirron)
+    except Exception:
+        log.warning(
+            "cirron.hooks.torch: install failed; returning a no-op handle.",
+            exc_info=True,
+        )
+        return NoopHookHandle("torch")
 
 
 register_installer("torch", install)
