@@ -190,8 +190,7 @@ def test_torch_hooks_nest_inside_transformers_step(stack, ci, tmp_path):
         # we only care that *every* torch span produced inside a training
         # step has the step in its ancestor chain.
         assert _has_step_ancestor(sp), (
-            f"{sp.name} span (id={sp.id}, parent={sp.parent_id}) "
-            "is not nested inside a step scope"
+            f"{sp.name} span (id={sp.id}, parent={sp.parent_id}) is not nested inside a step scope"
         )
 
 
@@ -224,9 +223,7 @@ def test_callback_not_duplicated_across_trainer_instances(stack, ci, tmp_path):
         t1 = _make_trainer(tmp_path / "a", epochs=1, batch_size=2, n=4)
         t2 = _make_trainer(tmp_path / "b", epochs=1, batch_size=2, n=4)
         for tr in (t1, t2):
-            count = sum(
-                1 for cb in tr.callback_handler.callbacks if isinstance(cb, callback_cls)
-            )
+            count = sum(1 for cb in tr.callback_handler.callbacks if isinstance(cb, callback_cls))
             assert count == 1
     finally:
         h.uninstall()
