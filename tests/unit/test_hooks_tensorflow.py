@@ -116,35 +116,36 @@ def test_batches_are_children_of_their_epoch(stack, ci):
         assert b.parent_id == epoch.id
 
 
-def test_callback_not_duplicated_across_two_fit_calls(stack, ci):
-    """AC #2: fit called twice still wires exactly one CirronKerasCallback."""
+def test_callback_attaches_on_every_fit_without_mutating_caller(stack, ci):
+    """AC #2: every fit gets a CirronKerasCallback, and the caller's
+    ``callbacks`` list is not mutated across calls."""
     h = tf_install(stack, ci)
     try:
         callback_cls = h.CirronKerasCallback  # type: ignore[attr-defined]
 
-        observed: list[int] = []
-
-        class SpyCallback(keras.callbacks.Callback):
-            def on_train_begin(self, logs=None):
-                # `self.model` is set by Keras; its callbacks are accessible via
-                # the CallbackList attached to the History returned by fit.
-                # Easier: peek at the model's stored callback list if present,
-                # but the cleanest signal is via the list we passed in below.
-                observed.append(sum(1 for cb in self._cirron_peek if isinstance(cb, callback_cls)))
-
         model = _tiny_model()
         x, y = _tiny_data(n=4)
-        spy = SpyCallback()
-        cbs: list = [spy]
-        spy._cirron_peek = cbs  # type: ignore[attr-defined]
+        user_cb = keras.callbacks.Callback()
+        cbs: list = [user_cb]
+        before = list(cbs)
+
         model.fit(x, y, epochs=1, batch_size=2, verbose=0, callbacks=cbs)
-        # Call a second time with the same list — our wrapper should not add
-        # another instance.
+        assert cbs == before, "caller's callbacks list was mutated"
+
         model.fit(x, y, epochs=1, batch_size=2, verbose=0, callbacks=cbs)
+        assert cbs == before, "caller's callbacks list was mutated on second call"
     finally:
         h.uninstall()
-    # Each fit observed exactly one CirronKerasCallback in the list at train-begin.
-    assert observed == [1, 1]
+
+    # Two fits × 1 epoch each = 2 epoch spans, proving a fresh
+    # CirronKerasCallback fired on both calls (had it not attached, the
+    # second fit would produce zero epoch spans).
+    closed = stack.drain_closed_all()
+    epochs = [s for s in closed if s.name == "epoch"]
+    assert len(epochs) == 2
+    # And no stray duplicate-attach — if we were appending twice per call,
+    # we'd see 2 epoch spans per fit, i.e. 4 total.
+    assert not any(isinstance(cb, callback_cls) for cb in cbs)
 
 
 def test_user_supplied_callback_instance_is_not_duplicated(stack, ci):

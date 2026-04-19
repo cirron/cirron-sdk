@@ -1,8 +1,8 @@
 """TensorFlow / Keras hooks (SDK-21, spec §4.8).
 
 Registered at package import; the real install body lives in
-``_tf_impl`` so we can defer ``import tensorflow`` until ``ci.profile()``
-actually needs it.
+``_tf_impl`` so we can defer loading the Keras / TensorFlow backend
+implementation until ``ci.profile()`` actually needs it.
 """
 
 from __future__ import annotations
