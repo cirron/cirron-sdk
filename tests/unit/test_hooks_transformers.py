@@ -31,8 +31,8 @@ from cirron.hooks._transformers_impl import install as tr_install  # noqa: E402
 
 class _LossModel(nn.Module):
     """Tiny model that returns a HF-style ``{"loss": ...}`` dict so
-    ``Trainer.training_step`` can call ``.loss`` on it without a full
-    ``ModelOutput``."""
+    ``Trainer.compute_loss`` can read ``outputs["loss"]`` (its dict
+    branch) without us having to construct a full ``ModelOutput``."""
 
     def __init__(self) -> None:
         super().__init__()
