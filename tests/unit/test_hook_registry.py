@@ -116,6 +116,7 @@ def test_install_hooks_installer_exception_is_swallowed(caplog):
     """A raising installer must not abort install_hooks for other frameworks."""
     registry = get_registry()
     registry.register("explodes", lambda s, c: (_ for _ in ()).throw(RuntimeError("boom")))
+    handles: list = []
     try:
         FRAMEWORK_MODULES["explodes"] = "explodes"
         ci = get_default()
@@ -126,6 +127,15 @@ def test_install_hooks_installer_exception_is_swallowed(caplog):
         assert names == ["torch"]
         assert any("explodes" in r.message for r in caplog.records)
     finally:
+        # install_hooks was called directly (not via ci.profile), so the
+        # returned handles aren't tracked by the profiler. Uninstall them
+        # here so torch's global forward/optimizer/DataLoader patches from
+        # the real SDK-20 installer don't leak into other tests.
+        for h in handles:
+            try:
+                h.uninstall()
+            except Exception:
+                pass
         FRAMEWORK_MODULES.pop("explodes", None)
         registry._installers.pop("explodes", None)
 
