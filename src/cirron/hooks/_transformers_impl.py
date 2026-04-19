@@ -79,14 +79,32 @@ def _make_callback_class(scope_stack: ScopeStack) -> type:
         if scope_obj is None:
             return
         try:
-            # Fast path: the scope we opened is still on top. If a torch
-            # hook (or user scope) opened something on top between begin
-            # and end, fall back to ``close_scope`` so we never pop a
-            # span that isn't ours.
+            # Fast path: our scope is on top — single pop closes it.
             if scope_stack.current() is scope_obj:
                 scope_stack.pop()
-            else:
-                scope_stack.close_scope(scope_obj)
+                return
+            # Already closed elsewhere (e.g. by a long-running torch
+            # rotation): nothing more to do for the closed deque, but
+            # the scope may still be sitting in the stack list, so fall
+            # through to the unwind below.
+            #
+            # Unwind: HF Trainer fires ``on_epoch_begin`` *before* the
+            # first ``iter(dataloader)``, so the torch hook (SDK-20)
+            # ends up pushing its own ``epoch`` scope on top of ours.
+            # When ``on_epoch_end`` fires our scope is buried; pop the
+            # intervening scopes (closing them as siblings) until we
+            # find ours, the same pattern torch's own
+            # ``_unwind_through`` uses for its long-lived epoch scope.
+            guard = 64
+            while guard > 0 and scope_stack.current() is not None:
+                guard -= 1
+                top = scope_stack.current()
+                scope_stack.pop()
+                if top is scope_obj:
+                    return
+            # Not on the stack at all — mark closed so it still lands in
+            # the drained output.
+            scope_stack.close_scope(scope_obj)
         except Exception:
             log.warning("cirron.hooks.transformers: scope close failed", exc_info=True)
 
@@ -129,9 +147,7 @@ def _make_callback_class(scope_stack: ScopeStack) -> type:
             self._epoch_scope: Scope | None = None
             self._step_scope: Scope | None = None
 
-        def on_train_begin(
-            self, args: Any, state: Any, control: Any, **kwargs: Any
-        ) -> None:
+        def on_train_begin(self, args: Any, state: Any, control: Any, **kwargs: Any) -> None:
             def _do() -> None:
                 # Defensive reset: a prior train() on the same Trainer
                 # instance may have left scopes open if it errored.
@@ -142,34 +158,26 @@ def _make_callback_class(scope_stack: ScopeStack) -> type:
 
             _catch("on_train_begin", _do)
 
-        def on_epoch_begin(
-            self, args: Any, state: Any, control: Any, **kwargs: Any
-        ) -> None:
+        def on_epoch_begin(self, args: Any, state: Any, control: Any, **kwargs: Any) -> None:
             def _do() -> None:
                 self._epoch_scope = _open("epoch", index=int(state.epoch))
 
             _catch("on_epoch_begin", _do)
 
-        def on_epoch_end(
-            self, args: Any, state: Any, control: Any, **kwargs: Any
-        ) -> None:
+        def on_epoch_end(self, args: Any, state: Any, control: Any, **kwargs: Any) -> None:
             def _do() -> None:
                 _close(self._epoch_scope)
                 self._epoch_scope = None
 
             _catch("on_epoch_end", _do)
 
-        def on_step_begin(
-            self, args: Any, state: Any, control: Any, **kwargs: Any
-        ) -> None:
+        def on_step_begin(self, args: Any, state: Any, control: Any, **kwargs: Any) -> None:
             def _do() -> None:
                 self._step_scope = _open("step", index=int(state.global_step))
 
             _catch("on_step_begin", _do)
 
-        def on_step_end(
-            self, args: Any, state: Any, control: Any, **kwargs: Any
-        ) -> None:
+        def on_step_end(self, args: Any, state: Any, control: Any, **kwargs: Any) -> None:
             def _do() -> None:
                 lr = _resolve_lr(args, kwargs)
                 if lr is not None:
@@ -192,9 +200,7 @@ def _make_callback_class(scope_stack: ScopeStack) -> type:
         ) -> None:
             _catch("on_log", _record_logs, logs)
 
-        def on_train_end(
-            self, args: Any, state: Any, control: Any, **kwargs: Any
-        ) -> None:
+        def on_train_end(self, args: Any, state: Any, control: Any, **kwargs: Any) -> None:
             def _do() -> None:
                 _close(self._step_scope)
                 self._step_scope = None
