@@ -53,6 +53,14 @@ class _WrappedEstimator:
         return attr
 
     def __setattr__(self, name: str, value: Any) -> None:
+        # Proxy-owned slots stay on the proxy; everything else forwards to
+        # the wrapped estimator so ``proxy.n_estimators = 50`` reaches the
+        # real object. Without this guard, ``copy``/``__setstate__``
+        # reconstruction paths that assign ``_estimator`` would silently
+        # mutate the wrapped estimator instead of rebuilding the proxy.
+        if name in type(self).__slots__:
+            object.__setattr__(self, name, value)
+            return
         est = object.__getattribute__(self, "_estimator")
         setattr(est, name, value)
 

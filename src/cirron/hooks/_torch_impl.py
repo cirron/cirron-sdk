@@ -16,7 +16,6 @@ from __future__ import annotations
 import logging
 import threading
 from typing import TYPE_CHECKING, Any
-from weakref import WeakKeyDictionary
 
 if TYPE_CHECKING:
     from cirron.core.config import Cirron
@@ -141,7 +140,6 @@ def install(scope_stack: ScopeStack, cirron: Cirron) -> TorchHookHandle:
         "scope": None,  # currently open epoch Scope | None
         "step_count": 0,  # optimizer steps since last epoch rotate
         "index": 0,  # next epoch index to assign
-        "iter_counts": WeakKeyDictionary(),  # DataLoader -> iters observed
     }
 
     def _open(name: str, **attrs: Any) -> Scope | None:
@@ -383,12 +381,6 @@ def install(scope_stack: ScopeStack, cirron: Cirron) -> TorchHookHandle:
 
     def _dl_iter(self: Any) -> Any:
         _catch("epoch_rotate", _rotate_epoch)
-        counts = epoch_state["iter_counts"]
-        try:
-            counts[self] = counts.get(self, 0) + 1
-        except TypeError:
-            # Some DataLoader subclasses may not be hashable/weak-refable.
-            pass
         base_iter = orig_dl_iter(self)
         return _wrap_iter(base_iter)
 

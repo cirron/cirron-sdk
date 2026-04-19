@@ -137,7 +137,11 @@ def install_hooks(
         )
 
     handles: list[HookHandle] = []
-    for name in names:
+    # Dedupe while preserving order so a user-supplied ``frameworks=["torch",
+    # "torch"]`` doesn't double-register torch's global forward/optimizer
+    # hooks or double-wrap ``Tensor.backward`` — ``uninstall`` records one
+    # undo per call and would only reverse the second layer.
+    for name in dict.fromkeys(names):
         installer = _REGISTRY.get(name)
         if installer is None:
             if name in FRAMEWORK_MODULES:
