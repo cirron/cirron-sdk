@@ -1,25 +1,122 @@
-"""``ci.wrap()`` — sklearn opt-in estimator wrapper.
+"""``ci.wrap()`` — sklearn opt-in estimator wrapper (SDK-23, spec §4.8).
 
-Per spec §4.8: no auto-hook for sklearn; users call ``ci.wrap(estimator)`` to
-open a scope around ``fit``. SDK-23 provides the real wrapping; today this is
-a passthrough that warns once.
+sklearn has no callback API, so users opt in by wrapping an estimator:
+
+    model = ci.wrap(RandomForestClassifier(n_estimators=100))
+    model.fit(X, y)     # opens a `fit` scope
+    model.predict(X)    # opens a `predict` scope
+
+The wrapper is a thin proxy: method calls for ``fit``/``predict``/
+``transform``/``fit_transform``/``predict_proba``/``score`` open a scope
+around the underlying call; every other attribute (``coef_``,
+``n_estimators``, ``get_params``, ...) passes through untouched.
+
+For ``Pipeline`` (and ``FeatureUnion``) we duck-type the ``.steps`` /
+``.transformer_list`` container and wrap each step's estimator so that
+sklearn's internal per-step dispatch produces child scopes under the
+pipeline's top-level ``fit`` scope. No ``import sklearn`` at module load
+time — sklearn is an optional extra.
 """
 
 from __future__ import annotations
 
-import warnings
 from typing import Any
 
-_warned = False
+from cirron.core.scope import scope as _scope
+
+_WRAPPED_ATTR = "_cirron_wrapped"
+_METHODS_TO_WRAP: frozenset[str] = frozenset(
+    {"fit", "predict", "transform", "fit_transform", "predict_proba", "score"}
+)
+
+
+class _WrappedEstimator:
+    """Transparent proxy around an sklearn estimator.
+
+    Stores the underlying estimator in ``_estimator`` (set via
+    ``object.__setattr__`` to bypass our own ``__setattr__``). Attribute
+    reads fall through to the underlying estimator; reads of one of the
+    profiled methods return a small closure that opens a ``ci.scope``
+    before delegating.
+    """
+
+    __slots__ = ("_estimator", "__weakref__")
+
+    def __init__(self, estimator: Any) -> None:
+        object.__setattr__(self, "_estimator", estimator)
+        # Marker lives on the underlying estimator so ``ci.wrap(proxy)``
+        # can detect idempotency without needing to peek at ``_estimator``.
+        try:
+            object.__setattr__(estimator, _WRAPPED_ATTR, True)
+        except (AttributeError, TypeError):
+            # Some estimators (those with restrictive __slots__) won't
+            # accept arbitrary attributes. That's fine — the proxy itself
+            # carries the marker via ``isinstance`` checks below.
+            pass
+
+    def __getattr__(self, name: str) -> Any:
+        est = object.__getattribute__(self, "_estimator")
+        attr = getattr(est, name)
+        if name in _METHODS_TO_WRAP and callable(attr):
+            return _wrap_method(est, name, attr)
+        return attr
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        est = object.__getattribute__(self, "_estimator")
+        setattr(est, name, value)
+
+    def __repr__(self) -> str:
+        est = object.__getattribute__(self, "_estimator")
+        return f"WrappedEstimator({est!r})"
+
+
+def _wrap_method(estimator: Any, method_name: str, method: Any) -> Any:
+    est_class = type(estimator).__name__
+
+    def _wrapped(*args: Any, **kwargs: Any) -> Any:
+        with _scope(method_name, estimator=est_class):
+            return method(*args, **kwargs)
+
+    _wrapped.__name__ = method_name
+    _wrapped.__qualname__ = f"{est_class}.{method_name}"
+    return _wrapped
+
+
+def _wrap_pipeline_steps(estimator: Any) -> None:
+    """In-place wrap each step of a Pipeline / FeatureUnion, duck-typed.
+
+    Both containers hold ``(name, sub_estimator)`` tuples — ``Pipeline``
+    exposes them as ``.steps`` and ``FeatureUnion`` as
+    ``.transformer_list``. We don't import sklearn; we just look for the
+    attribute and shape.
+    """
+    for container_attr in ("steps", "transformer_list"):
+        container = getattr(estimator, container_attr, None)
+        if not isinstance(container, list):
+            continue
+        for i, item in enumerate(container):
+            if (
+                isinstance(item, tuple)
+                and len(item) == 2
+                and isinstance(item[0], str)
+                and not isinstance(item[1], _WrappedEstimator)
+                and not getattr(item[1], _WRAPPED_ATTR, False)
+            ):
+                name, sub = item
+                container[i] = (name, wrap(sub))
 
 
 def wrap(estimator: Any) -> Any:
-    global _warned
-    if not _warned:
-        warnings.warn(
-            "cirron.wrap() runtime is not implemented yet (SDK-23); "
-            "estimator is returned unchanged.",
-            stacklevel=2,
-        )
-        _warned = True
-    return estimator
+    """Wrap an sklearn estimator so its fit/predict/etc. calls produce scopes.
+
+    Idempotent: ``wrap(wrap(est))`` returns the same proxy. For
+    pipelines, recursively wraps each step so per-step scopes nest
+    under the pipeline's top-level scope.
+    """
+    if isinstance(estimator, _WrappedEstimator):
+        return estimator
+    if getattr(estimator, _WRAPPED_ATTR, False):
+        return estimator
+
+    _wrap_pipeline_steps(estimator)
+    return _WrappedEstimator(estimator)
