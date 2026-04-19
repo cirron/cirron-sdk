@@ -112,9 +112,7 @@ def test_wrap_pipeline_produces_nested_scopes(xy):
         if s.name == "fit_transform" and s.attrs.get("estimator") == "StandardScaler"
     )
     clf_scope = next(
-        s
-        for s in closed
-        if s.name == "fit" and s.attrs.get("estimator") == "LogisticRegression"
+        s for s in closed if s.name == "fit" and s.attrs.get("estimator") == "LogisticRegression"
     )
 
     assert pipeline_fit.parent_id is None
