@@ -72,13 +72,49 @@ populate them.
   "value_type": "float | int | string | bool",
   "value": 0.5,
   "attrs": { "step": 10 },
-  "ts_ns": 0
+  "ts_ns": 0,
+  "kind": "point | summary"
 }
 ```
 
-`span_id == "root"` is the sentinel for marks emitted before any scope was
-open. SDK-13 will replace this with a real process-root span once
-`ci.profile()` opens one on entry.
+A mark attaches to the innermost open scope on the producing thread. When
+no scope is open, it attaches to the `cirron.session` scope opened by
+`ci.profile()`; marks emitted before `ci.profile()` was called (or after
+`shutdown()`) fall through to the legacy `"root"` sentinel.
+
+`kind` distinguishes two uses of the same field:
+- `"point"` — a time-series data point logged while the span is open
+  (per-step loss, per-batch accuracy). The default.
+- `"summary"` — a canonical end-of-span value (final loss for epoch,
+  epoch-level validation metric). Viewers typically render point marks
+  as a time series and summary marks as a single value on the span.
+
+## Parent semantics of pre-loop operations
+
+Framework hooks open `epoch` / `step` scopes around recognizable control
+flow (e.g. `DataLoader.__iter__`, HF `Trainer.on_step_begin`). Any op
+executed **before** that control flow runs (warmup forwards, sanity
+checks, optimizer construction) will have `parent_id == session_id`,
+not an epoch. This is correct — no epoch exists yet — and is not a bug
+in either the hook or the consumer.
+
+Within the training loop, the canonical shape is:
+
+```
+cirron.session
+  epoch[n]
+    step[n]
+      data_load
+      forward
+      backward
+      optimizer_step
+```
+
+Epoch spans are **siblings** of each other under the session, never
+nested. When multiple framework hooks coexist (e.g. HuggingFace
+`Trainer` over a PyTorch `DataLoader`), only the highest-priority hook
+owns the `epoch` and `step` scopes — `transformers` > `tensorflow` >
+`torch` — and the others yield, so no semantic scope is duplicated.
 
 ## Forward compatibility
 
