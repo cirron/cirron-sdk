@@ -67,13 +67,32 @@ def _extract_usage(result: Any) -> dict[str, int] | None:
 
 
 def maybe_mark_openai_usage(result: Any) -> None:
-    """Emit summary marks for OpenAI-style ``usage`` on ``result``."""
+    """Emit summary marks for OpenAI-style ``usage`` on ``result``.
+
+    Raw trace keeps the provider-native names (``prompt_tokens`` /
+    ``completion_tokens``) so nothing is lost; in addition the SDK emits
+    normalized aliases (``input_tokens`` / ``output_tokens`` /
+    ``total_tokens``) so dashboard comparisons across providers don't
+    need per-provider name logic. Each mark carries a ``source="openai"``
+    attr and normalized aliases carry ``normalized=True``.
+    """
     try:
         usage = _extract_usage(result)
         if not usage:
             return
-        for name, value in usage.items():
-            _safe_mark(name, value, source="openai")
+        prompt = usage.get("prompt_tokens")
+        completion = usage.get("completion_tokens")
+        total = usage.get("total_tokens")
+        if prompt is not None:
+            _safe_mark("prompt_tokens", prompt, source="openai")
+            _safe_mark("input_tokens", prompt, source="openai", normalized=True)
+        if completion is not None:
+            _safe_mark("completion_tokens", completion, source="openai")
+            _safe_mark("output_tokens", completion, source="openai", normalized=True)
+        if total is None and prompt is not None and completion is not None:
+            total = prompt + completion
+        if total is not None:
+            _safe_mark("total_tokens", total, source="openai", normalized=True)
     except Exception:
         pass
 
@@ -92,11 +111,27 @@ def _item_token_count(item: Any) -> int | None:
 
 def _finalize_stream(count: int, start_ns: int, first_ns: int | None) -> None:
     try:
+        end_ns = time.time_ns()
+        # ``request_duration_ms`` closes the three-number picture users
+        # think in (total latency, TTFT, throughput). It's derivable from
+        # the span but published as a mark so dashboards don't need to
+        # reach into span-timing to get it. Emitted even for empty
+        # streams so consumers always see a duration.
+        _safe_mark("request_duration_ms", (end_ns - start_ns) / 1e6)
         if first_ns is None:
             return
-        elapsed_s = max(1e-9, (time.time_ns() - start_ns) / 1e9)
-        _safe_mark("output_tokens", count)
-        _safe_mark("tokens_per_second", count / elapsed_s)
+        # Throughput is measured over the post-TTFT window — a slow first
+        # token shouldn't drag tokens/sec down.
+        post_ttft_s = max(1e-9, (end_ns - first_ns) / 1e9)
+        _safe_mark("output_tokens", count, normalized=True)
+        _safe_mark("tokens_per_second", count / post_ttft_s)
+    except Exception:
+        pass
+
+
+def _point_mark(name: str, value: float | int, **attrs: Any) -> None:
+    try:
+        _mark(name, value, kind="point", **attrs)
     except Exception:
         pass
 
@@ -106,6 +141,7 @@ def wrap_stream(
     start_ns: int,
     state: Any = None,
     on_close: Callable[[], None] | None = None,
+    chunk_timing: bool = False,
 ) -> Any:
     """If ``result`` is a sync or async generator, return a wrapper that
     records TTFT + throughput marks and invokes ``on_close`` exactly once
@@ -118,13 +154,13 @@ def wrap_stream(
     span even though the decorator's ``with`` block has already exited.
     """
     if inspect.isasyncgen(result):
-        return _wrap_async(result, start_ns, state, on_close)
+        return _wrap_async(result, start_ns, state, on_close, chunk_timing)
     if inspect.isgenerator(result) or (
         hasattr(result, "__iter__")
         and hasattr(result, "__next__")
         and not isinstance(result, (str, bytes, dict, list, tuple))
     ):
-        return _wrap_sync(result, start_ns, state, on_close)
+        return _wrap_sync(result, start_ns, state, on_close, chunk_timing)
     return result
 
 
@@ -154,15 +190,18 @@ def _wrap_sync(
     start_ns: int,
     state: Any,
     on_close: Callable[[], None] | None,
+    chunk_timing: bool,
 ) -> Iterator[Any]:
     def _runner() -> Iterator[Any]:
         first_ns: int | None = None
+        last_ns: int | None = None
         count = 0
         explicit_tokens: int | None = None
         try:
             for item in gen:
+                now_ns = time.time_ns()
                 if first_ns is None:
-                    first_ns = time.time_ns()
+                    first_ns = now_ns
                     token = _bind_state(state)
                     try:
                         _safe_mark(
@@ -171,6 +210,15 @@ def _wrap_sync(
                         )
                     finally:
                         _unbind_state(token)
+                elif chunk_timing and last_ns is not None:
+                    token = _bind_state(state)
+                    try:
+                        _point_mark(
+                            "chunk_ms", (now_ns - last_ns) / 1e6, index=count
+                        )
+                    finally:
+                        _unbind_state(token)
+                last_ns = now_ns
                 count += 1
                 tok = _item_token_count(item)
                 if tok is not None:
@@ -197,15 +245,18 @@ def _wrap_async(
     start_ns: int,
     state: Any,
     on_close: Callable[[], None] | None,
+    chunk_timing: bool,
 ) -> AsyncIterator[Any]:
     async def _runner() -> AsyncIterator[Any]:
         first_ns: int | None = None
+        last_ns: int | None = None
         count = 0
         explicit_tokens: int | None = None
         try:
             async for item in gen:
+                now_ns = time.time_ns()
                 if first_ns is None:
-                    first_ns = time.time_ns()
+                    first_ns = now_ns
                     token = _bind_state(state)
                     try:
                         _safe_mark(
@@ -214,6 +265,15 @@ def _wrap_async(
                         )
                     finally:
                         _unbind_state(token)
+                elif chunk_timing and last_ns is not None:
+                    token = _bind_state(state)
+                    try:
+                        _point_mark(
+                            "chunk_ms", (now_ns - last_ns) / 1e6, index=count
+                        )
+                    finally:
+                        _unbind_state(token)
+                last_ns = now_ns
                 count += 1
                 tok = _item_token_count(item)
                 if tok is not None:
@@ -322,7 +382,9 @@ def install_hf_generate_patch() -> bool:
                 if scope is not None and scope.name == "request":
                     input_len = _input_length(args, kwargs)
                     if input_len is not None:
-                        _safe_mark("input_tokens", input_len, source="hf")
+                        _safe_mark(
+                            "input_tokens", input_len, source="hf", normalized=True
+                        )
             except Exception:
                 pass
             result = original(self, *args, **kwargs)
@@ -335,7 +397,19 @@ def install_hf_generate_patch() -> bool:
                             if input_len is not None and out_len >= input_len
                             else out_len
                         )
-                        _safe_mark("output_tokens", int(generated), source="hf")
+                        _safe_mark(
+                            "output_tokens",
+                            int(generated),
+                            source="hf",
+                            normalized=True,
+                        )
+                        if input_len is not None:
+                            _safe_mark(
+                                "total_tokens",
+                                int(input_len + generated),
+                                source="hf",
+                                normalized=True,
+                            )
             except Exception:
                 pass
             return result
