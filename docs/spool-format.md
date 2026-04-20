@@ -12,7 +12,8 @@ stay stable within a major SDK version.
     <created_ns>-<batch_id>.json      # one batch per file
   snapshots/
     <span_id>/
-      <tensor>.safetensors            # (SDK-25; not written yet)
+      weights.safetensors             # one multi-tensor file per epoch (SDK-25)
+      gradients.safetensors           # emitted only when gradients are captured
 ```
 
 - `<created_ns>`: wall-clock time the batch was sealed, nanoseconds since
@@ -121,9 +122,29 @@ Per-tensor statistics captured at epoch boundaries by framework hooks
 `mode` distinguishes three capture strategies:
 - `"stats"` — inline statistics only (mean, std, min, max, norm, 16-bucket
   histogram). `blob_uri` is `null`. This is the default mode.
-- `"sampled"` and `"full"` — reserved for SDK-25. Same `stats` shape, plus
-  the raw tensor values serialized to `./.cirron/snapshots/<span_id>/
-  <tensor>.safetensors` with `blob_uri` set to the local path.
+- `"sampled"` — same `stats` shape; additionally, on a
+  `random() < sample_rate` roll at the epoch boundary, raw tensor values
+  are serialized and `blob_uri` is set. Records that lose the roll stay
+  `mode="stats"` with a null `blob_uri`.
+- `"full"` — same as sampled with the roll short-circuited; every epoch
+  writes a blob. Debug-only; not recommended for 100M+ parameter models.
+
+Sampled and full write **one safetensors file per (span, kind)** — all
+weight tensors into `./.cirron/snapshots/<span_id>/weights.safetensors`
+and all gradient tensors into `./.cirron/snapshots/<span_id>/gradients.safetensors`.
+Every record for that span shares the same `blob_uri` (a `file://` URL for
+disconnected runs, a platform blob URL when a transport is connected);
+the record's existing `tensor_name` identifies the key inside the
+safetensors container. Consumers load the safetensors file once and index
+by `tensor_name` to get the matching tensor. Tensor names are passed
+through unchanged for safetensors-safe characters (`A-Za-z0-9._-/`);
+anything else is replaced with `_` when writing the container key but
+the original `tensor_name` is preserved in the record.
+
+If a sampled/full epoch's total tensor payload exceeds **100 MB**, the
+SDK logs a warning that includes the byte count and parameter count
+(spec §4.2). The capture still proceeds — the warning is a nudge toward
+a lower `sample_rate`, not a hard cap.
 
 Gradient records use the same shape; their `tensor_name` is the parameter
 name plus a `.grad` suffix (e.g. `"layer1.0.conv1.weight.grad"`). They
