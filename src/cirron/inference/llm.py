@@ -213,9 +213,7 @@ def _wrap_sync(
                 elif chunk_timing and last_ns is not None:
                     token = _bind_state(state)
                     try:
-                        _point_mark(
-                            "chunk_ms", (now_ns - last_ns) / 1e6, index=count
-                        )
+                        _point_mark("chunk_ms", (now_ns - last_ns) / 1e6, index=count)
                     finally:
                         _unbind_state(token)
                 last_ns = now_ns
@@ -268,9 +266,7 @@ def _wrap_async(
                 elif chunk_timing and last_ns is not None:
                     token = _bind_state(state)
                     try:
-                        _point_mark(
-                            "chunk_ms", (now_ns - last_ns) / 1e6, index=count
-                        )
+                        _point_mark("chunk_ms", (now_ns - last_ns) / 1e6, index=count)
                     finally:
                         _unbind_state(token)
                 last_ns = now_ns
@@ -382,9 +378,7 @@ def install_hf_generate_patch() -> bool:
                 if scope is not None and scope.name == "request":
                     input_len = _input_length(args, kwargs)
                     if input_len is not None:
-                        _safe_mark(
-                            "input_tokens", input_len, source="hf", normalized=True
-                        )
+                        _safe_mark("input_tokens", input_len, source="hf", normalized=True)
             except Exception:
                 pass
             result = original(self, *args, **kwargs)
