@@ -162,3 +162,4 @@ CLAUDE.md
 cirron/.DS_Store
 cirron/model/.DS_Store
 temp/
+.cirron

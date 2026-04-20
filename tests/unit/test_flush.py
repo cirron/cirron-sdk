@@ -85,6 +85,21 @@ def test_drain_once_empties_buffers_and_returns_batch(tmp_path):
     assert get_default_mark_buffer().drain() == []
 
 
+def test_drained_mark_records_include_kind(tmp_path):
+    """Serialized marks in the spool batch carry their ``kind`` so the
+    viewer can distinguish point vs summary without guessing from name."""
+    thread = _make_thread(tmp_path)
+    with ci.scope("epoch", index=0):
+        ci.mark("loss_step", 0.5)
+        ci.mark("loss_final", 0.2, kind="summary")
+
+    batch = thread.drain_once()
+    assert batch is not None
+    by_name = {m["name"]: m for m in batch.marks}
+    assert by_name["loss_step"]["kind"] == "point"
+    assert by_name["loss_final"]["kind"] == "summary"
+
+
 def test_empty_drain_is_noop(tmp_path):
     thread = _make_thread(tmp_path)
     assert thread.drain_once() is None
