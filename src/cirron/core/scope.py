@@ -222,18 +222,37 @@ class ScopeStack:
         """
         out: list[Scope] = []
         with self._states_lock:
-            states = list(self._states.values())
+            items = list(self._states.items())
         # Note: dead threads' states are kept so their trailing closed scopes
         # remain drainable. Memory cost is ~200 bytes per thread that ever
         # existed — fine for typical SDK workloads (main + a handful of
         # workers). See ``_states`` in __init__ for the trade rationale.
-        for s in states:
+        #
+        # Per-request states (``"req-*"`` keys, registered by
+        # ``isolated_state``) are unbounded in count — one per inference
+        # request — so we *do* prune them after draining once their stack
+        # and closed deque are both empty. Without this, a long-running
+        # serving deployment would grow ``_states`` without limit and slow
+        # every subsequent drain.
+        prunable: list[Any] = []
+        for key, s in items:
             buf = s.closed
             while True:
                 try:
                     out.append(buf.popleft())
                 except IndexError:
                     break
+            if isinstance(key, str) and key.startswith("req-") and not s.stack and not s.closed:
+                prunable.append(key)
+        if prunable:
+            with self._states_lock:
+                for key in prunable:
+                    # Re-check under the lock: if the request's context has
+                    # since been re-entered or a producer raced an append,
+                    # the state may no longer be empty. Skip in that case.
+                    cur = self._states.get(key)
+                    if cur is not None and not cur.stack and not cur.closed:
+                        del self._states[key]
         return out
 
     def drop_count(self) -> int:
