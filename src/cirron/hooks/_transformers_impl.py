@@ -109,7 +109,7 @@ def _make_callback_class(scope_stack: ScopeStack) -> type:
         except Exception:
             log.warning("cirron.hooks.transformers: scope close failed", exc_info=True)
 
-    def _record_logs(logs: Any) -> None:
+    def _record_logs(logs: Any, kind: str = "point") -> None:
         if not logs:
             return
         try:
@@ -122,7 +122,7 @@ def _make_callback_class(scope_stack: ScopeStack) -> type:
             except (TypeError, ValueError):
                 continue
             try:
-                _mark(str(name), fv)
+                _mark(str(name), fv, kind=kind)
             except Exception:
                 continue
 
@@ -167,6 +167,13 @@ def _make_callback_class(scope_stack: ScopeStack) -> type:
 
         def on_epoch_end(self, args: Any, state: Any, control: Any, **kwargs: Any) -> None:
             def _do() -> None:
+                # End-of-epoch logs are the canonical per-epoch values
+                # (loss at epoch close, etc.) — flag them as summary so
+                # the viewer can render them as a single per-span value
+                # rather than a point in the step-level time series.
+                metrics = kwargs.get("metrics")
+                if metrics:
+                    _record_logs(metrics, kind="summary")
                 _close(self._epoch_scope)
                 self._epoch_scope = None
 
@@ -230,19 +237,27 @@ def install(
     claimed_epoch = "epoch" not in context.owned_scopes
     if claimed_epoch:
         context.owned_scopes["epoch"] = "transformers"
+    # Transformers also owns ``step`` via ``on_step_begin``/``on_step_end``
+    # — torch should not open a second step span under the HF one.
+    claimed_step = "step" not in context.owned_scopes
+    if claimed_step:
+        context.owned_scopes["step"] = "transformers"
 
     callback_cls = _make_callback_class(scope_stack)
 
     handle = TransformersHookHandle()
+
+    def _release(name: str) -> Any:
+        def _undo() -> None:
+            if context.owned_scopes.get(name) == "transformers":
+                context.owned_scopes.pop(name, None)
+
+        return _undo
+
     if claimed_epoch:
-        handle.add_undo(
-            "release_epoch_claim",
-            lambda: (
-                context.owned_scopes.pop("epoch", None)
-                if context.owned_scopes.get("epoch") == "transformers"
-                else None
-            ),
-        )
+        handle.add_undo("release_epoch_claim", _release("epoch"))
+    if claimed_step:
+        handle.add_undo("release_step_claim", _release("step"))
 
     # Idempotency guard: if a previous install left a tagged wrapper in
     # place (e.g. a leaked install in a test), don't double-patch.
