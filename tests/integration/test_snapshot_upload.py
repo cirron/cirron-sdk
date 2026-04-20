@@ -33,7 +33,7 @@ class _BlobServer(ThreadingHTTPServer):
 class _BlobHandler(BaseHTTPRequestHandler):
     server: _BlobServer
 
-    def do_PUT(self) -> None:  # noqa: N802 (stdlib naming)
+    def _record_and_respond(self, status: int, location: str | None) -> None:
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length) if length else b""
         self.server.received.append(
@@ -43,10 +43,17 @@ class _BlobHandler(BaseHTTPRequestHandler):
                 "headers": {k: v for k, v in self.headers.items()},
             }
         )
-        self.send_response(201)
-        self.send_header("Location", f"https://blobs.test{self.path}")
+        self.send_response(status)
+        if location:
+            self.send_header("Location", location)
         self.send_header("Content-Length", "0")
         self.end_headers()
+
+    def do_PUT(self) -> None:  # noqa: N802 (stdlib naming)
+        self._record_and_respond(201, f"https://blobs.test{self.path}")
+
+    def do_POST(self) -> None:  # noqa: N802 (stdlib naming)
+        self._record_and_respond(202, None)
 
     def log_message(self, format: str, *args: Any) -> None:
         return None
@@ -164,10 +171,24 @@ def test_blob_uploads_to_mock_object_storage(server, tmp_path):
     assert put["path"] == "/api/traces/blob/snapshots/span-int-1/weights.safetensors"
     # Bytes actually made it over the wire
     assert len(put["body"]) > 0
-    # Local safetensors file still on disk (blob_uri on the record points here)
+    # Local safetensors file still on disk
     local = tmp_path / "snapshots" / "span-int-1" / "weights.safetensors"
     assert local.exists()
     assert put["body"] == local.read_bytes()
+
+    # The JSON batch sent after the blob upload should carry the remote
+    # URI (the Location header from our mock server), not the local URI.
+    batch_posts = [r for r in srv.received if r["path"] == "/api/traces"]
+    assert len(batch_posts) == 1
+    import gzip as _gzip
+    import json as _json
+
+    raw = batch_posts[0]["body"]
+    if batch_posts[0]["headers"].get("Content-Encoding") == "gzip":
+        raw = _gzip.decompress(raw)
+    batch_body = _json.loads(raw.decode("utf-8"))
+    snaps = batch_body["snapshots"]
+    assert all(s["blob_uri"].startswith("https://blobs.test/") for s in snaps), snaps
 
 
 def test_blob_queue_drains_without_transport(tmp_path):
@@ -182,6 +203,7 @@ def test_blob_queue_drains_without_transport(tmp_path):
     q.enqueue(
         PendingBlob(
             local_path=blob_path,
+            local_uri=blob_path.as_uri(),
             remote_key="snapshots/span/weights.safetensors",
             span_id="span",
             kind="weights",
