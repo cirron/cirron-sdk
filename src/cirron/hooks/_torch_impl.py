@@ -418,9 +418,7 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
         if not callable(named):
             return
         try:
-            grad_refs_state["refs"] = [
-                (str(n), p.grad) for n, p in named() if p.grad is not None
-            ]
+            grad_refs_state["refs"] = [(str(n), p.grad) for n, p in named() if p.grad is not None]
         except Exception:
             log.warning("cirron.hooks.torch: grad ref stash failed", exc_info=True)
 

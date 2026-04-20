@@ -193,9 +193,7 @@ def test_blob_queue_drains_without_transport(tmp_path):
     marks = MarkBuffer()
     writer = SpoolWriter(tmp_path / "spool")
     snap_buf = SnapshotBuffer()
-    ft = FlushThread(
-        stack, marks, writer, transport=None, snapshot_buffer=snap_buf, blob_queue=q
-    )
+    ft = FlushThread(stack, marks, writer, transport=None, snapshot_buffer=snap_buf, blob_queue=q)
 
     # No transport → _drain_blobs is skipped; queue retains entries
     ft._tick()  # type: ignore[attr-defined]

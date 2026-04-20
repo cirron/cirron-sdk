@@ -275,7 +275,9 @@ class IngestClient:
             if last_attempt:
                 return BlobUploadResult(ok=False, retryable=True, status=status)
             wait = _parse_retry_after(resp.headers.get("Retry-After"))
-            self._sleep(min(wait, MAX_RETRY_AFTER_SEC) if wait is not None else self._backoff(attempt))
+            self._sleep(
+                min(wait, MAX_RETRY_AFTER_SEC) if wait is not None else self._backoff(attempt)
+            )
             return None
         if 500 <= status < 600:
             if last_attempt:

@@ -250,9 +250,7 @@ def test_tensor_names_preserved_through_capture(require_safetensors, tmp_path):
 
 def test_gradient_blob_written_when_grad_refs_provided(require_safetensors, tmp_path):
     grad = _FakeTensor(np.array([0.1, 0.2], dtype=np.float32))
-    model = _FakeModel(
-        [("layer.weight", _FakeTensor(np.ones((2,), dtype=np.float32), grad=grad))]
-    )
+    model = _FakeModel([("layer.weight", _FakeTensor(np.ones((2,), dtype=np.float32), grad=grad))])
     cirron = _fake_cirron(snapshots="full", output_dir=str(tmp_path))
 
     records = capture(
