@@ -345,6 +345,10 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
             scope_obj, start_ev = entries.pop()
         _maybe_end_cuda(scope_obj, start_ev)
         _close(scope_obj)
+        # Capture grad references while ``.grad`` is still populated —
+        # the user's ``zero_grad`` runs after ``optimizer.step`` returns
+        # and would otherwise strip the grads before the epoch boundary.
+        _catch("snapshot_grad_stash", _stash_grad_refs)
         # Close the implicit step scope (opened on the prior
         # ``DataLoader.__next__``). Gradient-accumulation loops call
         # forward/backward multiple times per optimizer step; the step
@@ -390,20 +394,48 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
 
     # --- DataLoader ---------------------------------------------------------
 
+    # Grad tensors stashed at each ``opt_post`` so ``capture`` can read
+    # them at the epoch boundary even after the user's
+    # ``opt.zero_grad(set_to_none=True)`` has nulled ``Parameter.grad``.
+    # Cleared on epoch rotation; replaced wholesale on every step so the
+    # snapshot reflects the final step's grads.
+    grad_refs_state: dict[str, list[tuple[str, Any]]] = {"refs": []}
+
+    def _stash_grad_refs() -> None:
+        from cirron.core.profiler import get_watched_model
+
+        if cirron.snapshots not in ("stats", "sampled", "full"):
+            return
+        model = get_watched_model()
+        if model is None:
+            return
+        named = getattr(model, "named_parameters", None)
+        if not callable(named):
+            return
+        try:
+            grad_refs_state["refs"] = [
+                (str(n), p.grad) for n, p in named() if p.grad is not None
+            ]
+        except Exception:
+            log.warning("cirron.hooks.torch: grad ref stash failed", exc_info=True)
+
     def _capture_epoch_snapshots(span_id: str) -> None:
         """Snapshot weights + grads for the currently watched model.
 
-        Imports are local so a core-only cirron install (no snapshots
-        module load at startup) pays nothing until a snapshot actually
-        fires. ``get_watched_model()`` returns ``None`` when the user
-        hasn't called ``ci.watch()`` yet — capture() then no-ops.
+        Weights are read live off the model. Grads are read from the
+        refs stashed by ``_stash_grad_refs`` at the last ``opt_post``
+        — the user's ``zero_grad`` runs between that hook and the next
+        epoch rotation, so ``Parameter.grad`` itself is already ``None``
+        by now.
         """
         from cirron.core.profiler import get_watched_model
         from cirron.core.snapshot_buffer import get_default_snapshot_buffer
-        from cirron.snapshots.stats import capture
+        from cirron.snapshots.stats import capture, capture_grad_stats_from_refs
 
         model = get_watched_model()
-        records = capture(cirron, model, span_id)
+        records = capture(cirron, model, span_id, include_grads=False)
+        records.extend(capture_grad_stats_from_refs(grad_refs_state["refs"], span_id))
+        grad_refs_state["refs"] = []
         if records:
             get_default_snapshot_buffer().extend(records)
 
