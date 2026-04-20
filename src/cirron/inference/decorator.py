@@ -1,4 +1,4 @@
-"""``@ci.inference`` — serving instrumentation decorator (SDK-26).
+"""``@ci.inference`` — serving instrumentation decorator (SDK-26, SDK-27).
 
 Per spec §4.6, wraps a serving function with profiling: opens a ``request``
 scope tagged with an auto-generated ``request_id``, invokes the function,
@@ -12,6 +12,12 @@ trees. We get per-request isolation from
 copies ContextVars per task, so each request sees its own stack while
 ``ci.scope()`` / ``ci.mark()`` used inside the function still attach to the
 request scope.
+
+SDK-27: after ``func`` returns, the result is piped through LLM detectors
+(:mod:`cirron.inference.llm`) — OpenAI-style ``usage`` marks, HuggingFace
+``generate`` patching, and streaming TTFT / throughput. When the result is
+a generator, scope ownership is transferred to the stream wrapper so marks
+emitted during iteration still attach to the request span.
 """
 
 from __future__ import annotations
@@ -23,12 +29,53 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
-from cirron.core.scope import get_default_stack
+from cirron.core.scope import ScopeStack, get_default_stack
 from cirron.inference.llm import (
     install_hf_generate_patch,
     maybe_mark_openai_usage,
     wrap_stream,
 )
+
+
+def _make_stream_closer(stack: ScopeStack, opened: Any, cm: Any) -> Callable[[], None]:
+    called = False
+
+    def _close() -> None:
+        nonlocal called
+        if called:
+            return
+        called = True
+        if opened is not None:
+            try:
+                stack.close_and_remove(opened)
+            except Exception:
+                pass
+        try:
+            cm.__exit__(None, None, None)
+        except Exception:
+            pass
+
+    return _close
+
+
+def _finish_call(
+    stack: ScopeStack,
+    state: Any,
+    opened: Any,
+    cm: Any,
+    start_ns: int,
+    result: Any,
+) -> tuple[Any, bool]:
+    """Run post-call detectors and decide whether the caller should still
+    pop the scope / exit ``cm``. Returns ``(final_result, transferred)``
+    where ``transferred`` means the stream wrapper now owns cleanup."""
+    try:
+        maybe_mark_openai_usage(result)
+    except Exception:
+        pass
+    close = _make_stream_closer(stack, opened, cm)
+    wrapped = wrap_stream(result, start_ns, state=state, on_close=close)
+    return wrapped, wrapped is not result
 
 
 def inference(
@@ -44,10 +91,9 @@ def inference(
     """
     cfg: dict[str, Any] = dict(config) if config else {}
 
-    # SDK-27: best-effort patch of ``transformers.GenerationMixin.generate``
-    # so token counts land even if the user's predict() calls generate()
-    # without any additional instrumentation. Silent if transformers is
-    # not installed.
+    # SDK-27: best-effort patch so token counts land even if the user's
+    # predict() calls ``generate()`` without any additional
+    # instrumentation. Silent if transformers is not installed.
     try:
         install_hf_generate_patch()
     except Exception:
@@ -61,28 +107,20 @@ def inference(
             @functools.wraps(func)
             async def awrapper(*args: Any, **kwargs: Any) -> Any:
                 rid = uuid.uuid4().hex
-                with stack.isolated_state(rid):
-                    opened = stack.push("request", request_id=rid)
-                    start_ns = time.time_ns()
-                    popped = False
-
-                    def _close() -> None:
+                cm = stack.isolated_state(rid)
+                state = cm.__enter__()
+                opened = stack.push("request", request_id=rid)
+                start_ns = time.time_ns()
+                transferred = False
+                try:
+                    result = await func(*args, **kwargs)
+                    final, transferred = _finish_call(stack, state, opened, cm, start_ns, result)
+                    return final
+                finally:
+                    if not transferred:
                         if opened is not None:
                             stack.pop()
-
-                    try:
-                        result = await func(*args, **kwargs)
-                        try:
-                            maybe_mark_openai_usage(result)
-                        except Exception:
-                            pass
-                        wrapped = wrap_stream(result, start_ns, on_close=_close)
-                        if wrapped is not result:
-                            popped = True
-                        return wrapped
-                    finally:
-                        if opened is not None and not popped:
-                            stack.pop()
+                        cm.__exit__(None, None, None)
 
             awrapper._cirron_config = cfg  # type: ignore[attr-defined]
             return awrapper
@@ -90,28 +128,20 @@ def inference(
         @functools.wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             rid = uuid.uuid4().hex
-            with stack.isolated_state(rid):
-                opened = stack.push("request", request_id=rid)
-                start_ns = time.time_ns()
-                popped = False
-
-                def _close() -> None:
+            cm = stack.isolated_state(rid)
+            state = cm.__enter__()
+            opened = stack.push("request", request_id=rid)
+            start_ns = time.time_ns()
+            transferred = False
+            try:
+                result = func(*args, **kwargs)
+                final, transferred = _finish_call(stack, state, opened, cm, start_ns, result)
+                return final
+            finally:
+                if not transferred:
                     if opened is not None:
                         stack.pop()
-
-                try:
-                    result = func(*args, **kwargs)
-                    try:
-                        maybe_mark_openai_usage(result)
-                    except Exception:
-                        pass
-                    wrapped = wrap_stream(result, start_ns, on_close=_close)
-                    if wrapped is not result:
-                        popped = True
-                    return wrapped
-                finally:
-                    if opened is not None and not popped:
-                        stack.pop()
+                    cm.__exit__(None, None, None)
 
         wrapper._cirron_config = cfg  # type: ignore[attr-defined]
         return wrapper
