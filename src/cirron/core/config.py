@@ -428,6 +428,14 @@ class Cirron:
                 resolved[key] = value
 
         self._profile_config = ProfilingConfig.model_validate(resolved).model_dump()
+        # Surface the resolved values on the instance so downstream code
+        # (framework hooks, snapshot capture) reads the effective profile
+        # config rather than the constructor-time defaults. Without this,
+        # ``ci.profile(snapshots="full")`` would never take effect because
+        # capture() reads ``cirron.snapshots`` directly.
+        self.snapshots = self._profile_config["snapshots"]
+        self.sample_rate = self._profile_config["sample_rate"]
+        self.flush_interval = self._profile_config["flush_interval"]
         return self
 
     # -- delegators to module-level primitives ------------------------------

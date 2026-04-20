@@ -377,7 +377,13 @@ def capture(
         )
 
     if mode != "stats":
-        _maybe_serialize_blobs(cirron, model, span_id, mode, out, grad_refs, include_grads)
+        try:
+            _maybe_serialize_blobs(cirron, model, span_id, mode, out, grad_refs, include_grads)
+        except Exception:
+            log.warning(
+                "cirron.snapshots: blob serialization raised; stats records preserved",
+                exc_info=True,
+            )
 
     return out
 

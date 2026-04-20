@@ -100,7 +100,13 @@ def serialize_and_enqueue(
             "cirron.snapshots.sampled: enqueue failed for %s/%s", span_id, kind, exc_info=True
         )
 
-    blob_uri = path.as_uri()
+    try:
+        blob_uri = path.resolve().as_uri()
+    except Exception:
+        log.warning(
+            "cirron.snapshots.sampled: could not build file URI for %s", path, exc_info=True
+        )
+        return
     tensor_names = {name for name, _ in named_tensors}
     # Weight records identify themselves by the bare parameter name; grad
     # records carry a ``.grad`` suffix. Match either shape so the
