@@ -122,7 +122,9 @@ def inference(
                 transferred = False
                 try:
                     result = await func(*args, **kwargs)
-                    final, transferred = _finish_call(stack, state, opened, cm, start_ns, result, cfg)
+                    final, transferred = _finish_call(
+                        stack, state, opened, cm, start_ns, result, cfg
+                    )
                     return final
                 finally:
                     if not transferred:
