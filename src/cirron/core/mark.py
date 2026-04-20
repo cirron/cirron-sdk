@@ -25,11 +25,43 @@ DEFAULT_CAPACITY = 65536
 MAX_STRING_BYTES = 256
 ROOT_SPAN_ID = "root"
 
+# Fallback span id for marks fired with no open scope on the caller's
+# thread. ``ci.profile()`` sets this to the session root scope's id at
+# startup and clears it on shutdown, so end-of-epoch logs and worker-
+# thread marks land on ``cirron.session`` instead of the legacy
+# ``"root"`` sentinel. Pre-``ci.profile()`` marks (module-import-time,
+# tests that don't open a session) still fall through to
+# ``ROOT_SPAN_ID``.
+_fallback_span_id: str | None = None
+
+
+def set_fallback_span_id(span_id: str | None) -> None:
+    """Set (or clear with ``None``) the span id that ``mark()`` uses when
+    no scope is open on the current thread. Called by ``ci.profile()``
+    with the session root scope's id at startup, and with ``None`` at
+    shutdown."""
+    global _fallback_span_id
+    _fallback_span_id = span_id
+
+
+def get_fallback_span_id() -> str | None:
+    """Accessor for the current fallback span id. Exists for tests."""
+    return _fallback_span_id
+
+
+MARK_KIND_POINT = "point"
+MARK_KIND_SUMMARY = "summary"
+
 
 @dataclass(slots=True)
 class Mark:
     """A single scalar value attached to a span. Shape mirrors the
     platform ``TraceMark`` model (spec §5.4).
+
+    ``kind`` distinguishes a time-series point from a canonical summary
+    value for the span: per-step losses use ``"point"``; end-of-epoch
+    values use ``"summary"``. Consumers can render one as a line plot
+    and the other as a single value on the span.
     """
 
     id: str
@@ -39,6 +71,7 @@ class Mark:
     value: float | int | str | bool
     attrs: dict[str, Any] = field(default_factory=dict)
     ts_ns: int = 0
+    kind: str = MARK_KIND_POINT
 
 
 class _MarkState:
@@ -180,14 +213,31 @@ def get_default_mark_buffer() -> MarkBuffer:
     return _default_buffer
 
 
-def mark(name: str, value: float | int | str | bool, **attrs: Any) -> None:
+def mark(
+    name: str,
+    value: float | int | str | bool,
+    *,
+    kind: str = MARK_KIND_POINT,
+    **attrs: Any,
+) -> None:
     """Attach a scalar value to the innermost open scope on the current
     thread (spec §4.5).
 
-    If no scope is open, the mark attaches to the sentinel ``"root"``
-    span — that sentinel will become the real root span once SDK-13
-    wires ``ci.profile()`` to open one on entry.
+    ``kind`` is ``"point"`` (a time-series data point logged inside the
+    span, the default) or ``"summary"`` (a canonical end-of-span value,
+    e.g. final-loss-for-epoch). Callers that don't distinguish the two
+    can leave it at the default. Any other string is rejected so bad
+    values surface at write time instead of confusing the viewer.
+
+    If no scope is open on the current thread, the mark attaches to the
+    session root id set by ``ci.profile()``. With no active profiler
+    (tests, pre-profile imports) it falls back to the legacy ``"root"``
+    sentinel.
     """
+    if kind not in (MARK_KIND_POINT, MARK_KIND_SUMMARY):
+        raise ValueError(
+            f"ci.mark() kind must be {MARK_KIND_POINT!r} or {MARK_KIND_SUMMARY!r}; got {kind!r}"
+        )
     # ``type() is X`` is faster than ``isinstance`` for exact-type dispatch
     # — on the float/int hot path this matters for the 3μs/call budget.
     # Strings are rare and take the ``isinstance`` path so mypy can narrow
@@ -223,7 +273,14 @@ def mark(name: str, value: float | int | str | bool, **attrs: Any) -> None:
         )
 
     scope = get_current_scope()
-    span_id = scope.id if scope is not None else ROOT_SPAN_ID
+    if scope is not None:
+        span_id = scope.id
+    else:
+        # No scope on this thread's stack. Prefer the session root id
+        # (set by ``ci.profile()``) so end-of-epoch logs and worker-
+        # thread marks attach to the session span; fall back to the
+        # legacy ``"root"`` sentinel only when no session is open.
+        span_id = _fallback_span_id or ROOT_SPAN_ID
     mark_id = _urandom(16).hex()
     _append_default(
         Mark(
@@ -234,6 +291,7 @@ def mark(name: str, value: float | int | str | bool, **attrs: Any) -> None:
             value=value,
             attrs=attrs,
             ts_ns=_time_ns(),
+            kind=kind,
         )
     )
     if scope is not None:
