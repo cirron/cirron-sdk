@@ -267,3 +267,54 @@ def test_tick_leaves_unrelated_snapshots_untouched(tmp_path):
     by_name = {s["tensor_name"]: s for s in snaps}
     assert by_name["w1"]["blob_uri"] == "https://blobs.test/x"
     assert by_name["w2"]["blob_uri"] == other_uri  # untouched
+
+
+def test_spool_only_mode_drains_blob_queue(tmp_path):
+    """In spool-only mode (transport=None) the flush worker must discard
+    pending blobs instead of letting the queue grow unbounded. Snapshot
+    records retain their local ``file://`` URIs for on-disk replay."""
+    local = tmp_path / "weights.safetensors"
+    local.write_bytes(b"x")
+    local_uri = local.as_uri()
+
+    snap_buf = SnapshotBuffer()
+    snap_buf.append(_snap("span-A", "layer.weight", local_uri))
+
+    q = BlobUploadQueue()
+    for _ in range(3):
+        q.enqueue(
+            PendingBlob(
+                local_path=local,
+                local_uri=local_uri,
+                remote_key="snapshots/span-A/weights.safetensors",
+                span_id="span-A",
+                kind="weights",
+                size_bytes=1,
+            )
+        )
+
+    ft = FlushThread(
+        ScopeStack(),
+        MarkBuffer(),
+        SpoolWriter(tmp_path / "spool"),
+        transport=None,  # spool-only
+        snapshot_buffer=snap_buf,
+        blob_queue=q,
+    )
+
+    ft._tick()  # type: ignore[attr-defined]
+    assert len(q) == 0  # drained
+
+    # Enqueueing more after the first tick still drains on subsequent ticks
+    q.enqueue(
+        PendingBlob(
+            local_path=local,
+            local_uri=local_uri,
+            remote_key="k",
+            span_id="span-A",
+            kind="weights",
+            size_bytes=1,
+        )
+    )
+    ft._tick()  # type: ignore[attr-defined]
+    assert len(q) == 0

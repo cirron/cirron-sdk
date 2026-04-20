@@ -192,9 +192,10 @@ def test_blob_uploads_to_mock_object_storage(server, tmp_path):
 
 
 def test_blob_queue_drains_without_transport(tmp_path):
-    """Without a transport (file-only), the flush thread should skip
-    blob uploads entirely — blobs stay on local disk and the JSON batch
-    still flushes."""
+    """In spool-only mode (transport=None), the flush thread must drain
+    the blob queue so it doesn't grow unbounded. The local blob file
+    stays on disk; the snapshot record still points at it via the
+    ``file://`` URI, so replay still works."""
     blob_queue._reset_default_for_tests()
     q = blob_queue.get_default_blob_queue()
 
@@ -217,9 +218,10 @@ def test_blob_queue_drains_without_transport(tmp_path):
     snap_buf = SnapshotBuffer()
     ft = FlushThread(stack, marks, writer, transport=None, snapshot_buffer=snap_buf, blob_queue=q)
 
-    # No transport → _drain_blobs is skipped; queue retains entries
+    # No transport → pending blobs are discarded (local file retained)
     ft._tick()  # type: ignore[attr-defined]
-    assert len(q) == 1
+    assert len(q) == 0
+    assert blob_path.exists()
 
     # Imported to ensure the module is loaded (protects against stale mypy)
     assert flush.SPOOL_SCHEMA_VERSION >= 1
