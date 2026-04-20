@@ -140,8 +140,17 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
     pending_cuda = _CudaPending() if cuda_available else None
     handle._cuda = pending_cuda
 
-    skip_epoch = "epoch" in context.owned_scopes
-    skip_step = "step" in context.owned_scopes
+    # Checked at runtime (inside ``_dl_iter`` / ``_opt_post``) so torch
+    # only yields when some other hook is *actually* running, not just
+    # because a higher-level framework happens to be installed. A
+    # vanilla torch loop with transformers importable but unused still
+    # gets its own epoch/step spans.
+    def _skip_epoch() -> bool:
+        return "epoch" in context.owned_scopes
+
+    def _skip_step() -> bool:
+        return "step" in context.owned_scopes
+
     epoch_steps = _resolve_epoch_steps(cirron)
     fwd_depth = _ForwardDepth()
 
@@ -340,13 +349,13 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
         # ``DataLoader.__next__``). Gradient-accumulation loops call
         # forward/backward multiple times per optimizer step; the step
         # scope stays open across those and closes exactly here.
-        if not skip_step:
+        if not _skip_step():
             step_scope = step_state["scope"]
             if step_scope is not None:
                 _close(step_scope)
                 step_state["scope"] = None
                 step_state["index"] += 1
-        if skip_epoch:
+        if _skip_epoch():
             # Epoch ownership claimed by another hook (e.g. transformers
             # ``on_epoch_begin``); don't fire the step-count fallback.
             return
@@ -400,7 +409,7 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
         # Close any step span still open from an eval-only pass through
         # the loader (no optimizer.step to close it), so new epochs don't
         # nest inside a stale step.
-        if not skip_step:
+        if not _skip_step():
             lingering = step_state["scope"]
             if lingering is not None:
                 _close(lingering)
@@ -417,7 +426,7 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
     orig_dl_iter = DataLoader.__iter__
 
     def _dl_iter(self: Any) -> Any:
-        if not skip_epoch:
+        if not _skip_epoch():
             _catch("epoch_rotate", _rotate_epoch)
         base_iter = orig_dl_iter(self)
         return _wrap_iter(base_iter)
@@ -442,7 +451,7 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
                 # nest inside step. Closing happens in ``_opt_post``;
                 # eval loops (no optimizer.step) leave it to the epoch
                 # rotation / uninstall fallback.
-                if not skip_step and step_state["scope"] is None:
+                if not _skip_step() and step_state["scope"] is None:
                     step_state["scope"] = _open("step", index=step_state["index"])
                 scope_obj = _open("data_load")
                 if scope_obj is not None:

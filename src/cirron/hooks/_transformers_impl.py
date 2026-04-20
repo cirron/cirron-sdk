@@ -61,11 +61,17 @@ class TransformersHookHandle:
         self._undos = []
 
 
-def _make_callback_class(scope_stack: ScopeStack) -> type:
-    """Build ``CirronTrainerCallback`` bound to the given scope stack.
+def _make_callback_class(scope_stack: ScopeStack, context: HookContext) -> type:
+    """Build ``CirronTrainerCallback`` bound to the given scope stack
+    and shared ``HookContext``.
 
     Defined as a factory so we don't import ``transformers`` at module
-    top — that happens lazily inside :func:`install`.
+    top — that happens lazily inside :func:`install`. The callback
+    claims ``epoch`` / ``step`` ownership in ``context.owned_scopes``
+    at ``on_train_begin`` (not install time), so a co-installed torch
+    hook only yields when HF ``Trainer`` is actually running. Vanilla
+    torch loops in a process where transformers happens to be
+    importable still get torch's own epoch/step spans.
     """
     from transformers import TrainerCallback  # type: ignore[import-not-found]
 
@@ -147,6 +153,11 @@ def _make_callback_class(scope_stack: ScopeStack) -> type:
             super().__init__()
             self._epoch_scope: Scope | None = None
             self._step_scope: Scope | None = None
+            # Per-callback record of which ownership claims we set on
+            # this ``train()`` so ``on_train_end`` releases exactly what
+            # we added. Preserves any claim an earlier install had
+            # already set in the shared context.
+            self._claimed: list[str] = []
 
         def on_train_begin(self, args: Any, state: Any, control: Any, **kwargs: Any) -> None:
             def _do() -> None:
@@ -156,6 +167,15 @@ def _make_callback_class(scope_stack: ScopeStack) -> type:
                 self._step_scope = None
                 _close(self._epoch_scope)
                 self._epoch_scope = None
+                # Claim epoch/step ownership now that we know a Trainer
+                # run is actually starting. A co-installed torch hook
+                # checks ``owned_scopes`` at runtime inside
+                # ``DataLoader.__iter__`` and yields accordingly.
+                self._claimed = []
+                for name in ("epoch", "step"):
+                    if name not in context.owned_scopes:
+                        context.owned_scopes[name] = "transformers"
+                        self._claimed.append(name)
 
             _catch("on_train_begin", _do)
 
@@ -214,6 +234,12 @@ def _make_callback_class(scope_stack: ScopeStack) -> type:
                 self._step_scope = None
                 _close(self._epoch_scope)
                 self._epoch_scope = None
+                # Release exactly what this callback claimed in
+                # ``on_train_begin``; leave anyone else's claims alone.
+                for name in self._claimed:
+                    if context.owned_scopes.get(name) == "transformers":
+                        context.owned_scopes.pop(name, None)
+                self._claimed = []
 
             _catch("on_train_end", _do)
 
@@ -234,30 +260,14 @@ def install(
 
     from transformers import Trainer  # type: ignore[import-not-found]
 
-    claimed_epoch = "epoch" not in context.owned_scopes
-    if claimed_epoch:
-        context.owned_scopes["epoch"] = "transformers"
-    # Transformers also owns ``step`` via ``on_step_begin``/``on_step_end``
-    # — torch should not open a second step span under the HF one.
-    claimed_step = "step" not in context.owned_scopes
-    if claimed_step:
-        context.owned_scopes["step"] = "transformers"
-
-    callback_cls = _make_callback_class(scope_stack)
+    # ``epoch`` / ``step`` ownership is claimed at ``on_train_begin``
+    # (not here) — see ``_make_callback_class``. This keeps vanilla
+    # torch loops, in a process where ``transformers`` just happens to
+    # be importable, from losing their own epoch/step spans because
+    # this installer pre-claimed ownership no one ever honored.
+    callback_cls = _make_callback_class(scope_stack, context)
 
     handle = TransformersHookHandle()
-
-    def _release(name: str) -> Any:
-        def _undo() -> None:
-            if context.owned_scopes.get(name) == "transformers":
-                context.owned_scopes.pop(name, None)
-
-        return _undo
-
-    if claimed_epoch:
-        handle.add_undo("release_epoch_claim", _release("epoch"))
-    if claimed_step:
-        handle.add_undo("release_step_claim", _release("step"))
 
     # Idempotency guard: if a previous install left a tagged wrapper in
     # place (e.g. a leaked install in a test), don't double-patch.
