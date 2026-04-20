@@ -19,9 +19,11 @@ just means the batch will be re-sent by a later flush.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import threading
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from cirron.core.flush import SPOOL_SCHEMA_VERSION
@@ -30,22 +32,38 @@ from cirron.core.ingest import DEFAULT_INGEST_PATH, IngestClient, _sdk_version
 if TYPE_CHECKING:
     from cirron.core.config import Cirron
 
+log = logging.getLogger("cirron.transport")
+
 EVENT_STREAM_MARKER = "__cirron_event__"
 EVENT_TYPE_TRACE_BATCH = "trace_batch"
+EVENT_TYPE_BLOB = "trace_blob"
 
 
 class Transport(Protocol):
     def send(self, batch: dict[str, Any]) -> bool: ...
 
+    def upload_blob(self, local_path: str | Path, remote_key: str) -> str | None: ...
+
     def close(self) -> None: ...
 
 
 class FileOnlyTransport:
-    """No-op transport. The spool is the only destination."""
+    """No-op transport. The spool is the only destination.
+
+    For blob uploads the local path *is* the final destination — return
+    a ``file://`` URI so the spool record still has a resolvable pointer.
+    """
 
     def send(self, batch: dict[str, Any]) -> bool:
         del batch
         return True
+
+    def upload_blob(self, local_path: str | Path, remote_key: str) -> str | None:
+        del remote_key
+        try:
+            return Path(local_path).resolve().as_uri()
+        except Exception:
+            return None
 
     def close(self) -> None:
         return None
@@ -72,6 +90,33 @@ class EventStreamTransport:
             "sdk_version": self._sdk_version,
             "payload": batch,
         }
+        return self._write_envelope(envelope)
+
+    def upload_blob(self, local_path: str | Path, remote_key: str) -> str | None:
+        """Emit a sentinel pointing at the local blob file.
+
+        The kernel wrapper already mounts the user's working directory,
+        so the blob file it references is visible to the forwarder
+        process. Kernel-side consumption of this sentinel (forwarding
+        the bytes to S3) is a platform-side follow-up; the SDK's
+        contract here is just to announce the file so nothing downstream
+        has to scrape the filesystem to find it.
+        """
+        path = Path(local_path)
+        envelope = {
+            EVENT_STREAM_MARKER: EVENT_TYPE_BLOB,
+            "schema_version": SPOOL_SCHEMA_VERSION,
+            "sdk_version": self._sdk_version,
+            "payload": {"remote_key": remote_key, "local_path": str(path)},
+        }
+        if not self._write_envelope(envelope):
+            return None
+        try:
+            return path.resolve().as_uri()
+        except Exception:
+            return None
+
+    def _write_envelope(self, envelope: dict[str, Any]) -> bool:
         line = json.dumps(envelope, separators=(",", ":"))
         try:
             with self._lock:
@@ -96,6 +141,12 @@ class HttpTransport:
     def send(self, batch: dict[str, Any]) -> bool:
         result = self._client.post_batch(batch)
         return result.ok
+
+    def upload_blob(self, local_path: str | Path, remote_key: str) -> str | None:
+        result = self._client.post_blob(Path(local_path), remote_key)
+        if not result.ok:
+            return None
+        return result.remote_uri
 
     def close(self) -> None:
         self._client.close()
