@@ -8,8 +8,10 @@ from cirron.core.blob_queue import BlobUploadQueue, PendingBlob, get_default_blo
 
 
 def _pb(i: int) -> PendingBlob:
+    path = Path(f"/tmp/blob-{i}.safetensors")
     return PendingBlob(
-        local_path=Path(f"/tmp/blob-{i}.safetensors"),
+        local_path=path,
+        local_uri=path.as_uri(),
         remote_key=f"snapshots/span-{i}/weights.safetensors",
         span_id=f"span-{i}",
         kind="weights",

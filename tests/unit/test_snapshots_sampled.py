@@ -177,11 +177,13 @@ def test_safetensors_roundtrip(require_safetensors, tmp_path):
 # -------- size warning -------------------------------------------------------
 
 
-def test_size_warning_fires_for_large_payload(require_safetensors, tmp_path, caplog):
-    # 30M float32 = 120 MB > 100 MB threshold. Use zeros to keep test fast;
-    # np.zeros is lazily allocated and safetensors writes via mmap-backed I/O.
-    big = np.zeros((30_000_000,), dtype=np.float32)
-    model = _FakeModel([("big.weight", _FakeTensor(big))])
+def test_size_warning_fires_for_large_payload(require_safetensors, tmp_path, caplog, monkeypatch):
+    # Drop the threshold to a few bytes so a trivial tensor trips the
+    # warning. Asserting the warning behavior doesn't actually require a
+    # real 100 MB allocation — and skipping it keeps the test fast and
+    # OOM-safe on CI.
+    monkeypatch.setattr("cirron.snapshots.blob.SIZE_WARN_BYTES", 8)
+    model = _FakeModel([("big.weight", _FakeTensor(np.ones((4,), dtype=np.float32)))])
     cirron = _fake_cirron(snapshots="full", output_dir=str(tmp_path))
 
     caplog.set_level(logging.WARNING, logger="cirron.snapshots.blob")
@@ -283,3 +285,30 @@ def test_capture_enqueues_blob(require_safetensors, tmp_path):
     assert pb.kind == "weights"
     assert pb.remote_key == "snapshots/span-enq/weights.safetensors"
     assert pb.local_path.exists()
+    assert pb.local_uri.startswith("file://")
+    assert pb.attempts == 0
+
+
+# -------- key preservation (no sanitization) --------------------------------
+
+
+def test_special_char_names_preserved_in_safetensors_key(require_safetensors, tmp_path):
+    """Names with ``:`` (Keras ``dense/kernel:0``) survive as safetensors
+    keys untouched, so consumers can index by ``tensor_name`` directly."""
+    from safetensors.numpy import load_file
+
+    model = _FakeModel(
+        [
+            ("dense/kernel:0", _FakeTensor(np.ones((2, 3), dtype=np.float32))),
+            ("dense/bias:0", _FakeTensor(np.zeros((3,), dtype=np.float32))),
+        ]
+    )
+    cirron = _fake_cirron(snapshots="full", output_dir=str(tmp_path))
+
+    records = capture(cirron, model, "span-special", include_grads=False)
+    path = tmp_path / "snapshots" / "span-special" / "weights.safetensors"
+    loaded = load_file(str(path))
+
+    # Keys in the safetensors file match the record's tensor_name exactly
+    for rec in records:
+        assert rec.tensor_name in loaded, f"{rec.tensor_name!r} missing from container"

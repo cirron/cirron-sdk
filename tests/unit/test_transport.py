@@ -72,10 +72,14 @@ class _FakeSession:
     def put(
         self,
         url: str,
-        data: bytes,
+        data: Any,
         headers: dict[str, str],
         timeout: float,
     ) -> _Resp:
+        # The SDK passes a file handle for streaming uploads; materialize
+        # into bytes here so assertions can inspect the payload.
+        if hasattr(data, "read"):
+            data = data.read()
         self.put_calls.append(
             {"url": url, "data": data, "headers": dict(headers), "timeout": timeout}
         )
