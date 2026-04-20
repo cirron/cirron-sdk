@@ -20,17 +20,29 @@ from dataclasses import dataclass
 from pathlib import Path
 
 DEFAULT_SOFT_CAP = 10_000
+MAX_BLOB_ATTEMPTS = 3
 
 
 @dataclass(slots=True, frozen=True)
 class PendingBlob:
-    """A local safetensors file waiting to be uploaded to remote storage."""
+    """A local safetensors file waiting to be uploaded to remote storage.
+
+    ``local_uri`` is the ``file://`` URI that was stamped on the matching
+    ``TraceSnapshot.blob_uri`` at capture time. The flush thread uses it
+    as the match key when swapping in the remote URI after a successful
+    upload — records pointing at the same local file belong to the same
+    blob. ``attempts`` is the number of upload attempts already tried;
+    failures re-enqueue up to ``MAX_BLOB_ATTEMPTS`` before giving up so
+    transient network errors don't permanently strand a blob.
+    """
 
     local_path: Path
+    local_uri: str
     remote_key: str
     span_id: str
     kind: str  # "weights" | "gradients"
     size_bytes: int
+    attempts: int = 0
 
 
 class BlobUploadQueue:

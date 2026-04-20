@@ -223,26 +223,30 @@ class IngestClient:
         ``Location`` header; for now we treat a 2xx with a non-empty
         body as success and use the response text as ``remote_uri``.
 
+        The file is streamed via a fresh open handle on each attempt —
+        ``requests`` uses chunked transfer when ``data`` is a file-like,
+        so a 1 GB blob doesn't balloon the flush thread's resident set.
         Retries network errors and 5xx / 429 with exponential backoff
         like ``post_batch``. 4xx (other than 429) is non-retryable —
         usually a quota or permissions issue the flush thread can't
         resolve by itself.
         """
         try:
-            data = local_path.read_bytes()
+            size = local_path.stat().st_size
         except OSError as e:
-            log.warning("cirron ingest: could not read blob %s: %s", local_path, e)
+            log.warning("cirron ingest: could not stat blob %s: %s", local_path, e)
             return BlobUploadResult(ok=False, retryable=False)
 
         url = f"{self._blob_base_url.rstrip('/')}/{remote_key.lstrip('/')}"
         headers = {
             AUTH_HEADER: self._api_key,
             "Content-Type": "application/octet-stream",
+            "Content-Length": str(size),
             SDK_VERSION_HEADER: self._sdk_version,
             BLOB_KEY_HEADER: remote_key,
         }
         for attempt in range(self._max_retries + 1):
-            result = self._blob_attempt(url, data, headers, attempt)
+            result = self._blob_attempt(url, local_path, headers, attempt)
             if result is not None:
                 return result
         return BlobUploadResult(ok=False, retryable=True)
@@ -250,13 +254,14 @@ class IngestClient:
     def _blob_attempt(
         self,
         url: str,
-        data: bytes,
+        local_path: Path,
         headers: dict[str, str],
         attempt: int,
     ) -> BlobUploadResult | None:
         last_attempt = attempt >= self._max_retries
         try:
-            resp = self._session.put(url, data=data, headers=headers, timeout=self._timeout)
+            with local_path.open("rb") as fh:
+                resp = self._session.put(url, data=fh, headers=headers, timeout=self._timeout)
         except (requests.RequestException, OSError) as e:
             log.debug("cirron ingest blob network error: %s", e)
             if last_attempt:
