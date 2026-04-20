@@ -1,19 +1,28 @@
-"""``@ci.inference`` — serving instrumentation decorator.
+"""``@ci.inference`` — serving instrumentation decorator (SDK-26).
 
 Per spec §4.6, wraps a serving function with profiling: opens a ``request``
-scope, invokes the function, closes the scope. Accepts an optional ``config``
-dict for user-controlled capture toggles. SDK-26 implements the real runtime;
-today the decorator is a passthrough that warns once.
+scope tagged with an auto-generated ``request_id``, invokes the function,
+closes the scope. Sync and ``async def`` functions are both supported.
+
+Concurrent requests must not share a scope stack, otherwise a FastAPI/ASGI
+server running many coroutines on one event-loop thread would tangle their
+trees. We get per-request isolation from
+:meth:`cirron.core.scope.ScopeStack.isolated_state`, which installs a fresh
+``_ScopeState`` into a ``ContextVar`` for the duration of the call — asyncio
+copies ContextVars per task, so each request sees its own stack while
+``ci.scope()`` / ``ci.mark()`` used inside the function still attach to the
+request scope.
 """
 
 from __future__ import annotations
 
 import functools
-import warnings
+import inspect
+import uuid
 from collections.abc import Callable
 from typing import Any
 
-_warned = False
+from cirron.core.scope import get_default_stack
 
 
 def inference(
@@ -21,19 +30,45 @@ def inference(
     *,
     config: dict[str, Any] | None = None,
 ) -> Callable[..., Any]:
+    """Decorator form: ``@ci.inference`` or ``@ci.inference(config={...})``.
+
+    ``config`` (if given) is attached to the wrapped function as
+    ``_cirron_config`` so user code can read feature toggles via
+    ``wrapped._cirron_config.get(...)`` without re-plumbing the dict.
+    """
+    cfg: dict[str, Any] = dict(config) if config else {}
+
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+        stack = get_default_stack()
+
+        if inspect.iscoroutinefunction(func):
+
+            @functools.wraps(func)
+            async def awrapper(*args: Any, **kwargs: Any) -> Any:
+                rid = uuid.uuid4().hex
+                with stack.isolated_state(rid):
+                    opened = stack.push("request", request_id=rid)
+                    try:
+                        return await func(*args, **kwargs)
+                    finally:
+                        if opened is not None:
+                            stack.pop()
+
+            awrapper._cirron_config = cfg  # type: ignore[attr-defined]
+            return awrapper
+
         @functools.wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
-            global _warned
-            if not _warned:
-                warnings.warn(
-                    "cirron.inference runtime is not implemented yet (SDK-26); "
-                    "calls pass through without tracing.",
-                    stacklevel=2,
-                )
-                _warned = True
-            return func(*args, **kwargs)
+            rid = uuid.uuid4().hex
+            with stack.isolated_state(rid):
+                opened = stack.push("request", request_id=rid)
+                try:
+                    return func(*args, **kwargs)
+                finally:
+                    if opened is not None:
+                        stack.pop()
 
+        wrapper._cirron_config = cfg  # type: ignore[attr-defined]
         return wrapper
 
     if fn is not None:
