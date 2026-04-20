@@ -32,11 +32,14 @@ import uuid
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from cirron.core.mark import Mark, MarkBuffer, get_default_mark_buffer
 from cirron.core.scope import Scope, ScopeStack, get_default_stack
+from cirron.core.snapshot_buffer import SnapshotBuffer, get_default_snapshot_buffer
+from cirron.snapshots.types import TraceSnapshot, snapshot_to_dict
 
 if TYPE_CHECKING:
     from cirron.core.config import Cirron
@@ -109,6 +112,7 @@ class Batch:
     created_ns: int
     spans: list[dict[str, Any]]
     marks: list[dict[str, Any]]
+    snapshots: list[dict[str, Any]] = dataclass_field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -118,6 +122,7 @@ class Batch:
             "created_ns": self.created_ns,
             "spans": self.spans,
             "marks": self.marks,
+            "snapshots": self.snapshots,
         }
 
 
@@ -199,10 +204,12 @@ class FlushThread(threading.Thread):
         transport: Transport | None = None,
         interval: float = DEFAULT_INTERVAL_SEC,
         wake_event: threading.Event | None = None,
+        snapshot_buffer: SnapshotBuffer | None = None,
     ) -> None:
         super().__init__(daemon=True, name="cirron-flush")
         self._scope_stack = scope_stack
         self._mark_buffer = mark_buffer
+        self._snapshot_buffer = snapshot_buffer
         self._writer = writer
         self._transport = transport
         self._interval = interval
@@ -241,13 +248,17 @@ class FlushThread(threading.Thread):
         # walk every registered thread's state.
         scopes = self._scope_stack.drain_closed_all()
         marks = self._mark_buffer.drain_all()
-        if not scopes and not marks:
+        snapshots: list[TraceSnapshot] = (
+            self._snapshot_buffer.drain() if self._snapshot_buffer is not None else []
+        )
+        if not scopes and not marks and not snapshots:
             return None
         return Batch(
             batch_id=uuid.uuid4().hex,
             created_ns=time.time_ns(),
             spans=[_scope_to_dict(s) for s in scopes],
             marks=[_mark_to_dict(m) for m in marks],
+            snapshots=[snapshot_to_dict(s) for s in snapshots],
         )
 
     def wake(self) -> None:
@@ -410,6 +421,7 @@ def start_flush_thread(
         _wake_event = threading.Event()
         stack = get_default_stack()
         buf = get_default_mark_buffer()
+        snap_buf = get_default_snapshot_buffer()
         # Wire producer-side buffer-full signaling into the shared wake event
         # so the flush thread can drain ahead of its interval when pressure
         # builds up.
@@ -419,7 +431,15 @@ def start_flush_thread(
         wake_ref = _wake_event
 
         def factory(t: Transport | None) -> FlushThread:
-            return FlushThread(stack, buf, writer_ref, t, resolved_interval, wake_ref)
+            return FlushThread(
+                stack,
+                buf,
+                writer_ref,
+                t,
+                resolved_interval,
+                wake_ref,
+                snapshot_buffer=snap_buf,
+            )
 
         _supervisor = _Supervisor(factory, transport)
         _supervisor.start()
@@ -452,13 +472,15 @@ def flush_now() -> Path | None:
     writer = _writer if _writer is not None else SpoolWriter(Path("./.cirron/spool/"))
     scopes = get_default_stack().drain_closed_all()
     marks = get_default_mark_buffer().drain_all()
-    if not scopes and not marks:
+    snapshots = get_default_snapshot_buffer().drain()
+    if not scopes and not marks and not snapshots:
         return None
     batch = Batch(
         batch_id=uuid.uuid4().hex,
         created_ns=time.time_ns(),
         spans=[_scope_to_dict(s) for s in scopes],
         marks=[_mark_to_dict(m) for m in marks],
+        snapshots=[snapshot_to_dict(s) for s in snapshots],
     )
     return writer.write(batch)
 
