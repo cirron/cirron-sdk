@@ -34,9 +34,7 @@ def _drain():
     get_default_mark_buffer().drain_all()
 
 
-
 # OpenAI-style usage
-
 
 
 class _Usage:
@@ -127,9 +125,7 @@ def test_detection_failure_is_silent():
     assert token_marks == []
 
 
-
 # Streaming
-
 
 
 def test_stream_emits_request_duration_ms():
@@ -253,9 +249,7 @@ def test_stream_exhaustion_closes_request_scope_exactly_once():
     assert len(requests) == 1
 
 
-
 # HuggingFace generate patch
-
 
 
 class _FakeTensor:
@@ -319,3 +313,105 @@ def test_install_hf_generate_patch_returns_false_when_transformers_missing(monke
     monkeypatch.setitem(sys.modules, "transformers", None)  # importing raises
     monkeypatch.setitem(sys.modules, "transformers.generation", None)
     assert llm_mod.install_hf_generate_patch() is False
+
+
+def test_hf_patch_marks_from_nested_user_scope(monkeypatch):
+    """PR #30 review: ``generate()`` called under ``ci.scope("beam")``
+    (or any non-``request`` scope) inside ``@ci.inference`` must still
+    attribute token marks to the request via the parent chain."""
+    llm_mod.uninstall_hf_generate_patch()
+    gen_mixin = _install_fake_transformers(monkeypatch)
+    assert llm_mod.install_hf_generate_patch() is True
+    try:
+
+        @ci.inference
+        def predict():
+            model = gen_mixin()
+            with ci.scope("beam_search"):
+                return model.generate(input_ids=_FakeTensor((1, 11)))
+
+        predict()
+        closed = get_default_stack().drain_closed_all()
+        request = next(s for s in closed if s.name == "request")
+        beam = next(s for s in closed if s.name == "beam_search")
+        assert beam.parent_id == request.id
+
+        token_marks = [
+            m
+            for m in get_default_mark_buffer().drain_all()
+            if m.name in {"input_tokens", "output_tokens", "total_tokens"}
+        ]
+        # marks land on the innermost open scope (the beam_search scope)
+        # — the dashboard follows parent_id up to the request for roll-up.
+        assert token_marks, "expected HF token marks to be emitted"
+        assert {m.span_id for m in token_marks} == {beam.id}
+        by_name = {m.name: m.value for m in token_marks}
+        assert by_name["input_tokens"] == 11
+    finally:
+        llm_mod.uninstall_hf_generate_patch()
+
+
+# ---------------------------------------------------------------------------
+# ContextVar leak regressions (PR #30 review)
+# ---------------------------------------------------------------------------
+
+
+def test_sync_non_stream_does_not_leak_context_after_return():
+    """After a non-stream call returns, the caller's ContextVar must be
+    reset — subsequent ``ci.mark`` / ``ci.scope`` should NOT attach to
+    the now-closed request span."""
+    from cirron.core.scope import _ctx_state
+
+    @ci.inference
+    def predict():
+        return {"label": "pos"}
+
+    assert _ctx_state.get() is None
+    predict()
+    assert _ctx_state.get() is None
+
+    # A fresh mark outside the decorator must not land on the request.
+    ci.mark("after_request", 1.0)
+    closed = get_default_stack().drain_closed_all()
+    request = next(s for s in closed if s.name == "request")
+    post_marks = [m for m in get_default_mark_buffer().drain_all() if m.name == "after_request"]
+    assert post_marks
+    assert all(m.span_id != request.id for m in post_marks)
+
+
+def test_stream_return_does_not_leak_context_into_caller():
+    """Key PR-review regression: the decorator must exit ``isolated_state``
+    before returning a stream wrapper, so the caller's Context is not
+    left bound to the per-request state until the stream is exhausted."""
+    from cirron.core.scope import _ctx_state
+
+    @ci.inference
+    def predict():
+        def gen():
+            yield 1
+            yield 2
+
+        return gen()
+
+    assert _ctx_state.get() is None
+    stream = predict()
+    # Stream not yet iterated — caller Context must already be clean.
+    assert _ctx_state.get() is None
+
+    # Any ``ci.mark`` the caller makes between receiving the stream and
+    # consuming it must NOT attach to the (still-open) request scope.
+    ci.mark("between", 1.0)
+
+    # Now consume the stream; scope closes and finalization marks land
+    # on the request span.
+    list(stream)
+
+    closed = get_default_stack().drain_closed_all()
+    request = next(s for s in closed if s.name == "request")
+    marks = list(get_default_mark_buffer().drain_all())
+    between = [m for m in marks if m.name == "between"]
+    assert between
+    assert all(m.span_id != request.id for m in between)
+    # And the wrapper-emitted finalization marks DO attach to the request.
+    ttft = [m for m in marks if m.name == "time_to_first_token_ms"]
+    assert ttft and ttft[0].span_id == request.id
