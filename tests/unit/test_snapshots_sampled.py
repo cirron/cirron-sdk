@@ -289,6 +289,40 @@ def test_capture_enqueues_blob(require_safetensors, tmp_path):
     assert pb.attempts == 0
 
 
+# -------- silent-drop safety (Copilot review, PR #28) ----------------------
+
+
+def test_unconvertible_tensor_keeps_mode_stats(require_safetensors, tmp_path, monkeypatch):
+    """If ``_tensor_to_numpy`` silently drops a tensor on the numpy path,
+    the matching ``TraceSnapshot`` record must stay ``mode="stats"`` —
+    we never want ``blob_uri`` pointing at a blob that doesn't contain
+    the named tensor.
+    """
+    # Force the numpy writer path by claiming nothing is a torch tensor.
+    monkeypatch.setattr(blob_mod, "_is_torch_tensor", lambda _t: False)
+
+    good = _FakeTensor(np.ones((2,), dtype=np.float32))
+    bad = _FakeTensor(np.ones((2,), dtype=np.float32))
+    # Make one tensor fail conversion; the serializer logs + skips it.
+    monkeypatch.setattr(
+        blob_mod, "_tensor_to_numpy", lambda t: None if t is bad else np.asarray(t.numpy())
+    )
+
+    model = _FakeModel([("good", good), ("bad", bad)])
+    cirron = _fake_cirron(snapshots="full", output_dir=str(tmp_path))
+
+    records = capture(cirron, model, "span-drop", include_grads=False)
+
+    good_rec = next(r for r in records if r.tensor_name == "good")
+    bad_rec = next(r for r in records if r.tensor_name == "bad")
+    assert good_rec.mode in ("sampled", "full")
+    assert good_rec.blob_uri is not None
+    # bad tensor was dropped by the numpy conversion — record must not
+    # claim a blob_uri that doesn't actually contain it.
+    assert bad_rec.mode == "stats"
+    assert bad_rec.blob_uri is None
+
+
 # -------- key preservation (no sanitization) --------------------------------
 
 

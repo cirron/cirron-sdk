@@ -457,3 +457,45 @@ def test_http_upload_blob_missing_local_file_returns_none(tmp_path) -> None:
     missing = tmp_path / "nope.safetensors"
     assert transport.upload_blob(missing, "snapshots/span/weights.safetensors") is None
     assert len(session.put_calls) == 0
+
+
+def test_blob_path_derived_from_custom_ingest_path(tmp_path) -> None:
+    """When a user overrides ``ingest_path`` (self-hosted endpoint with a
+    non-default API prefix), the blob route must follow the same prefix
+    — otherwise blob PUTs 404. No explicit ``blob_path`` needed."""
+    session = _FakeSession([_Resp(200, text="https://blobs.example/x")])
+    client = IngestClient(
+        api_endpoint="https://api.example.test",
+        api_key="secret-key",
+        path="/api/v2/traces",
+        session=cast(requests.Session, session),
+        sleep=lambda _s: None,
+    )
+    transport = HttpTransport(client)
+    blob = tmp_path / "weights.safetensors"
+    blob.write_bytes(b"x")
+
+    transport.upload_blob(blob, "snapshots/span/weights.safetensors")
+    call = session.put_calls[0]
+    assert call["url"] == (
+        "https://api.example.test/api/v2/traces/blob/snapshots/span/weights.safetensors"
+    )
+
+
+def test_blob_path_explicit_override_wins(tmp_path) -> None:
+    """Explicit ``blob_path`` beats the derivation."""
+    session = _FakeSession([_Resp(200, text="ok")])
+    client = IngestClient(
+        api_endpoint="https://api.example.test",
+        api_key="secret-key",
+        path="/api/v2/traces",
+        blob_path="/custom/blob",
+        session=cast(requests.Session, session),
+        sleep=lambda _s: None,
+    )
+    transport = HttpTransport(client)
+    blob = tmp_path / "weights.safetensors"
+    blob.write_bytes(b"x")
+
+    transport.upload_blob(blob, "snapshots/span/weights.safetensors")
+    assert session.put_calls[0]["url"].startswith("https://api.example.test/custom/blob/")
