@@ -18,11 +18,17 @@ from __future__ import annotations
 
 import functools
 import inspect
+import time
 import uuid
 from collections.abc import Callable
 from typing import Any
 
 from cirron.core.scope import get_default_stack
+from cirron.inference.llm import (
+    install_hf_generate_patch,
+    maybe_mark_openai_usage,
+    wrap_stream,
+)
 
 
 def inference(
@@ -38,6 +44,15 @@ def inference(
     """
     cfg: dict[str, Any] = dict(config) if config else {}
 
+    # SDK-27: best-effort patch of ``transformers.GenerationMixin.generate``
+    # so token counts land even if the user's predict() calls generate()
+    # without any additional instrumentation. Silent if transformers is
+    # not installed.
+    try:
+        install_hf_generate_patch()
+    except Exception:
+        pass
+
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         stack = get_default_stack()
 
@@ -48,10 +63,25 @@ def inference(
                 rid = uuid.uuid4().hex
                 with stack.isolated_state(rid):
                     opened = stack.push("request", request_id=rid)
-                    try:
-                        return await func(*args, **kwargs)
-                    finally:
+                    start_ns = time.time_ns()
+                    popped = False
+
+                    def _close() -> None:
                         if opened is not None:
+                            stack.pop()
+
+                    try:
+                        result = await func(*args, **kwargs)
+                        try:
+                            maybe_mark_openai_usage(result)
+                        except Exception:
+                            pass
+                        wrapped = wrap_stream(result, start_ns, on_close=_close)
+                        if wrapped is not result:
+                            popped = True
+                        return wrapped
+                    finally:
+                        if opened is not None and not popped:
                             stack.pop()
 
             awrapper._cirron_config = cfg  # type: ignore[attr-defined]
@@ -62,10 +92,25 @@ def inference(
             rid = uuid.uuid4().hex
             with stack.isolated_state(rid):
                 opened = stack.push("request", request_id=rid)
-                try:
-                    return func(*args, **kwargs)
-                finally:
+                start_ns = time.time_ns()
+                popped = False
+
+                def _close() -> None:
                     if opened is not None:
+                        stack.pop()
+
+                try:
+                    result = func(*args, **kwargs)
+                    try:
+                        maybe_mark_openai_usage(result)
+                    except Exception:
+                        pass
+                    wrapped = wrap_stream(result, start_ns, on_close=_close)
+                    if wrapped is not result:
+                        popped = True
+                    return wrapped
+                finally:
+                    if opened is not None and not popped:
                         stack.pop()
 
         wrapper._cirron_config = cfg  # type: ignore[attr-defined]
