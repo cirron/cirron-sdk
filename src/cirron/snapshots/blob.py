@@ -16,7 +16,6 @@ user's next ``zero_grad``). The remote upload is enqueued via
 from __future__ import annotations
 
 import logging
-import re
 from pathlib import Path
 from typing import Any
 
@@ -59,20 +58,6 @@ def _require_safetensors() -> Any:
             "snapshots mode 'sampled'/'full' requires the safetensors package. "
             "Install with: pip install 'cirron-sdk[safetensors]'"
         ) from e
-
-
-_SAFE_KEY_RE = re.compile(r"[^A-Za-z0-9._\-/]")
-
-
-def sanitize_key(name: str) -> str:
-    """Normalize a tensor name to a safe safetensors key.
-
-    Safetensors keys are arbitrary strings in principle, but dots and
-    forward slashes in PyTorch parameter names (``layer1.0.conv1.weight``)
-    survive round-tripping fine; we only strip characters known to
-    confuse downstream consumers (whitespace, backslashes, NULs).
-    """
-    return _SAFE_KEY_RE.sub("_", name)
 
 
 def _is_torch_tensor(t: Any) -> bool:
@@ -133,17 +118,21 @@ def _maybe_warn_size(total_bytes: int, param_count: int, kind: str, span_id: str
 
 
 def _to_serializable_dict(named_tensors: list[tuple[str, Any]]) -> tuple[dict[str, Any], bool]:
-    """Split the input into a ``{sanitized_key: tensor}`` dict and a flag
+    """Split the input into a ``{tensor_name: tensor}`` dict and a flag
     indicating whether everything is a torch tensor (torch writer path)
     or we need the numpy writer.
+
+    Tensor names are passed through unchanged — safetensors accepts
+    arbitrary UTF-8 strings as keys. Keeping the name identical to
+    ``TraceSnapshot.tensor_name`` means consumers can do
+    ``safetensors[record.tensor_name]`` without any extra mapping.
     """
     all_torch = True
     out: dict[str, Any] = {}
     for name, tensor in named_tensors:
-        key = sanitize_key(name)
         if not _is_torch_tensor(tensor):
             all_torch = False
-        out[key] = tensor
+        out[name] = tensor
     return out, all_torch
 
 

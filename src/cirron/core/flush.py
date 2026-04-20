@@ -36,7 +36,12 @@ from dataclasses import field as dataclass_field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
-from cirron.core.blob_queue import BlobUploadQueue, get_default_blob_queue
+from cirron.core.blob_queue import (
+    MAX_BLOB_ATTEMPTS,
+    BlobUploadQueue,
+    PendingBlob,
+    get_default_blob_queue,
+)
 from cirron.core.mark import Mark, MarkBuffer, get_default_mark_buffer
 from cirron.core.scope import Scope, ScopeStack, get_default_stack
 from cirron.core.snapshot_buffer import SnapshotBuffer, get_default_snapshot_buffer
@@ -97,6 +102,23 @@ def _scope_to_dict(s: Scope) -> dict[str, Any]:
         "attrs": s.attrs,
         "mark_ids": list(s.marks),
     }
+
+
+def _apply_uri_map(snapshots: list[TraceSnapshot], uri_map: dict[str, str]) -> None:
+    """Rewrite each record's ``blob_uri`` to the remote URI when its
+    current ``file://`` URI appears in ``uri_map``.
+
+    Records whose blob hasn't uploaded yet (or failed) keep their local
+    URI — the local safetensors file is always written before the record
+    is produced, so the batch remains self-consistent on disk even when
+    the network round-trip is deferred.
+    """
+    for snap in snapshots:
+        if snap.blob_uri is None:
+            continue
+        remote = uri_map.get(snap.blob_uri)
+        if remote is not None:
+            snap.blob_uri = remote
 
 
 def _mark_to_dict(m: Mark) -> dict[str, Any]:
@@ -240,19 +262,31 @@ class FlushThread(threading.Thread):
             self._tick()
 
     def _tick(self) -> None:
-        # Drain pending blob uploads before producing the JSON batch.
-        # Uploading *first* means the worker's "blob must exist when
-        # metadata arrives" contract (spec §5.3) holds even in the face
-        # of interleaved retries. Blob upload failures are logged and
-        # the queue retains nothing — the local safetensors file is
-        # already on disk; the JSON batch's ``blob_uri`` still points
-        # at the local file, and a later retry path can be added in a
-        # platform-side ticket.
+        # Drain snapshots into a local list first so we can rewrite their
+        # ``blob_uri`` with the remote URI returned by ``upload_blob``
+        # before the batch reaches the transport. Uploading *first* also
+        # means the worker's "blob must exist when metadata arrives"
+        # contract (spec §5.3) holds even with interleaved retries.
+        scopes = self._scope_stack.drain_closed_all()
+        marks = self._mark_buffer.drain_all()
+        snapshots: list[TraceSnapshot] = (
+            self._snapshot_buffer.drain() if self._snapshot_buffer is not None else []
+        )
+
         if self._blob_queue is not None and self._transport is not None:
-            self._drain_blobs()
-        batch = self.drain_once()
-        if batch is None:
+            uri_map = self._drain_blobs()
+            if uri_map and snapshots:
+                _apply_uri_map(snapshots, uri_map)
+
+        if not scopes and not marks and not snapshots:
             return
+        batch = Batch(
+            batch_id=uuid.uuid4().hex,
+            created_ns=time.time_ns(),
+            spans=[_scope_to_dict(s) for s in scopes],
+            marks=[_mark_to_dict(m) for m in marks],
+            snapshots=[snapshot_to_dict(s) for s in snapshots],
+        )
         self._writer.write(batch)
         if self._transport is not None:
             try:
@@ -260,29 +294,72 @@ class FlushThread(threading.Thread):
             except Exception:
                 log.warning("cirron transport.send failed; batch remains in spool", exc_info=True)
 
-    def _drain_blobs(self) -> None:
+    def _drain_blobs(self) -> dict[str, str]:
+        """Upload pending blobs; return a ``{local_uri: remote_uri}`` map
+        for the just-uploaded successes so snapshot records in this tick's
+        batch can have their ``blob_uri`` rewritten.
+
+        Transient failures re-enqueue up to :data:`MAX_BLOB_ATTEMPTS`. Once
+        a blob has exhausted its retries the local file stays on disk —
+        the spool record still points at it via the ``file://`` URI, so
+        the epoch's data isn't lost for standalone/local replay.
+        """
         assert self._blob_queue is not None and self._transport is not None
         pending = self._blob_queue.drain()
+        uri_map: dict[str, str] = {}
         for blob in pending:
             try:
                 remote_uri = self._transport.upload_blob(blob.local_path, blob.remote_key)
             except Exception:
                 log.warning(
-                    "cirron transport.upload_blob raised for %s; local blob retained",
+                    "cirron transport.upload_blob raised for %s",
                     blob.remote_key,
                     exc_info=True,
                 )
+                remote_uri = None
+            if remote_uri is not None:
+                uri_map[blob.local_uri] = remote_uri
                 continue
-            if remote_uri is None:
-                log.warning(
-                    "cirron transport.upload_blob failed for %s; local blob retained",
-                    blob.remote_key,
-                )
+            self._handle_upload_failure(blob)
+        return uri_map
+
+    def _handle_upload_failure(self, blob: PendingBlob) -> None:
+        assert self._blob_queue is not None
+        next_attempts = blob.attempts + 1
+        if next_attempts >= MAX_BLOB_ATTEMPTS:
+            log.warning(
+                "cirron transport.upload_blob exhausted %d attempts for %s; "
+                "giving up — local blob retained at %s",
+                MAX_BLOB_ATTEMPTS,
+                blob.remote_key,
+                blob.local_path,
+            )
+            return
+        log.info(
+            "cirron transport.upload_blob failed (attempt %d/%d) for %s; re-enqueuing",
+            next_attempts,
+            MAX_BLOB_ATTEMPTS,
+            blob.remote_key,
+        )
+        self._blob_queue.enqueue(
+            PendingBlob(
+                local_path=blob.local_path,
+                local_uri=blob.local_uri,
+                remote_key=blob.remote_key,
+                span_id=blob.span_id,
+                kind=blob.kind,
+                size_bytes=blob.size_bytes,
+                attempts=next_attempts,
+            )
+        )
 
     def drain_once(self) -> Batch | None:
-        # Drain across all producer threads — ``ScopeStack``/``MarkBuffer``
-        # state is ``threading.local`` per thread; the ``*_all()`` variants
-        # walk every registered thread's state.
+        """Test helper: drain without uploading blobs or rewriting URIs.
+
+        Production flows go through :meth:`_tick`. This method preserves
+        the pre-SDK-25 shape for the unit tests that manually drive a
+        flush — they only care about the scope/mark/snapshot plumbing.
+        """
         scopes = self._scope_stack.drain_closed_all()
         marks = self._mark_buffer.drain_all()
         snapshots: list[TraceSnapshot] = (
