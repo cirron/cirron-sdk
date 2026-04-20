@@ -19,6 +19,7 @@ import os
 import sys
 import threading
 import weakref
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Literal
 
 from cirron.core.config import Cirron, get_default
@@ -46,12 +47,12 @@ _profiler: Profiler | None = None
 _profiler_lock = threading.Lock()
 _atexit_registered = False
 
-# Weak reference to the model the user passed to ``ci.watch()``. Snapshot
-# capture (SDK-24) reads this at epoch boundaries — weakref so keeping the
-# SDK attached doesn't keep the user's model alive past its natural lifetime.
-# Plain ``Any`` typing: we duck-type the model at capture time so torch /
-# keras / any nn-module-like object is fair game.
-_watched_model_ref: weakref.ref[Any] | None = None
+# Callable that returns the model the user passed to ``ci.watch()``, or
+# ``None`` once the model is gone. Normally a ``weakref.ref``; falls back
+# to a ``lambda`` holding a strong reference for objects that don't
+# support weakref (C-extension types, bare ``object()``). Snapshot
+# capture (SDK-24) calls it at epoch boundaries.
+_watched_model_ref: Callable[[], Any] | None = None
 _watched_warning_emitted = False
 
 

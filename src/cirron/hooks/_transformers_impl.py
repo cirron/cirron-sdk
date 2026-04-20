@@ -61,9 +61,7 @@ class TransformersHookHandle:
         self._undos = []
 
 
-def _make_callback_class(
-    scope_stack: ScopeStack, cirron: Cirron, context: HookContext
-) -> type:
+def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> type:
     """Build ``CirronTrainerCallback`` bound to the given scope stack
     and shared ``HookContext``.
 
