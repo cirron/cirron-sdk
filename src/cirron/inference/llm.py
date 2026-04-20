@@ -13,8 +13,12 @@ Best-effort detectors invoked by ``@ci.inference`` (``decorator.py``):
   to the open request span.
 * :func:`install_hf_generate_patch` — idempotent monkey-patch of
   ``transformers.generation.GenerationMixin.generate`` so calls made
-  inside a ``request`` scope emit ``input_tokens`` / ``output_tokens``
-  marks.
+  inside *any* open scope emit ``input_tokens`` / ``output_tokens``
+  marks. The looser-than-``request`` gate is intentional so nested
+  scopes (e.g. ``with ci.scope("beam"): model.generate(...)``) still
+  attribute tokens to the enclosing request via the parent chain — see
+  the inline comment in :func:`install_hf_generate_patch` for the
+  rationale.
 
 All detection is wrapped; failures never propagate to user code.
 """
@@ -231,6 +235,16 @@ def _wrap_sync(
                     _unbind_state(token)
                 yield item
         finally:
+            # Close the underlying iterator first so its own ``finally``
+            # blocks (DB cursors, HTTP sockets, user resources) run
+            # before we emit final marks. Consumer early-breaks rely on
+            # this — without it, cleanup is deferred to GC.
+            close_inner = getattr(iter_gen, "close", None)
+            if callable(close_inner):
+                try:
+                    close_inner()
+                except Exception:
+                    pass
             final_count = explicit_tokens if explicit_tokens is not None else count
             token = _bind_state(state)
             try:
@@ -289,6 +303,16 @@ def _wrap_async(
                     _unbind_state(token)
                 yield item
         finally:
+            # Symmetric with ``_wrap_sync``: close the async iterator
+            # first so its own cleanup runs before we emit final marks.
+            aclose = getattr(aiter_gen, "aclose", None)
+            if callable(aclose):
+                try:
+                    close_result = aclose()
+                    if inspect.isawaitable(close_result):
+                        await close_result
+                except Exception:
+                    pass
             final_count = explicit_tokens if explicit_tokens is not None else count
             token = _bind_state(state)
             try:
@@ -364,6 +388,14 @@ def _output_length(result: Any) -> int | None:
 
 def install_hf_generate_patch() -> bool:
     """Monkey-patch ``transformers.generation.GenerationMixin.generate``.
+
+    When active, every ``generate()`` call made while *any* scope is
+    open on the current thread emits ``input_tokens`` /
+    ``output_tokens`` / ``total_tokens`` summary marks. The gate is
+    deliberately broader than ``name == "request"`` so nested training
+    or user scopes still see token attribution — marks attach to the
+    innermost scope and roll up through the parent chain. See the
+    inline comment in ``_wrapped`` for details.
 
     Idempotent: repeated calls are no-ops. Returns ``True`` when the
     patch is active after this call, ``False`` if transformers is not
