@@ -61,7 +61,9 @@ class TransformersHookHandle:
         self._undos = []
 
 
-def _make_callback_class(scope_stack: ScopeStack, context: HookContext) -> type:
+def _make_callback_class(
+    scope_stack: ScopeStack, cirron: Cirron, context: HookContext
+) -> type:
     """Build ``CirronTrainerCallback`` bound to the given scope stack
     and shared ``HookContext``.
 
@@ -114,6 +116,17 @@ def _make_callback_class(scope_stack: ScopeStack, context: HookContext) -> type:
             scope_stack.close_scope(scope_obj)
         except Exception:
             log.warning("cirron.hooks.transformers: scope close failed", exc_info=True)
+
+    def _capture_epoch_snapshots(model: Any, span_id: str) -> None:
+        """HF ``TrainerCallback`` receives the model via ``kwargs["model"]``
+        on every hook. Capture weights + grads against the epoch span id
+        before the epoch closes; no-ops when snapshots are disabled."""
+        from cirron.core.snapshot_buffer import get_default_snapshot_buffer
+        from cirron.snapshots.stats import capture
+
+        records = capture(cirron, model, span_id)
+        if records:
+            get_default_snapshot_buffer().extend(records)
 
     def _record_logs(logs: Any, kind: str = "point") -> None:
         if not logs:
@@ -194,6 +207,9 @@ def _make_callback_class(scope_stack: ScopeStack, context: HookContext) -> type:
                 metrics = kwargs.get("metrics")
                 if metrics:
                     _record_logs(metrics, kind="summary")
+                scope_obj = self._epoch_scope
+                if scope_obj is not None:
+                    _capture_epoch_snapshots(kwargs.get("model"), scope_obj.id)
                 _close(self._epoch_scope)
                 self._epoch_scope = None
 
@@ -256,8 +272,6 @@ def install(
     rotation — otherwise HF ``Trainer`` would drive both callbacks and
     produce duplicate ``epoch`` spans.
     """
-    del cirron  # unused today; kept for registry signature parity.
-
     from transformers import Trainer  # type: ignore[import-not-found]
 
     # ``epoch`` / ``step`` ownership is claimed at ``on_train_begin``
@@ -265,7 +279,7 @@ def install(
     # torch loops, in a process where ``transformers`` just happens to
     # be importable, from losing their own epoch/step spans because
     # this installer pre-claimed ownership no one ever honored.
-    callback_cls = _make_callback_class(scope_stack, context)
+    callback_cls = _make_callback_class(scope_stack, cirron, context)
 
     handle = TransformersHookHandle()
 

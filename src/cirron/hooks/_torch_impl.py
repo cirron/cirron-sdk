@@ -390,6 +390,23 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
 
     # --- DataLoader ---------------------------------------------------------
 
+    def _capture_epoch_snapshots(span_id: str) -> None:
+        """Snapshot weights + grads for the currently watched model.
+
+        Imports are local so a core-only cirron install (no snapshots
+        module load at startup) pays nothing until a snapshot actually
+        fires. ``get_watched_model()`` returns ``None`` when the user
+        hasn't called ``ci.watch()`` yet — capture() then no-ops.
+        """
+        from cirron.core.profiler import get_watched_model
+        from cirron.core.snapshot_buffer import get_default_snapshot_buffer
+        from cirron.snapshots.stats import capture
+
+        model = get_watched_model()
+        records = capture(cirron, model, span_id)
+        if records:
+            get_default_snapshot_buffer().extend(records)
+
     def _unwind_through(scope_obj: Scope) -> None:
         """Close ``scope_obj`` and surgically remove it from the stack.
 
@@ -416,7 +433,12 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
                 step_state["scope"] = None
                 step_state["index"] += 1
         prev = epoch_state["scope"]
+        # Capture weight + gradient stats against the outgoing epoch span
+        # *before* we unwind it — the span id is what the snapshots link
+        # to (spec §5.4). Skipped silently when ``snapshots`` is off or
+        # ``ci.watch()`` was never called (bare torch case).
         if prev is not None:
+            _catch("snapshot_capture", _capture_epoch_snapshots, prev.id)
             _unwind_through(prev)
         new_scope = _open("epoch", index=epoch_state["index"])
         epoch_state["scope"] = new_scope
@@ -486,6 +508,9 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
             step_state["scope"] = None
         sc = epoch_state["scope"]
         if sc is not None:
+            # Snapshot the final epoch before its span closes — otherwise
+            # the last epoch in the run would miss its weight/grad record.
+            _catch("snapshot_capture_final", _capture_epoch_snapshots, sc.id)
             _unwind_through(sc)
             epoch_state["scope"] = None
 
