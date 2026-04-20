@@ -236,8 +236,7 @@ def mark(
     """
     if kind not in (MARK_KIND_POINT, MARK_KIND_SUMMARY):
         raise ValueError(
-            f"ci.mark() kind must be {MARK_KIND_POINT!r} or {MARK_KIND_SUMMARY!r}; "
-            f"got {kind!r}"
+            f"ci.mark() kind must be {MARK_KIND_POINT!r} or {MARK_KIND_SUMMARY!r}; got {kind!r}"
         )
     # ``type() is X`` is faster than ``isinstance`` for exact-type dispatch
     # — on the float/int hot path this matters for the 3μs/call budget.
