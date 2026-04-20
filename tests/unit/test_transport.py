@@ -418,9 +418,7 @@ def test_http_upload_blob_puts_bytes(tmp_path) -> None:
 
 
 def test_http_upload_blob_location_header_preferred(tmp_path) -> None:
-    session = _FakeSession(
-        [_Resp(201, headers={"Location": "s3://bucket/key"}, text="ignored")]
-    )
+    session = _FakeSession([_Resp(201, headers={"Location": "s3://bucket/key"}, text="ignored")])
     transport = HttpTransport(_make_client(session))
 
     blob = tmp_path / "weights.safetensors"
