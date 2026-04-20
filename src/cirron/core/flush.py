@@ -249,6 +249,9 @@ class FlushThread(threading.Thread):
         # unit tests that want to inject a deterministic failure to exercise
         # supervisor respawning.
         self._tick_hook: Callable[[], None] | None = None
+        # Latch so the spool-only blob-discard notice is logged once per
+        # worker instance instead of on every tick.
+        self._spool_only_notified = False
 
     def run(self) -> None:
         while not self._stop_event.is_set():
@@ -273,10 +276,16 @@ class FlushThread(threading.Thread):
             self._snapshot_buffer.drain() if self._snapshot_buffer is not None else []
         )
 
-        if self._blob_queue is not None and self._transport is not None:
-            uri_map = self._drain_blobs()
-            if uri_map and snapshots:
-                _apply_uri_map(snapshots, uri_map)
+        if self._blob_queue is not None:
+            if self._transport is not None:
+                uri_map = self._drain_blobs()
+                if uri_map and snapshots:
+                    _apply_uri_map(snapshots, uri_map)
+            else:
+                # Spool-only mode: no upload path available, but snapshot
+                # records already carry ``file://`` URIs for local replay.
+                # Drop pending blobs so the queue doesn't grow unbounded.
+                self._discard_pending_blobs()
 
         if not scopes and not marks and not snapshots:
             return
@@ -322,6 +331,25 @@ class FlushThread(threading.Thread):
                 continue
             self._handle_upload_failure(blob)
         return uri_map
+
+    def _discard_pending_blobs(self) -> None:
+        """Drain the blob queue without uploading — spool-only fallback.
+
+        Local blob files stay on disk and the snapshot records still
+        point at them via ``file://`` URIs, so no data is lost; we just
+        refuse to accumulate upload intents the transport can't honour.
+        """
+        assert self._blob_queue is not None
+        pending = self._blob_queue.drain()
+        if not pending:
+            return
+        if not self._spool_only_notified:
+            log.info(
+                "cirron flush: spool-only mode — discarding %d pending blob upload(s); "
+                "local files retained at ./.cirron/snapshots/ for replay",
+                len(pending),
+            )
+            self._spool_only_notified = True
 
     def _handle_upload_failure(self, blob: PendingBlob) -> None:
         assert self._blob_queue is not None

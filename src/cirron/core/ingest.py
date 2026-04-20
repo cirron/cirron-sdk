@@ -112,12 +112,16 @@ class IngestClient:
         timeout: float = 10.0,
         max_retries: int = 5,
         *,
-        blob_path: str = DEFAULT_BLOB_PATH,
+        blob_path: str | None = None,
         session: requests.Session | None = None,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         if not path.startswith("/"):
             path = "/" + path
+        # Derive blob_path from path when not explicitly set so self-hosted
+        # users who override only `ingest_path` get a matching blob route.
+        if blob_path is None:
+            blob_path = path.rstrip("/") + "/blob"
         if not blob_path.startswith("/"):
             blob_path = "/" + blob_path
         self._endpoint = api_endpoint.rstrip("/")
