@@ -134,12 +134,11 @@ weight tensors into `./.cirron/snapshots/<span_id>/weights.safetensors`
 and all gradient tensors into `./.cirron/snapshots/<span_id>/gradients.safetensors`.
 Every record for that span shares the same `blob_uri` (a `file://` URL for
 disconnected runs, a platform blob URL when a transport is connected);
-the record's existing `tensor_name` identifies the key inside the
-safetensors container. Consumers load the safetensors file once and index
-by `tensor_name` to get the matching tensor. Tensor names are passed
-through unchanged for safetensors-safe characters (`A-Za-z0-9._-/`);
-anything else is replaced with `_` when writing the container key but
-the original `tensor_name` is preserved in the record.
+the record's `tensor_name` is used verbatim as the key inside the
+safetensors container. Safetensors accepts arbitrary UTF-8 strings as
+keys, so consumers can load the file once and look up tensors with
+`container[record["tensor_name"]]` — no sanitization or extra mapping
+is required on either side.
 
 If a sampled/full epoch's total tensor payload exceeds **100 MB**, the
 SDK logs a warning that includes the byte count and parameter count
