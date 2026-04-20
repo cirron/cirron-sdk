@@ -14,6 +14,7 @@ torch = pytest.importorskip("torch")
 
 from cirron.core.config import Cirron  # noqa: E402
 from cirron.core.scope import ScopeStack  # noqa: E402
+from cirron.hooks._registry import HookContext  # noqa: E402
 from cirron.hooks._torch_impl import install as torch_install  # noqa: E402
 
 
@@ -31,22 +32,27 @@ def ci(tmp_path):
     return Cirron(output_dir=str(tmp_path))
 
 
-def test_install_returns_handle_with_torch_name(stack, ci):
-    h = torch_install(stack, ci)
+@pytest.fixture
+def ctx():
+    return HookContext()
+
+
+def test_install_returns_handle_with_torch_name(stack, ci, ctx):
+    h = torch_install(stack, ci, ctx)
     try:
         assert h.name == "torch"
     finally:
         h.uninstall()
 
 
-def test_uninstall_restores_originals(stack, ci):
+def test_uninstall_restores_originals(stack, ci, ctx):
     # Optimizer.step uses PyTorch's global step hooks (not monkey-patched),
     # so identity is unchanged; the other three are patched.
     orig_tensor_bw = torch.Tensor.backward
     orig_autograd_bw = torch.autograd.backward
     orig_dl_iter = torch.utils.data.DataLoader.__iter__
 
-    h = torch_install(stack, ci)
+    h = torch_install(stack, ci, ctx)
     assert torch.Tensor.backward is not orig_tensor_bw
     assert torch.autograd.backward is not orig_autograd_bw
     assert torch.utils.data.DataLoader.__iter__ is not orig_dl_iter
@@ -58,15 +64,15 @@ def test_uninstall_restores_originals(stack, ci):
     assert torch.utils.data.DataLoader.__iter__ is orig_dl_iter
 
 
-def test_double_uninstall_is_noop(stack, ci):
-    h = torch_install(stack, ci)
+def test_double_uninstall_is_noop(stack, ci, ctx):
+    h = torch_install(stack, ci, ctx)
     h.uninstall()
     # Should not raise or re-restore anything.
     h.uninstall()
 
 
-def test_forward_hook_fires_on_module_call(stack, ci):
-    h = torch_install(stack, ci)
+def test_forward_hook_fires_on_module_call(stack, ci, ctx):
+    h = torch_install(stack, ci, ctx)
     try:
         model = torch.nn.Linear(4, 2)
         model(torch.zeros(1, 4))
@@ -76,9 +82,9 @@ def test_forward_hook_fires_on_module_call(stack, ci):
     assert "forward" in _names(closed)
 
 
-def test_forward_only_top_level_scope(stack, ci):
+def test_forward_only_top_level_scope(stack, ci, ctx):
     """Nested submodules must not each produce their own forward span."""
-    h = torch_install(stack, ci)
+    h = torch_install(stack, ci, ctx)
     try:
         model = torch.nn.Sequential(
             torch.nn.Linear(4, 8),
@@ -92,8 +98,8 @@ def test_forward_only_top_level_scope(stack, ci):
     assert _names(closed).count("forward") == 1
 
 
-def test_backward_and_optimizer_step_produce_scopes(stack, ci):
-    h = torch_install(stack, ci)
+def test_backward_and_optimizer_step_produce_scopes(stack, ci, ctx):
+    h = torch_install(stack, ci, ctx)
     try:
         model = torch.nn.Linear(4, 2)
         opt = torch.optim.SGD(model.parameters(), lr=0.01)
@@ -111,8 +117,8 @@ def test_backward_and_optimizer_step_produce_scopes(stack, ci):
     assert "optimizer_step" in names
 
 
-def test_dataloader_data_load_scope(stack, ci):
-    h = torch_install(stack, ci)
+def test_dataloader_data_load_scope(stack, ci, ctx):
+    h = torch_install(stack, ci, ctx)
     try:
         xs = torch.zeros(6, 4)
         ys = torch.zeros(6, 2)
@@ -130,8 +136,8 @@ def test_dataloader_data_load_scope(stack, ci):
     assert any("data_load_ns" in s.attrs for s in dl_spans)
 
 
-def test_two_epochs_produce_two_epoch_scopes(stack, ci):
-    h = torch_install(stack, ci)
+def test_two_epochs_produce_two_epoch_scopes(stack, ci, ctx):
+    h = torch_install(stack, ci, ctx)
     try:
         xs = torch.zeros(4, 4)
         ys = torch.zeros(4, 2)
@@ -147,9 +153,9 @@ def test_two_epochs_produce_two_epoch_scopes(stack, ci):
     assert [s.index for s in epochs] == [0, 1]
 
 
-def test_inference_only_model_no_optimizer(stack, ci):
+def test_inference_only_model_no_optimizer(stack, ci, ctx):
     """Model used only for forward inference shouldn't crash or miss spans."""
-    h = torch_install(stack, ci)
+    h = torch_install(stack, ci, ctx)
     try:
         model = torch.nn.Linear(4, 2)
         with torch.no_grad():
@@ -163,7 +169,7 @@ def test_inference_only_model_no_optimizer(stack, ci):
     assert "optimizer_step" not in names
 
 
-def test_custom_module_subclass_is_traced(stack, ci):
+def test_custom_module_subclass_is_traced(stack, ci, ctx):
     class MyNet(torch.nn.Module):
         def __init__(self) -> None:
             super().__init__()
@@ -172,7 +178,7 @@ def test_custom_module_subclass_is_traced(stack, ci):
         def forward(self, x: torch.Tensor) -> torch.Tensor:
             return self.fc(x)
 
-    h = torch_install(stack, ci)
+    h = torch_install(stack, ci, ctx)
     try:
         MyNet()(torch.zeros(1, 4))
     finally:
@@ -180,9 +186,9 @@ def test_custom_module_subclass_is_traced(stack, ci):
     assert "forward" in _names(stack.drain_closed_all())
 
 
-def test_hook_exception_is_caught(stack, ci, monkeypatch, caplog):
+def test_hook_exception_is_caught(stack, ci, ctx, monkeypatch, caplog):
     """A scope-push exception must not crash user code."""
-    h = torch_install(stack, ci)
+    h = torch_install(stack, ci, ctx)
     try:
         # Poison ScopeStack.push so any hook that tries to open a scope
         # raises. The _catch wrapper in the torch impl should swallow it.
@@ -198,8 +204,8 @@ def test_hook_exception_is_caught(stack, ci, monkeypatch, caplog):
         h.uninstall()
 
 
-def test_no_torch_usage_after_uninstall_produces_no_spans(stack, ci):
-    h = torch_install(stack, ci)
+def test_no_torch_usage_after_uninstall_produces_no_spans(stack, ci, ctx):
+    h = torch_install(stack, ci, ctx)
     h.uninstall()
     # With hooks gone, nothing should land in the stack.
     model = torch.nn.Linear(4, 2)
@@ -208,11 +214,11 @@ def test_no_torch_usage_after_uninstall_produces_no_spans(stack, ci):
     assert closed == []
 
 
-def test_many_epochs_do_not_blow_stack_depth(stack, ci):
+def test_many_epochs_do_not_blow_stack_depth(stack, ci, ctx):
     """Regression for PR#20 comments #1/#2: rotating epochs must actually
     leave the stack, not just be close_scope'd in place. A long run should
     stay well below ``MAX_DEPTH`` after uninstall."""
-    h = torch_install(stack, ci)
+    h = torch_install(stack, ci, ctx)
     try:
         xs = torch.zeros(2, 4)
         ys = torch.zeros(2, 2)
@@ -231,9 +237,9 @@ def test_many_epochs_do_not_blow_stack_depth(stack, ci):
     assert [s.index for s in epochs] == list(range(50))
 
 
-def test_epoch_scopes_are_siblings_not_nested(stack, ci):
+def test_epoch_scopes_are_siblings_not_nested(stack, ci, ctx):
     """PR#20 #1: consecutive epochs must not be parent-child of each other."""
-    h = torch_install(stack, ci)
+    h = torch_install(stack, ci, ctx)
     try:
         xs = torch.zeros(2, 4)
         ys = torch.zeros(2, 2)
@@ -251,7 +257,29 @@ def test_epoch_scopes_are_siblings_not_nested(stack, ci):
         assert s.parent_id not in epoch_ids, f"epoch {s.index} is nested under another epoch"
 
 
-def test_user_scope_wrapping_training_loop_survives_epoch_rotation(stack, ci):
+def test_torch_yields_epoch_when_owned_in_context(stack, ci):
+    """When another hook has already claimed ``"epoch"``, torch must
+    not open its own epoch scope — otherwise the stack gets two epoch
+    spans per epoch when transformers is co-installed."""
+    ctx_owned = HookContext(owned_scopes={"epoch": "transformers"})
+    h = torch_install(stack, ci, ctx_owned)
+    try:
+        xs = torch.zeros(2, 4)
+        ys = torch.zeros(2, 2)
+        loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(xs, ys), batch_size=2)
+        for _ in range(3):
+            for _ in loader:
+                pass
+    finally:
+        h.uninstall()
+    closed = stack.drain_closed_all()
+    epochs = [s for s in closed if s.name == "epoch"]
+    assert epochs == [], f"torch emitted {len(epochs)} epoch spans when ownership was claimed"
+    # data_load spans should still land — only epoch rotation is suppressed.
+    assert any(s.name == "data_load" for s in closed)
+
+
+def test_user_scope_wrapping_training_loop_survives_epoch_rotation(stack, ci, ctx):
     """Epoch rotation must not pop user scopes opened above the epoch.
 
     Before this fix, ``_unwind_through`` popped the stack until it found
@@ -260,7 +288,7 @@ def test_user_scope_wrapping_training_loop_survives_epoch_rotation(stack, ci):
     (with ``end_ns`` set) after the second epoch started, even though
     the user never closed it.
     """
-    h = torch_install(stack, ci)
+    h = torch_install(stack, ci, ctx)
     try:
         train_phase = stack.push("train_phase")
         assert train_phase is not None
@@ -289,9 +317,9 @@ def test_user_scope_wrapping_training_loop_survives_epoch_rotation(stack, ci):
         )
 
 
-def test_stopiteration_does_not_emit_data_load_span(stack, ci):
+def test_stopiteration_does_not_emit_data_load_span(stack, ci, ctx):
     """PR#20 #3: exhausting the iterator must not produce a trailing span."""
-    h = torch_install(stack, ci)
+    h = torch_install(stack, ci, ctx)
     try:
         xs = torch.zeros(4, 4)
         ys = torch.zeros(4, 2)
@@ -305,13 +333,13 @@ def test_stopiteration_does_not_emit_data_load_span(stack, ci):
     assert len(data_loads) == 2
 
 
-def test_close_preserves_unrelated_scope_on_top(stack, ci):
+def test_close_preserves_unrelated_scope_on_top(stack, ci, ctx):
     """PR#20 #4: if a user scope was opened on top of our forward span,
     _close must fall back to close_scope rather than popping the user's
     scope. The user scope must survive until they close it themselves."""
     from cirron.core.scope import get_current_scope  # local import: uses default stack
 
-    h = torch_install(stack, ci)
+    h = torch_install(stack, ci, ctx)
     try:
         # Mirror the hook's manual sequence by pushing a scope via our
         # local stack, then simulating a "user opened something on top"
@@ -354,11 +382,11 @@ def test_close_preserves_unrelated_scope_on_top(stack, ci):
     del get_current_scope  # silence unused-import warning
 
 
-def test_epoch_step_threshold_fallback(stack, tmp_path):
+def test_epoch_step_threshold_fallback(stack, tmp_path, ctx):
     """Without a DataLoader, optimizer steps past the threshold rotate the epoch."""
     ci = Cirron(output_dir=str(tmp_path))
     ci._profile_config = {"torch": {"epoch_steps": 2}}
-    h = torch_install(stack, ci)
+    h = torch_install(stack, ci, ctx)
     try:
         model = torch.nn.Linear(2, 1)
         opt = torch.optim.SGD(model.parameters(), lr=0.01)
