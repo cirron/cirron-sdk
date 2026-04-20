@@ -17,6 +17,7 @@ from cirron.core.config import get_default
 from cirron.core.scope import get_default_stack
 from cirron.hooks._registry import (
     FRAMEWORK_MODULES,
+    HookContext,
     HookHandle,
     HookRegistry,
     NoopHookHandle,
@@ -115,7 +116,7 @@ def test_install_hooks_known_but_unregistered_warns(caplog):
 def test_install_hooks_installer_exception_is_swallowed(caplog):
     """A raising installer must not abort install_hooks for other frameworks."""
     registry = get_registry()
-    registry.register("explodes", lambda s, c: (_ for _ in ()).throw(RuntimeError("boom")))
+    registry.register("explodes", lambda s, c, x: (_ for _ in ()).throw(RuntimeError("boom")))
     handles: list = []
     try:
         FRAMEWORK_MODULES["explodes"] = "explodes"
@@ -154,7 +155,7 @@ def test_hook_handles_uninstall_on_shutdown():
             state["uninstalled"].append(self.name)
 
     registry = get_registry()
-    registry.register("tracked", lambda s, c: TrackingHandle())
+    registry.register("tracked", lambda s, c, x: TrackingHandle())
     FRAMEWORK_MODULES["tracked"] = "tracked"
     try:
         cirron.profile(frameworks=["tracked"])
@@ -184,8 +185,8 @@ def test_uninstall_exception_does_not_block_shutdown(caplog):
             flips["good"] = True
 
     registry = get_registry()
-    registry.register("bad", lambda s, c: BadHandle())
-    registry.register("good", lambda s, c: GoodHandle())
+    registry.register("bad", lambda s, c, x: BadHandle())
+    registry.register("good", lambda s, c, x: GoodHandle())
     FRAMEWORK_MODULES["bad"] = "bad"
     FRAMEWORK_MODULES["good"] = "good"
     try:
@@ -213,10 +214,81 @@ def test_noop_hook_handle_satisfies_protocol():
     h.uninstall()  # no-op, must not raise
 
 
+def test_priority_install_order():
+    """``install_hooks`` must install transformers before torch so
+    transformers can claim ``"epoch"`` before torch checks the context."""
+    order: list[str] = []
+
+    class _H:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def uninstall(self) -> None:  # pragma: no cover — not exercised
+            return None
+
+    def _make(name: str):
+        def installer(_s, _c, _ctx):
+            order.append(name)
+            return _H(name)
+
+        return installer
+
+    registry = get_registry()
+    saved = dict(registry._installers)
+    try:
+        registry.clear()
+        registry.register("torch", _make("torch"))
+        registry.register("transformers", _make("transformers"))
+        ci = get_default()
+        stack = get_default_stack()
+        install_hooks(["torch", "transformers"], stack, ci)
+        assert order == ["transformers", "torch"]
+    finally:
+        registry._installers.update(saved)
+
+
+def test_install_hooks_passes_shared_context():
+    """All installers in a single ``install_hooks`` call see the same
+    ``HookContext``; a claim made by the first installer is visible to
+    the second."""
+    seen: list[HookContext] = []
+
+    class _H:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def uninstall(self) -> None:  # pragma: no cover
+            return None
+
+    def _claimer(_s, _c, ctx):
+        ctx.owned_scopes["epoch"] = "transformers"
+        seen.append(ctx)
+        return _H("transformers")
+
+    def _observer(_s, _c, ctx):
+        seen.append(ctx)
+        return _H("torch")
+
+    registry = get_registry()
+    saved = dict(registry._installers)
+    try:
+        registry.clear()
+        registry.register("transformers", _claimer)
+        registry.register("torch", _observer)
+        ci = get_default()
+        stack = get_default_stack()
+        install_hooks(["torch", "transformers"], stack, ci)
+        assert len(seen) == 2
+        assert seen[0] is seen[1]
+        assert seen[1].owned_scopes.get("epoch") == "transformers"
+    finally:
+        registry._installers.update(saved)
+
+
 def test_hook_registry_register_get_names():
     reg = HookRegistry()
     assert reg.names() == []
-    reg.register("x", lambda s, c: NoopHookHandle("x"))
+    reg.register("x", lambda s, c, x: NoopHookHandle("x"))
     assert reg.get("x") is not None
     assert reg.names() == ["x"]
     assert reg.get("missing") is None
