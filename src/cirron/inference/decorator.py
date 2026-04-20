@@ -65,6 +65,7 @@ def _finish_call(
     cm: Any,
     start_ns: int,
     result: Any,
+    cfg: dict[str, Any],
 ) -> tuple[Any, bool]:
     """Run post-call detectors and decide whether the caller should still
     pop the scope / exit ``cm``. Returns ``(final_result, transferred)``
@@ -73,8 +74,15 @@ def _finish_call(
         maybe_mark_openai_usage(result)
     except Exception:
         pass
+    chunk_timing = bool(cfg.get("stream_chunk_timing", False))
     close = _make_stream_closer(stack, opened, cm)
-    wrapped = wrap_stream(result, start_ns, state=state, on_close=close)
+    wrapped = wrap_stream(
+        result,
+        start_ns,
+        state=state,
+        on_close=close,
+        chunk_timing=chunk_timing,
+    )
     return wrapped, wrapped is not result
 
 
@@ -114,7 +122,7 @@ def inference(
                 transferred = False
                 try:
                     result = await func(*args, **kwargs)
-                    final, transferred = _finish_call(stack, state, opened, cm, start_ns, result)
+                    final, transferred = _finish_call(stack, state, opened, cm, start_ns, result, cfg)
                     return final
                 finally:
                     if not transferred:
@@ -135,7 +143,7 @@ def inference(
             transferred = False
             try:
                 result = func(*args, **kwargs)
-                final, transferred = _finish_call(stack, state, opened, cm, start_ns, result)
+                final, transferred = _finish_call(stack, state, opened, cm, start_ns, result, cfg)
                 return final
             finally:
                 if not transferred:
