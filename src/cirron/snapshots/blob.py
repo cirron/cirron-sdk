@@ -240,10 +240,9 @@ def serialize_tensors(
 
     try:
         if all_torch:
-            from safetensors.torch import save_file as save_torch
-
             # Detach + move to CPU; safetensors requires contiguous host tensors.
             import torch  # type: ignore[import-not-found]
+            from safetensors.torch import save_file as save_torch
 
             prepared = {}
             for k, t in named.items():
