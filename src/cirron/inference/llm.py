@@ -192,48 +192,56 @@ def _wrap_sync(
     on_close: Callable[[], None] | None,
     chunk_timing: bool,
 ) -> Iterator[Any]:
+    # We re-bind ``state`` around every interaction with the underlying
+    # generator: advancing it (so user code inside the gen body still sees
+    # the request scope) and our own mark calls. The decorator has
+    # already exited ``isolated_state`` by this point, so the caller's
+    # Context is *not* polluted between yields — each bind / unbind pair
+    # is fully contained.
+    iter_gen = iter(gen)
+
     def _runner() -> Iterator[Any]:
         first_ns: int | None = None
         last_ns: int | None = None
         count = 0
         explicit_tokens: int | None = None
         try:
-            for item in gen:
-                now_ns = time.time_ns()
-                if first_ns is None:
-                    first_ns = now_ns
-                    token = _bind_state(state)
+            while True:
+                token = _bind_state(state)
+                try:
                     try:
+                        item = next(iter_gen)
+                    except StopIteration:
+                        break
+                    now_ns = time.time_ns()
+                    if first_ns is None:
+                        first_ns = now_ns
                         _safe_mark(
                             "time_to_first_token_ms",
                             (first_ns - start_ns) / 1e6,
                         )
-                    finally:
-                        _unbind_state(token)
-                elif chunk_timing and last_ns is not None:
-                    token = _bind_state(state)
-                    try:
+                    elif chunk_timing and last_ns is not None:
                         _point_mark("chunk_ms", (now_ns - last_ns) / 1e6, index=count)
-                    finally:
-                        _unbind_state(token)
-                last_ns = now_ns
-                count += 1
-                tok = _item_token_count(item)
-                if tok is not None:
-                    explicit_tokens = tok
+                    last_ns = now_ns
+                    count += 1
+                    tok = _item_token_count(item)
+                    if tok is not None:
+                        explicit_tokens = tok
+                finally:
+                    _unbind_state(token)
                 yield item
         finally:
             final_count = explicit_tokens if explicit_tokens is not None else count
             token = _bind_state(state)
             try:
                 _finalize_stream(final_count, start_ns, first_ns)
+                if on_close is not None:
+                    try:
+                        on_close()
+                    except Exception:
+                        pass
             finally:
                 _unbind_state(token)
-            if on_close is not None:
-                try:
-                    on_close()
-                except Exception:
-                    pass
 
     return _runner()
 
@@ -245,51 +253,55 @@ def _wrap_async(
     on_close: Callable[[], None] | None,
     chunk_timing: bool,
 ) -> AsyncIterator[Any]:
+    # Same discipline as ``_wrap_sync``: re-bind ``state`` around each
+    # step so user code inside the async generator body sees the request
+    # scope, but the caller's task Context is never left polluted
+    # between yields.
     async def _runner() -> AsyncIterator[Any]:
         first_ns: int | None = None
         last_ns: int | None = None
         count = 0
         explicit_tokens: int | None = None
+        aiter_gen = gen.__aiter__()
         try:
-            async for item in gen:
-                now_ns = time.time_ns()
-                if first_ns is None:
-                    first_ns = now_ns
-                    token = _bind_state(state)
+            while True:
+                token = _bind_state(state)
+                try:
                     try:
+                        item = await aiter_gen.__anext__()
+                    except StopAsyncIteration:
+                        break
+                    now_ns = time.time_ns()
+                    if first_ns is None:
+                        first_ns = now_ns
                         _safe_mark(
                             "time_to_first_token_ms",
                             (first_ns - start_ns) / 1e6,
                         )
-                    finally:
-                        _unbind_state(token)
-                elif chunk_timing and last_ns is not None:
-                    token = _bind_state(state)
-                    try:
+                    elif chunk_timing and last_ns is not None:
                         _point_mark("chunk_ms", (now_ns - last_ns) / 1e6, index=count)
-                    finally:
-                        _unbind_state(token)
-                last_ns = now_ns
-                count += 1
-                tok = _item_token_count(item)
-                if tok is not None:
-                    explicit_tokens = tok
+                    last_ns = now_ns
+                    count += 1
+                    tok = _item_token_count(item)
+                    if tok is not None:
+                        explicit_tokens = tok
+                finally:
+                    _unbind_state(token)
                 yield item
         finally:
             final_count = explicit_tokens if explicit_tokens is not None else count
             token = _bind_state(state)
             try:
                 _finalize_stream(final_count, start_ns, first_ns)
+                if on_close is not None:
+                    try:
+                        on_close()
+                    except Exception:
+                        pass
             finally:
                 _unbind_state(token)
-            if on_close is not None:
-                try:
-                    on_close()
-                except Exception:
-                    pass
 
     return _runner()
-
 
 
 # HuggingFace ``GenerationMixin.generate`` patch
@@ -371,11 +383,18 @@ def install_hf_generate_patch() -> bool:
             return False
 
         def _wrapped(self: Any, *args: Any, **kwargs: Any) -> Any:
-            scope = None
+            # Emit marks whenever *any* scope is open on the current
+            # thread. ``_safe_mark`` attaches to the innermost scope, and
+            # the dashboard groups marks by their enclosing ``request``
+            # span via the parent chain — so user code like
+            # ``with ci.scope("beam"): model.generate(...)`` still gets
+            # token marks attributed to the right request. A stricter
+            # ``scope.name == "request"`` check would miss that case.
+            active = False
             input_len: int | None = None
             try:
-                scope = get_current_scope()
-                if scope is not None and scope.name == "request":
+                active = get_current_scope() is not None
+                if active:
                     input_len = _input_length(args, kwargs)
                     if input_len is not None:
                         _safe_mark("input_tokens", input_len, source="hf", normalized=True)
@@ -383,7 +402,7 @@ def install_hf_generate_patch() -> bool:
                 pass
             result = original(self, *args, **kwargs)
             try:
-                if scope is not None and scope.name == "request":
+                if active:
                     out_len = _output_length(result)
                     if out_len is not None:
                         generated = (
