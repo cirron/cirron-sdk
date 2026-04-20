@@ -27,7 +27,8 @@ import time
 from collections.abc import AsyncIterator, Callable, Iterator
 from typing import Any
 
-from cirron.core.mark import MARK_KIND_SUMMARY, mark as _mark
+from cirron.core.mark import MARK_KIND_SUMMARY
+from cirron.core.mark import mark as _mark
 from cirron.core.scope import _ctx_state, get_current_scope
 
 
@@ -59,9 +60,7 @@ def _extract_usage(result: Any) -> dict[str, int] | None:
             return None
         return v
 
-    fields = {
-        k: _get(k) for k in ("prompt_tokens", "completion_tokens", "total_tokens")
-    }
+    fields = {k: _get(k) for k in ("prompt_tokens", "completion_tokens", "total_tokens")}
     if all(v is None for v in fields.values()):
         return None
     return {k: v for k, v in fields.items() if v is not None}
