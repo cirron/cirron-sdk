@@ -554,6 +554,7 @@ def _reset_for_tests() -> None:
     """Test-only: shut down the active profiler, drain global buffers, stop
     the flush thread, and clear the module-level default ``Cirron``.
     Ensures no state leaks across tests."""
+    from cirron.core.blob_queue import _reset_default_for_tests as _reset_blob_queue
     from cirron.core.config import _reset_default_for_tests
     from cirron.core.snapshot_buffer import _reset_default_for_tests as _reset_snapshot_buffer
 
@@ -579,4 +580,5 @@ def _reset_for_tests() -> None:
     _watched_model_ref = None
     _watched_warning_emitted = False
     _reset_snapshot_buffer()
+    _reset_blob_queue()
     _reset_default_for_tests()

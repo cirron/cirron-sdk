@@ -81,7 +81,11 @@ def serialize_and_enqueue(
     result = serialize_tensors(span_id, kind, named_tensors, output_dir)
     if result is None:
         return
-    path, size_bytes = result
+    path, size_bytes, written_keys = result
+    if not written_keys:
+        # serializer silently dropped every tensor (numpy path, all
+        # conversions failed). No blob to point at.
+        return
 
     try:
         local_uri = path.resolve().as_uri()
@@ -91,10 +95,11 @@ def serialize_and_enqueue(
         )
         return
 
-    tensor_names = {name for name, _ in named_tensors}
+    # Only upgrade records whose tensor actually made it into the file.
     # Weight records identify themselves by the bare parameter name; grad
     # records carry a ``.grad`` suffix. Match either shape so the
     # upgrade works for both kinds.
+    tensor_names = set(written_keys)
     if kind == "gradients":
         tensor_names = {f"{n}.grad" for n in tensor_names}
     _upgrade_records(records, tensor_names, local_uri, mode)

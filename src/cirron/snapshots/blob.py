@@ -199,13 +199,16 @@ def serialize_tensors(
     kind: str,
     named_tensors: list[tuple[str, Any]],
     output_dir: str | Path,
-) -> tuple[Path, int] | None:
+) -> tuple[Path, int, set[str]] | None:
     """Write ``named_tensors`` to ``<output_dir>/snapshots/<span_id>/<filename>``.
 
-    Returns ``(path, total_bytes)`` on success, or ``None`` when the
-    input is empty or serialization fails. ``kind`` must be
-    ``"weights"`` or ``"gradients"`` — it selects the filename per
-    spec §10.8.
+    Returns ``(path, total_bytes, written_keys)`` on success, or ``None``
+    when the input is empty or serialization fails. ``written_keys`` is
+    the set of tensor names actually present in the file — on the numpy
+    path some tensors can be skipped if ``_tensor_to_numpy`` fails, so
+    callers must use this set (not the input names) when annotating
+    records with a ``blob_uri``. ``kind`` must be ``"weights"`` or
+    ``"gradients"`` — it selects the filename per spec §10.8.
     """
     if not named_tensors:
         return None
@@ -227,6 +230,7 @@ def serialize_tensors(
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / filename
 
+    written_keys: set[str] = set()
     try:
         if all_torch:
             # Detach + move to CPU; safetensors requires contiguous host tensors.
@@ -241,11 +245,14 @@ def serialize_tensors(
                 # raise if something is genuinely unserializable.
                 prepared[k] = tt
             save_torch(prepared, str(path))
+            written_keys = set(prepared.keys())
             del torch  # avoid lingering reference on the path
         else:
             from safetensors.numpy import save_file as save_np
 
-            save_np(_to_numpy_dict(named), str(path))
+            numpy_dict = _to_numpy_dict(named)
+            save_np(numpy_dict, str(path))
+            written_keys = set(numpy_dict.keys())
     except Exception:
         log.warning(
             "cirron.snapshots.blob: serialize failed for span=%s kind=%s",
@@ -255,4 +262,4 @@ def serialize_tensors(
         )
         return None
 
-    return path, total_bytes
+    return path, total_bytes, written_keys
