@@ -217,6 +217,12 @@ def test_noop_hook_handle_satisfies_protocol():
 def test_priority_install_order():
     """``install_hooks`` must install transformers before torch so
     transformers can claim ``"epoch"`` before torch checks the context."""
+    # Force package init (and the real installers' self-registration) to
+    # run before we snapshot/clear the registry. Otherwise ``install_hooks``
+    # would re-import ``cirron.hooks`` mid-test and overwrite our stubs,
+    # making the test order-dependent.
+    import cirron.hooks  # noqa: F401
+
     order: list[str] = []
 
     class _H:
@@ -251,6 +257,11 @@ def test_install_hooks_passes_shared_context():
     """All installers in a single ``install_hooks`` call see the same
     ``HookContext``; a claim made by the first installer is visible to
     the second."""
+    # Same order-dependence guard as ``test_priority_install_order``:
+    # pre-import ``cirron.hooks`` so ``install_hooks`` doesn't re-import
+    # it and overwrite our stubs.
+    import cirron.hooks  # noqa: F401
+
     seen: list[HookContext] = []
 
     class _H:
