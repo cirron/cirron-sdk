@@ -486,7 +486,7 @@ def flush() -> None:
         active.flush()
 
 
-def watch(model: Any) -> Any:
+def watch(model: Any | None) -> Any | None:
     """Register ``model`` for snapshot capture (SDK-24, spec §4.2).
 
     Required for bare PyTorch loops — the torch hook sees optimizers and
@@ -494,13 +494,18 @@ def watch(model: Any) -> Any:
     walk ``named_parameters()`` on its own. Keras and HuggingFace users
     don't need this: their callbacks surface the model automatically.
 
-    Held as a ``weakref`` so keeping the SDK attached doesn't keep the
-    user's model alive. Returns the model unchanged so call sites can
-    chain (``model = ci.watch(build_model())``).
+    Pass ``None`` to clear the registration. Held as a ``weakref`` so
+    keeping the SDK attached doesn't keep the user's model alive.
+    Returns the argument unchanged so call sites can chain
+    (``model = ci.watch(build_model())``).
     """
     global _watched_model_ref, _watched_warning_emitted
     if model is None:
         _watched_model_ref = None
+        # Reset the "did we emit the diagnostic?" flag too — otherwise a
+        # clear-then-re-run sequence silently skips the diagnostic even
+        # though the state is effectively fresh.
+        _watched_warning_emitted = False
         return None
     try:
         _watched_model_ref = weakref.ref(model)
@@ -514,16 +519,20 @@ def watch(model: Any) -> Any:
     return model
 
 
-def get_watched_model() -> Any | None:
+def get_watched_model(*, warn_if_missing: bool = True) -> Any | None:
     """Return the currently watched model (or ``None``).
 
-    Called by framework hooks at epoch boundaries. Emits a single info-
-    level diagnostic the first time a bare-PyTorch run hits an epoch
-    boundary with no model registered, so users notice the silent-skip.
+    Called by framework hooks at epoch boundaries. When ``warn_if_missing``
+    is true, emits a single info-level diagnostic the first time a
+    bare-PyTorch run hits an epoch boundary with no model registered so
+    users notice the silent-skip. Pass ``warn_if_missing=False`` from
+    hooks that run on every step (e.g. torch's ``opt_post`` grad stash)
+    — in HF/Keras workflows those callers never require ``ci.watch()``
+    and the diagnostic would be misleading.
     """
     global _watched_warning_emitted
     if _watched_model_ref is None:
-        if not _watched_warning_emitted:
+        if warn_if_missing and not _watched_warning_emitted:
             log.info(
                 "cirron.snapshots: no model registered; call ci.watch(model) "
                 "to enable weight snapshots for bare PyTorch."

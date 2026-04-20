@@ -335,16 +335,27 @@ def capture(
     Returns ``[]`` — and does no work — when snapshots are disabled or
     no model is available. The empty return lets call sites stay
     single-line: ``buffer.extend(capture(ci, model, span_id))``.
+
+    If the weight pass raises partway through, any records already
+    collected are returned — an epoch with 900 of 1000 tensors captured
+    is strictly more useful than a dropped epoch, and the per-tensor
+    guards in ``capture_weight_stats`` / ``capture_gradient_stats``
+    already handle the common failures; this outer catch is for
+    catastrophic failures (e.g. ``named_parameters`` itself raises).
     """
     if getattr(cirron, "snapshots", None) not in _ACTIVE_MODES:
         return []
     if model is None:
         return []
+    out: list[TraceSnapshot] = []
     try:
-        out = capture_weight_stats(model, span_id)
+        out.extend(capture_weight_stats(model, span_id))
         if include_grads:
             out.extend(capture_gradient_stats(model, span_id))
-        return out
     except Exception:
-        log.warning("cirron.snapshots: capture raised; returning partial result", exc_info=True)
-        return []
+        log.warning(
+            "cirron.snapshots: capture raised; returning %d partial record(s)",
+            len(out),
+            exc_info=True,
+        )
+    return out
