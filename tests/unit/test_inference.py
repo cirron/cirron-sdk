@@ -207,6 +207,43 @@ def test_nested_scope_attaches_to_request():
     assert latency_marks[0].span_id == db.id
 
 
+def test_isolated_state_registry_pruned_after_drain():
+    """Per-request states must be evicted from ``_states`` after the flush
+    thread drains them, otherwise ``_states`` grows unboundedly with one
+    entry per request and every drain becomes O(requests-ever-served).
+
+    Regression for PR-29 review (Copilot comment 1).
+    """
+    stack = get_default_stack()
+    # Baseline: only existing thread/req entries from earlier tests already
+    # drained by the autouse fixture. Snapshot the count.
+    baseline = len(stack._states)
+
+    @ci.inference
+    def predict(i):
+        return i
+
+    for i in range(50):
+        predict(i)
+
+    # Before draining, the 50 per-request states are still registered
+    # because their closed deques hold the just-popped request scopes.
+    pending = [k for k in stack._states if isinstance(k, str) and k.startswith("req-")]
+    assert len(pending) == 50
+
+    # Drain: this should both yield the 50 request scopes AND prune the
+    # now-empty per-request entries.
+    drained = stack.drain_closed_all()
+    assert sum(1 for s in drained if s.name == "request") == 50
+
+    leftover_req = [k for k in stack._states if isinstance(k, str) and k.startswith("req-")]
+    assert leftover_req == [], f"per-request states leaked: {leftover_req}"
+
+    # And the dict size returned to baseline (no thread-keyed entries
+    # were dropped, only req-keyed ones).
+    assert len(stack._states) == baseline
+
+
 def test_works_without_ci_profile():
     """``ci.profile()`` was never called — decorator must not require it."""
 
