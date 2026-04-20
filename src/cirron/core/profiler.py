@@ -18,6 +18,8 @@ import logging
 import os
 import sys
 import threading
+import weakref
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Literal
 
 from cirron.core.config import Cirron, get_default
@@ -44,6 +46,14 @@ _PLATFORM_ENV_KEYS = (
 _profiler: Profiler | None = None
 _profiler_lock = threading.Lock()
 _atexit_registered = False
+
+# Callable that returns the model the user passed to ``ci.watch()``, or
+# ``None`` once the model is gone. Normally a ``weakref.ref``; falls back
+# to a ``lambda`` holding a strong reference for objects that don't
+# support weakref (C-extension types, bare ``object()``). Snapshot
+# capture (SDK-24) calls it at epoch boundaries.
+_watched_model_ref: Callable[[], Any] | None = None
+_watched_warning_emitted = False
 
 
 def _populate_device_attrs(attrs: dict[str, Any]) -> None:
@@ -476,6 +486,62 @@ def flush() -> None:
         active.flush()
 
 
+def watch(model: Any | None) -> Any | None:
+    """Register ``model`` for snapshot capture (SDK-24, spec §4.2).
+
+    Required for bare PyTorch loops — the torch hook sees optimizers and
+    DataLoaders but never receives a direct model reference, so it can't
+    walk ``named_parameters()`` on its own. Keras and HuggingFace users
+    don't need this: their callbacks surface the model automatically.
+
+    Pass ``None`` to clear the registration. Held as a ``weakref`` so
+    keeping the SDK attached doesn't keep the user's model alive.
+    Returns the argument unchanged so call sites can chain
+    (``model = ci.watch(build_model())``).
+    """
+    global _watched_model_ref, _watched_warning_emitted
+    if model is None:
+        _watched_model_ref = None
+        # Reset the "did we emit the diagnostic?" flag too — otherwise a
+        # clear-then-re-run sequence silently skips the diagnostic even
+        # though the state is effectively fresh.
+        _watched_warning_emitted = False
+        return None
+    try:
+        _watched_model_ref = weakref.ref(model)
+    except TypeError:
+        # Objects that don't support weakref (bare ``object()``, some
+        # C-extension types). Fall back to a strong reference via a
+        # lambda that returns the object — keeps the public contract
+        # working without blowing up.
+        _watched_model_ref = lambda m=model: m  # noqa: E731
+    _watched_warning_emitted = False
+    return model
+
+
+def get_watched_model(*, warn_if_missing: bool = True) -> Any | None:
+    """Return the currently watched model (or ``None``).
+
+    Called by framework hooks at epoch boundaries. When ``warn_if_missing``
+    is true, emits a single info-level diagnostic the first time a
+    bare-PyTorch run hits an epoch boundary with no model registered so
+    users notice the silent-skip. Pass ``warn_if_missing=False`` from
+    hooks that run on every step (e.g. torch's ``opt_post`` grad stash)
+    — in HF/Keras workflows those callers never require ``ci.watch()``
+    and the diagnostic would be misleading.
+    """
+    global _watched_warning_emitted
+    if _watched_model_ref is None:
+        if warn_if_missing and not _watched_warning_emitted:
+            log.info(
+                "cirron.snapshots: no model registered; call ci.watch(model) "
+                "to enable weight snapshots for bare PyTorch."
+            )
+            _watched_warning_emitted = True
+        return None
+    return _watched_model_ref()
+
+
 def _atexit_clear_singleton() -> None:
     """atexit hook — release the singleton so the interpreter tear-down path
     doesn't leave a stale reference behind."""
@@ -488,9 +554,11 @@ def _reset_for_tests() -> None:
     """Test-only: shut down the active profiler, drain global buffers, stop
     the flush thread, and clear the module-level default ``Cirron``.
     Ensures no state leaks across tests."""
+    from cirron.core.blob_queue import _reset_default_for_tests as _reset_blob_queue
     from cirron.core.config import _reset_default_for_tests
+    from cirron.core.snapshot_buffer import _reset_default_for_tests as _reset_snapshot_buffer
 
-    global _profiler
+    global _profiler, _watched_model_ref, _watched_warning_emitted
     with _profiler_lock:
         active = _profiler
     if active is not None:
@@ -509,4 +577,8 @@ def _reset_for_tests() -> None:
         get_default_mark_buffer().drain_all()
     except Exception:
         pass
+    _watched_model_ref = None
+    _watched_warning_emitted = False
+    _reset_snapshot_buffer()
+    _reset_blob_queue()
     _reset_default_for_tests()
