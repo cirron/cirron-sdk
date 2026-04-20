@@ -24,6 +24,12 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from typing import Any, Literal
 
+# Pre-import the inference submodule so its presence in ``sys.modules`` and
+# on ``cirron`` as an attribute doesn't race with the module-level
+# ``inference()`` function defined below. Without this, the first call into
+# ``Cirron.inference()`` would lazy-import ``cirron.inference.decorator``,
+# which sets ``cirron.inference`` to the submodule and shadows the function.
+import cirron.inference.decorator  # noqa: E402, F401
 from cirron.core.config import (
     Cirron,
     CirronYamlError,
