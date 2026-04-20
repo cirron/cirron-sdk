@@ -340,31 +340,17 @@ def install(scope_stack: ScopeStack, cirron: Cirron) -> TorchHookHandle:
     # --- DataLoader ---------------------------------------------------------
 
     def _unwind_through(scope_obj: Scope) -> None:
-        """Pop scopes until ``scope_obj`` is off the stack.
+        """Close ``scope_obj`` and surgically remove it from the stack.
 
         Epoch scopes are long-lived and must actually leave the stack on
-        rotation — otherwise every new epoch stacks on top of the closed
-        previous one and a long run hits ``MAX_DEPTH``. Cross-thread
-        rotation (very unlikely) can't mutate another thread's stack, so
-        we fall back to ``close_scope`` (marks ``end_ns`` only).
+        rotation — otherwise every new epoch nests under the previous
+        one and a long run hits ``MAX_DEPTH``. Delegating to
+        ``ScopeStack.close_and_remove`` means user scopes (and other
+        hooks' scopes) sitting above the epoch stay open across the
+        rotation, instead of being popped as collateral.
         """
         try:
-            if threading.get_ident() != scope_obj.thread_id:
-                scope_stack.close_scope(scope_obj)
-                return
-            # Pop any scopes opened on top of the epoch (defensive — the
-            # DataLoader iteration pattern closes data_load before the next
-            # __iter__ fires, so typically epoch is already on top).
-            guard = 128
-            while guard > 0 and scope_stack.current() is not None:
-                guard -= 1
-                top = scope_stack.current()
-                scope_stack.pop()
-                if top is scope_obj:
-                    return
-            # Scope wasn't found on the stack — mark it closed so the
-            # span still lands in the drained output.
-            scope_stack.close_scope(scope_obj)
+            scope_stack.close_and_remove(scope_obj)
         except Exception:
             log.warning("cirron.hooks.torch: unwind epoch failed", exc_info=True)
 
