@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from cirron.hooks._registry import HookHandle, NoopHookHandle, register_installer
+from cirron.hooks._registry import HookContext, HookHandle, NoopHookHandle, register_installer
 
 if TYPE_CHECKING:
     from cirron.core.config import Cirron
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 log = logging.getLogger("cirron.hooks.transformers")
 
 
-def install(scope_stack: ScopeStack, cirron: Cirron) -> HookHandle:
+def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> HookHandle:
     """Install the HuggingFace ``Trainer.__init__`` auto-attach callback."""
     try:
         from cirron.hooks._transformers_impl import install as _install
@@ -31,7 +31,7 @@ def install(scope_stack: ScopeStack, cirron: Cirron) -> HookHandle:
         )
         return NoopHookHandle("transformers")
     try:
-        return _install(scope_stack, cirron)
+        return _install(scope_stack, cirron, context)
     except Exception:
         log.warning(
             "cirron.hooks.transformers: install failed; returning a no-op handle.",

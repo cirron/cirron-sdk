@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from cirron.core.config import Cirron, get_default
 from cirron.core.flush import flush_now, start_flush_thread, stop_flush_thread
-from cirron.core.mark import get_default_mark_buffer
+from cirron.core.mark import get_default_mark_buffer, set_fallback_span_id
 from cirron.core.scope import Scope, get_default_stack
 from cirron.core.transport import select_transport
 from cirron.hooks._registry import detect_frameworks, install_hooks
@@ -44,6 +44,39 @@ _PLATFORM_ENV_KEYS = (
 _profiler: Profiler | None = None
 _profiler_lock = threading.Lock()
 _atexit_registered = False
+
+
+def _populate_device_attrs(attrs: dict[str, Any]) -> None:
+    """Best-effort CUDA / mixed-precision detection on the session root.
+
+    Writes ``device`` / ``cuda_count`` / ``mixed_precision`` into ``attrs``
+    in place. Guarded so the absence of torch (core-only install) doesn't
+    surface an import error — CPU-only sessions just get ``device=cpu``.
+    """
+    try:
+        import torch  # type: ignore[import-not-found]
+    except Exception:
+        attrs["device"] = "cpu"
+        return
+    try:
+        cuda_available = bool(torch.cuda.is_available())
+    except Exception:
+        cuda_available = False
+    if cuda_available:
+        attrs["device"] = "cuda"
+        try:
+            attrs["cuda_count"] = int(torch.cuda.device_count())
+        except Exception:
+            pass
+    else:
+        attrs["device"] = "cpu"
+    # Autocast is per-call context, but the global default state ("are we
+    # in a mixed-precision region *right now*?") is a reasonable rough
+    # cut for the session root. Skip silently if the probe fails.
+    try:
+        attrs["mixed_precision"] = bool(torch.is_autocast_enabled())
+    except Exception:
+        return
 
 
 def _rank_from_env() -> int:
@@ -166,6 +199,11 @@ class Profiler:
                 if _profiler is self:
                     _profiler = None
             return
+        # Clear the mark fallback first so any mark fired during hook
+        # teardown (extremely unusual but possible) falls through to the
+        # legacy sentinel rather than pointing at a scope we're about
+        # to close.
+        set_fallback_span_id(None)
         if self._root_scope is not None:
             try:
                 _close_root_scope(self._root_scope)
@@ -360,6 +398,13 @@ def profile(
         }
         for key, value in platform_context.items():
             root_attrs[f"cirron.{key}"] = value
+        # Cheap cross-run semantic attrs so consumers can compare traces
+        # without re-deriving environment info from spans further down.
+        # Keys mirror spec §5.4 root-scope attrs; detection is best-effort
+        # and failure is silent.
+        if detected:
+            root_attrs["framework"] = ",".join(detected)
+        _populate_device_attrs(root_attrs)
         root_scope = get_default_stack().push("cirron.session", **root_attrs)
         if root_scope is None:
             # Only possible if the caller already had ``MAX_DEPTH`` scopes open
@@ -370,6 +415,11 @@ def profile(
                 "cirron.profile(): could not open root scope — caller's thread "
                 "already at MAX_DEPTH. Continuing without a session span."
             )
+        # Point ``ci.mark()`` at the session root so marks fired from
+        # worker threads (or from HF Trainer's ``on_log`` after
+        # ``on_epoch_end``) attach to ``cirron.session`` instead of the
+        # legacy ``"root"`` sentinel. Cleared in ``Profiler.shutdown``.
+        set_fallback_span_id(root_scope.id if root_scope is not None else None)
 
         _profiler = Profiler(
             ci,
