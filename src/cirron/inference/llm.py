@@ -28,7 +28,7 @@ from collections.abc import AsyncIterator, Callable, Iterator
 from typing import Any
 
 from cirron.core.mark import MARK_KIND_SUMMARY, mark as _mark
-from cirron.core.scope import get_current_scope
+from cirron.core.scope import _ctx_state, get_current_scope
 
 
 def _safe_mark(name: str, value: float | int, **attrs: Any) -> None:
@@ -105,27 +105,55 @@ def _finalize_stream(count: int, start_ns: int, first_ns: int | None) -> None:
 def wrap_stream(
     result: Any,
     start_ns: int,
+    state: Any = None,
     on_close: Callable[[], None] | None = None,
 ) -> Any:
     """If ``result`` is a sync or async generator, return a wrapper that
     records TTFT + throughput marks and invokes ``on_close`` exactly once
     when the wrapper is exhausted / closed. Otherwise return ``result``
     unchanged and do not consume ``on_close``.
+
+    ``state`` is the per-request ``_ScopeState`` from ``isolated_state``
+    (or ``None``). When provided, the wrapper re-binds the ContextVar
+    around its own mark calls so throughput / TTFT attach to the request
+    span even though the decorator's ``with`` block has already exited.
     """
     if inspect.isasyncgen(result):
-        return _wrap_async(result, start_ns, on_close)
+        return _wrap_async(result, start_ns, state, on_close)
     if inspect.isgenerator(result) or (
         hasattr(result, "__iter__")
         and hasattr(result, "__next__")
         and not isinstance(result, (str, bytes, dict, list, tuple))
     ):
-        return _wrap_sync(result, start_ns, on_close)
+        return _wrap_sync(result, start_ns, state, on_close)
     return result
+
+
+def _bind_state(state: Any) -> Any:
+    """Return a reset-token for ``_ctx_state`` pointing at ``state``; the
+    caller must pass the returned token to ``_ctx_state.reset``. Returns
+    ``None`` when ``state`` is ``None`` or binding fails."""
+    if state is None:
+        return None
+    try:
+        return _ctx_state.set(state)
+    except Exception:
+        return None
+
+
+def _unbind_state(token: Any) -> None:
+    if token is None:
+        return
+    try:
+        _ctx_state.reset(token)
+    except Exception:
+        pass
 
 
 def _wrap_sync(
     gen: Iterator[Any],
     start_ns: int,
+    state: Any,
     on_close: Callable[[], None] | None,
 ) -> Iterator[Any]:
     def _runner() -> Iterator[Any]:
@@ -136,13 +164,14 @@ def _wrap_sync(
             for item in gen:
                 if first_ns is None:
                     first_ns = time.time_ns()
+                    token = _bind_state(state)
                     try:
                         _safe_mark(
                             "time_to_first_token_ms",
                             (first_ns - start_ns) / 1e6,
                         )
-                    except Exception:
-                        pass
+                    finally:
+                        _unbind_state(token)
                 count += 1
                 tok = _item_token_count(item)
                 if tok is not None:
@@ -150,7 +179,11 @@ def _wrap_sync(
                 yield item
         finally:
             final_count = explicit_tokens if explicit_tokens is not None else count
-            _finalize_stream(final_count, start_ns, first_ns)
+            token = _bind_state(state)
+            try:
+                _finalize_stream(final_count, start_ns, first_ns)
+            finally:
+                _unbind_state(token)
             if on_close is not None:
                 try:
                     on_close()
@@ -163,6 +196,7 @@ def _wrap_sync(
 def _wrap_async(
     gen: AsyncIterator[Any],
     start_ns: int,
+    state: Any,
     on_close: Callable[[], None] | None,
 ) -> AsyncIterator[Any]:
     async def _runner() -> AsyncIterator[Any]:
@@ -173,13 +207,14 @@ def _wrap_async(
             async for item in gen:
                 if first_ns is None:
                     first_ns = time.time_ns()
+                    token = _bind_state(state)
                     try:
                         _safe_mark(
                             "time_to_first_token_ms",
                             (first_ns - start_ns) / 1e6,
                         )
-                    except Exception:
-                        pass
+                    finally:
+                        _unbind_state(token)
                 count += 1
                 tok = _item_token_count(item)
                 if tok is not None:
@@ -187,7 +222,11 @@ def _wrap_async(
                 yield item
         finally:
             final_count = explicit_tokens if explicit_tokens is not None else count
-            _finalize_stream(final_count, start_ns, first_ns)
+            token = _bind_state(state)
+            try:
+                _finalize_stream(final_count, start_ns, first_ns)
+            finally:
+                _unbind_state(token)
             if on_close is not None:
                 try:
                     on_close()
