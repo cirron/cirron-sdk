@@ -287,13 +287,19 @@ Nesting: arbitrary depth, max 64 levels enforced. Scopes beyond 64 are dropped w
 def mark(
     name: str,
     value: float | int | str | bool,
+    *,
+    kind: str = "point",  # or "summary"
     **attrs,
 ) -> None: ...
 ```
 
 **Behavior**
 
-Attaches a named value to the innermost open scope. If no scope is open, attaches to the root scope.
+Attaches a named value to the innermost open scope on the current thread. When no scope is open on that thread, the mark attaches to the `cirron.session` scope opened by `ci.profile()` — consumers should not have to special-case a separate root sentinel. If `ci.profile()` was never called (pre-profile imports, tests that don't open a session), the mark falls back to the legacy `"root"` span-id sentinel.
+
+`kind` distinguishes the two uses of `ci.mark()`:
+- `"point"` (default) — a time-series data point recorded while the span is open (per-step loss, per-batch accuracy). Viewers render these as a time series.
+- `"summary"` — a canonical end-of-span value (epoch-final loss, run-level accuracy). Viewers render these as a single value attached to the span.
 
 Stored in a lock-free ring buffer per thread (default 64k capacity). When full, oldest marks are dropped and a drop counter is incremented. Drop counts surface in the dashboard.
 
@@ -475,11 +481,14 @@ Installed when `torch` is importable.
 
 | Hook | Mechanism | Scope produced |
 |---|---|---|
-| Forward pass | `nn.Module.__call__` pre/post hook | `forward` (per module) |
+| Forward pass | `nn.Module.__call__` pre/post hook | `forward` (per module, `mode=train\|eval` attr) |
 | Backward pass | Autograd hooks on `Tensor.backward` | `backward` |
-| Optimizer step | Monkey-patch `optim.Optimizer.step` | `optimizer_step` |
+| Optimizer step | Global `register_optimizer_step_pre/post_hook` | `optimizer_step` |
 | DataLoader | `DataLoader.__iter__` / `__next__` wrapping | `data_load` per batch |
+| Step boundary | First `__next__` after each `optimizer_step` | `step` wrapping `data_load/forward/backward/optimizer_step` |
 | CUDA time | `torch.cuda.Event` pairs per scope | GPU time attribute on spans |
+
+Canonical shape: `session → epoch → step → {data_load, forward, backward, optimizer_step}`. The `step` span covers one optimizer cycle; gradient-accumulation loops with multiple forward/backward pairs between optimizer steps produce a single `step` span covering all of them.
 
 Epoch boundary detection: when using `ci.epochs()`, the wrapper handles it. When not using wrappers, the SDK detects epoch boundaries by DataLoader iterator exhaustion (new iterator = new epoch). Fallback: every N optimizer steps (configurable, default 1000).
 
@@ -491,7 +500,11 @@ Installed when `tensorflow` is importable. A `keras.callbacks.Callback` subclass
 
 **HuggingFace transformers**
 
-Installed when `transformers` is importable. A `TrainerCallback` is auto-registered by patching `Trainer.__init__`. Opens scopes for `on_train_begin`, `on_epoch_begin`, `on_step_begin`, etc. Nests correctly with the torch hooks underneath.
+Installed when `transformers` is importable. A `TrainerCallback` is auto-registered by patching `Trainer.__init__`. Opens scopes for `on_train_begin`, `on_epoch_begin`, `on_step_begin`, etc. Torch's per-module `forward` / `backward` / `optimizer_step` spans nest correctly under the HF `step` span.
+
+**Hook coexistence**
+
+When multiple framework hooks are installed, `ci.profile()` installs them in a fixed priority order — `transformers` > `tensorflow` > `torch` — so higher-level frameworks can claim ownership of the semantic scopes (`epoch`, `step`) before lower-level frameworks decide whether to open their own. This prevents duplicate `epoch` spans when (for example) HF `Trainer` drives a torch `DataLoader`: transformers claims `epoch` and `step` via its callback, and torch yields. Each installer receives a shared `HookContext` with an `owned_scopes: dict[str, str]` mapping for this negotiation.
 
 **scikit-learn**
 
@@ -721,6 +734,7 @@ model TraceMark {
   valueBool   Boolean?
   attrs       Json?
   tsNs        BigInt     // wall time
+  kind        String     @default("point")  // "point" | "summary"
 
   span        TraceSpan  @relation(fields: [spanId], references: [id])
 
@@ -730,6 +744,8 @@ model TraceMark {
   @@index([spanId, tsNs])
 }
 ```
+
+`kind` distinguishes time-series data points (`"point"`) from canonical end-of-span summary values (`"summary"`). See §4.5 for the SDK-side semantics.
 
 **`TraceSnapshot`**
 
