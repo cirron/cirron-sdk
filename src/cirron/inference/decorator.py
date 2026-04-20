@@ -37,7 +37,13 @@ from cirron.inference.llm import (
 )
 
 
-def _make_stream_closer(stack: ScopeStack, opened: Any, cm: Any) -> Callable[[], None]:
+def _make_stream_closer(stack: ScopeStack, opened: Any) -> Callable[[], None]:
+    """Return an idempotent closer that closes ``opened`` when the stream
+    wrapper is exhausted / GC'd. ``isolated_state`` cleanup is *not*
+    routed through here — the decorator always exits the context manager
+    synchronously so the caller's ContextVar is never left bound across
+    stream consumption.
+    """
     called = False
 
     def _close() -> None:
@@ -50,10 +56,6 @@ def _make_stream_closer(stack: ScopeStack, opened: Any, cm: Any) -> Callable[[],
                 stack.close_and_remove(opened)
             except Exception:
                 pass
-        try:
-            cm.__exit__(None, None, None)
-        except Exception:
-            pass
 
     return _close
 
@@ -62,20 +64,19 @@ def _finish_call(
     stack: ScopeStack,
     state: Any,
     opened: Any,
-    cm: Any,
     start_ns: int,
     result: Any,
     cfg: dict[str, Any],
 ) -> tuple[Any, bool]:
     """Run post-call detectors and decide whether the caller should still
-    pop the scope / exit ``cm``. Returns ``(final_result, transferred)``
-    where ``transferred`` means the stream wrapper now owns cleanup."""
+    pop the scope. Returns ``(final_result, transferred)`` where
+    ``transferred`` means the stream wrapper now owns scope closure."""
     try:
         maybe_mark_openai_usage(result)
     except Exception:
         pass
     chunk_timing = bool(cfg.get("stream_chunk_timing", False))
-    close = _make_stream_closer(stack, opened, cm)
+    close = _make_stream_closer(stack, opened)
     wrapped = wrap_stream(
         result,
         start_ns,
@@ -122,15 +123,18 @@ def inference(
                 transferred = False
                 try:
                     result = await func(*args, **kwargs)
-                    final, transferred = _finish_call(
-                        stack, state, opened, cm, start_ns, result, cfg
-                    )
+                    final, transferred = _finish_call(stack, state, opened, start_ns, result, cfg)
                     return final
                 finally:
-                    if not transferred:
-                        if opened is not None:
-                            stack.pop()
-                        cm.__exit__(None, None, None)
+                    # Always unbind the ContextVar here — if we leaked it
+                    # past a returned stream, the caller's task context
+                    # would attribute its own ``ci.scope`` / ``ci.mark``
+                    # calls to this request until the stream is GC'd.
+                    # The stream wrapper re-binds ``state`` internally
+                    # around each step and around its own cleanup.
+                    if not transferred and opened is not None:
+                        stack.pop()
+                    cm.__exit__(None, None, None)
 
             awrapper._cirron_config = cfg  # type: ignore[attr-defined]
             return awrapper
@@ -145,13 +149,15 @@ def inference(
             transferred = False
             try:
                 result = func(*args, **kwargs)
-                final, transferred = _finish_call(stack, state, opened, cm, start_ns, result, cfg)
+                final, transferred = _finish_call(stack, state, opened, start_ns, result, cfg)
                 return final
             finally:
-                if not transferred:
-                    if opened is not None:
-                        stack.pop()
-                    cm.__exit__(None, None, None)
+                # Always unbind the ContextVar — see ``awrapper`` above
+                # for rationale. The stream wrapper re-binds ``state``
+                # internally around each step.
+                if not transferred and opened is not None:
+                    stack.pop()
+                cm.__exit__(None, None, None)
 
         wrapper._cirron_config = cfg  # type: ignore[attr-defined]
         return wrapper
