@@ -86,9 +86,7 @@ class _ScopeState:
 # concurrent async requests each see their own scope tree instead of sharing
 # one thread-local stack on the event-loop thread. When unset, ``_get_state``
 # falls back to the existing ``threading.local`` path unchanged.
-_ctx_state: ContextVar[_ScopeState | None] = ContextVar(
-    "cirron_scope_state", default=None
-)
+_ctx_state: ContextVar[_ScopeState | None] = ContextVar("cirron_scope_state", default=None)
 
 
 def _resolve_rank() -> int:
