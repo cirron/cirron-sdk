@@ -58,11 +58,15 @@ class TFHookHandle:
         self._undos = []
 
 
-def _make_callback_class(scope_stack: ScopeStack) -> type:
-    """Build ``CirronKerasCallback`` bound to the given scope stack.
+def _make_callback_class(scope_stack: ScopeStack, context: HookContext) -> type:
+    """Build ``CirronKerasCallback`` bound to the given scope stack and
+    shared ``HookContext``.
 
-    Defined as a factory so we don't import ``keras`` at module top — that
-    happens lazily inside :func:`install`.
+    Defined as a factory so we don't import ``keras`` at module top —
+    that happens lazily inside :func:`install`. The callback claims
+    ``epoch`` ownership in ``context.owned_scopes`` at
+    ``on_train_begin`` (not install time), so a co-installed torch
+    hook only yields when Keras ``fit`` is actually running.
     """
     import keras  # type: ignore[import-not-found]
 
@@ -114,6 +118,26 @@ def _make_callback_class(scope_stack: ScopeStack) -> type:
             super().__init__()
             self._epoch_scope: Scope | None = None
             self._batch_scope: Scope | None = None
+            self._claimed_epoch = False
+
+        def on_train_begin(self, logs: Any = None) -> None:
+            def _do() -> None:
+                # Claim ownership now that a fit() run is actually
+                # starting so a co-installed torch hook (SDK-20) stops
+                # opening its own epoch spans.
+                if "epoch" not in context.owned_scopes:
+                    context.owned_scopes["epoch"] = "tensorflow"
+                    self._claimed_epoch = True
+
+            _catch("on_train_begin", _do)
+
+        def on_train_end(self, logs: Any = None) -> None:
+            def _do() -> None:
+                if self._claimed_epoch and context.owned_scopes.get("epoch") == "tensorflow":
+                    context.owned_scopes.pop("epoch", None)
+                self._claimed_epoch = False
+
+            _catch("on_train_end", _do)
 
         def on_epoch_begin(self, epoch: int, logs: Any = None) -> None:
             def _do() -> None:
@@ -157,22 +181,12 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> TF
 
     import keras  # type: ignore[import-not-found]
 
-    claimed_epoch = "epoch" not in context.owned_scopes
-    if claimed_epoch:
-        context.owned_scopes["epoch"] = "tensorflow"
-
-    callback_cls = _make_callback_class(scope_stack)
+    # ``epoch`` ownership is claimed at ``on_train_begin`` (not here).
+    # Keeps vanilla torch loops in a process where keras happens to be
+    # importable from losing their own epoch spans.
+    callback_cls = _make_callback_class(scope_stack, context)
 
     handle = TFHookHandle()
-    if claimed_epoch:
-        handle.add_undo(
-            "release_epoch_claim",
-            lambda: (
-                context.owned_scopes.pop("epoch", None)
-                if context.owned_scopes.get("epoch") == "tensorflow"
-                else None
-            ),
-        )
 
     model_cls = keras.Model
     orig_fit = model_cls.fit
