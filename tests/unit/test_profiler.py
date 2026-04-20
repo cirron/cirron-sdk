@@ -221,6 +221,57 @@ def test_module_level_sugar_delegates_to_singleton():
     assert profiler_mod._profiler is None
 
 
+def test_session_root_has_framework_and_device_attrs():
+    """Spec §5.4: session-root scope carries cross-run semantic attrs
+    (``framework`` list, ``device``) so consumers can compare traces
+    without re-deriving env info from downstream spans."""
+    p = cirron.profile(frameworks=["torch"])
+    try:
+        assert p._root_scope is not None
+        attrs = p._root_scope.attrs
+        assert attrs.get("framework") == "torch"
+        # ``device`` is populated best-effort; at minimum it's set (cpu
+        # on CI, cuda on a GPU runner).
+        assert attrs.get("device") in {"cpu", "cuda"}
+    finally:
+        p.shutdown()
+
+
+def test_mark_fallback_attaches_to_session_then_clears_on_shutdown():
+    """``ci.profile()`` points ``ci.mark()`` at the session root id so
+    marks fired with no open scope (e.g. from a worker thread or after
+    a span closed) land on the session. ``shutdown()`` clears it."""
+    from cirron.core import mark as mark_mod
+
+    p = cirron.profile()
+    try:
+        assert p._root_scope is not None
+        assert mark_mod.get_fallback_span_id() == p._root_scope.id
+
+        # Fire a mark from a worker thread — it never pushes a scope,
+        # so it would otherwise land on the "root" sentinel.
+        import threading as _threading
+
+        def worker() -> None:
+            cirron.mark("from_worker", 1.0)
+
+        t = _threading.Thread(target=worker)
+        t.start()
+        t.join()
+
+        from cirron.core.mark import get_default_mark_buffer
+
+        marks = get_default_mark_buffer().drain_all()
+        by_name = {m.name: m for m in marks}
+        assert "from_worker" in by_name
+        assert by_name["from_worker"].span_id == p._root_scope.id
+    finally:
+        p.shutdown()
+    # Fallback is cleared so a mark after shutdown falls back to the
+    # legacy sentinel rather than a stale session id.
+    assert mark_mod.get_fallback_span_id() is None
+
+
 def test_transport_selection_event_stream(monkeypatch):
     monkeypatch.setenv("CIRRON_RUN_ID", "run-1")
     p = cirron.profile()

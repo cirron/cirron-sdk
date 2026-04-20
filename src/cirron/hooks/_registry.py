@@ -18,6 +18,7 @@ import importlib
 import importlib.util
 import logging
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
@@ -31,6 +32,32 @@ FRAMEWORK_MODULES: dict[str, str] = {
     "tensorflow": "tensorflow",
     "transformers": "transformers",
 }
+
+# Install-order priority. Higher-level frameworks install first so they
+# can claim ownership of semantic scopes (``epoch``, ``step``) before
+# lower-level frameworks (torch) decide whether to open their own. Lower
+# index = earlier install.
+_FRAMEWORK_PRIORITY: dict[str, int] = {
+    "transformers": 0,
+    "tensorflow": 1,
+    "torch": 2,
+}
+
+
+@dataclass
+class HookContext:
+    """Cross-installer coordination state for a single ``install_hooks`` call.
+
+    ``owned_scopes`` maps a semantic scope name (``"epoch"``, ``"step"``)
+    to the framework that opens and closes it. Installers consult this
+    at install time to decide whether to open their own span for the
+    same semantic unit — e.g. torch yields ``epoch`` when transformers
+    has already claimed it, because HF ``Trainer`` drives torch's
+    ``DataLoader.__iter__`` itself and would otherwise cause two
+    ``epoch`` spans per epoch.
+    """
+
+    owned_scopes: dict[str, str] = field(default_factory=dict)
 
 
 @runtime_checkable
@@ -56,7 +83,7 @@ class NoopHookHandle:
         return None
 
 
-Installer = Callable[["ScopeStack", "Cirron"], HookHandle]
+Installer = Callable[["ScopeStack", "Cirron", HookContext], HookHandle]
 
 
 class HookRegistry:
@@ -141,7 +168,17 @@ def install_hooks(
     # "torch"]`` doesn't double-register torch's global forward/optimizer
     # hooks or double-wrap ``Tensor.backward`` — ``uninstall`` records one
     # undo per call and would only reverse the second layer.
-    for name in dict.fromkeys(names):
+    deduped = list(dict.fromkeys(names))
+    # Sort by semantic priority (transformers → tensorflow → torch), with
+    # any unknown names at the end in their original relative order. This
+    # lets higher-level installers claim ``HookContext.owned_scopes`` entries
+    # before torch decides whether to open its own epoch / step spans.
+    ordered = sorted(
+        deduped,
+        key=lambda n: (_FRAMEWORK_PRIORITY.get(n, len(_FRAMEWORK_PRIORITY)), deduped.index(n)),
+    )
+    context = HookContext()
+    for name in ordered:
         installer = _REGISTRY.get(name)
         if installer is None:
             if name in FRAMEWORK_MODULES:
@@ -157,7 +194,7 @@ def install_hooks(
                 )
             continue
         try:
-            handle = installer(scope_stack, cirron)
+            handle = installer(scope_stack, cirron, context)
         except Exception:
             log.warning(
                 "cirron.hooks: installer for %r raised; skipping.",
