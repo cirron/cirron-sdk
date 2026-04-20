@@ -251,6 +251,44 @@ def test_epoch_scopes_are_siblings_not_nested(stack, ci):
         assert s.parent_id not in epoch_ids, f"epoch {s.index} is nested under another epoch"
 
 
+def test_user_scope_wrapping_training_loop_survives_epoch_rotation(stack, ci):
+    """Epoch rotation must not pop user scopes opened above the epoch.
+
+    Before this fix, ``_unwind_through`` popped the stack until it found
+    the previous epoch, closing any scope sitting on top as collateral.
+    A user scope wrapping the whole training loop would end up emitted
+    (with ``end_ns`` set) after the second epoch started, even though
+    the user never closed it.
+    """
+    h = torch_install(stack, ci)
+    try:
+        train_phase = stack.push("train_phase")
+        assert train_phase is not None
+        xs = torch.zeros(2, 4)
+        ys = torch.zeros(2, 2)
+        loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(xs, ys), batch_size=2)
+        for _ in range(3):
+            for _ in loader:
+                pass
+        # The user scope is still open (end_ns unset) and still the
+        # innermost-open scope of ours — the epoch rotation put itself
+        # on top, then took itself off surgically.
+        assert train_phase.end_ns is None
+        # Close the user scope ourselves so we don't leave it dangling.
+        stack.pop()
+    finally:
+        h.uninstall()
+    closed = stack.drain_closed_all()
+    epochs = [s for s in closed if s.name == "epoch"]
+    assert len(epochs) == 3
+    # Every epoch has the user scope as its parent — siblings of each
+    # other, children of ``train_phase``.
+    for s in epochs:
+        assert s.parent_id == train_phase.id, (
+            f"epoch {s.index} parent is {s.parent_id!r}, expected train_phase id"
+        )
+
+
 def test_stopiteration_does_not_emit_data_load_span(stack, ci):
     """PR#20 #3: exhausting the iterator must not produce a trailing span."""
     h = torch_install(stack, ci)

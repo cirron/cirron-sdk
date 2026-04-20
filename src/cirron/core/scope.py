@@ -260,6 +260,40 @@ class ScopeStack:
             return
         state.closed.append(scope_obj)
 
+    def close_and_remove(self, scope_obj: Scope) -> None:
+        """Close ``scope_obj`` and surgically remove it from its owning
+        thread's stack, without disturbing scopes above or below it.
+
+        Same-thread callers get the full surgical semantics: the scope
+        comes off the stack list so future ``push()``es won't nest under
+        it, and any scope sitting on top of it in the stack stays open.
+        Cross-thread callers fall back to :meth:`close_scope` — we can't
+        safely mutate another thread's stack list.
+
+        Framework hooks use this to rotate long-lived internal spans
+        (``epoch``, ``step``) without popping user scopes that happen to
+        be open above them.
+        """
+        if threading.get_ident() != scope_obj.thread_id:
+            self.close_scope(scope_obj)
+            return
+        state = self._state
+        stack = state.stack
+        try:
+            stack.remove(scope_obj)
+        except ValueError:
+            # Not on this thread's stack — either already popped or was
+            # pushed on a different thread than the current one. Fall
+            # back to close-in-place so the span still lands in the
+            # closed deque.
+            self.close_scope(scope_obj)
+            return
+        if scope_obj.end_ns is not None:
+            return
+        scope_obj.cpu_ns = time.process_time_ns() - scope_obj.cpu_start_ns
+        scope_obj.end_ns = time.time_ns()
+        state.closed.append(scope_obj)
+
 
 _default_stack = ScopeStack()
 
