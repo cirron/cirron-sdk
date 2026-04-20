@@ -218,6 +218,52 @@ def test_close_scope_then_pop_does_not_double_emit():
     assert closed[0] is scope_obj
 
 
+def test_close_and_remove_surgical():
+    """``close_and_remove`` closes a middle scope and removes just that
+    entry; scopes above and below remain open and on the stack."""
+    stack = ScopeStack()
+    a = stack.push("a")
+    b = stack.push("b")
+    c = stack.push("c")
+    assert a is not None and b is not None and c is not None
+
+    stack.close_and_remove(b)
+
+    assert b.end_ns is not None
+    assert a.end_ns is None
+    assert c.end_ns is None
+    assert stack.depth() == 2
+    # ``current()`` is the innermost remaining scope (c), proving c
+    # stayed above a after b was surgically removed.
+    assert stack.current() is c
+
+    closed = stack.drain_closed()
+    assert closed == [b]
+
+
+def test_close_and_remove_cross_thread_falls_back_to_close_scope():
+    """From a thread that didn't push the scope, ``close_and_remove``
+    must not touch any thread's stack list — it falls back to
+    ``close_scope``'s mark-end-only behavior."""
+    stack = ScopeStack()
+    pushed: list[Scope] = []
+
+    def pusher() -> None:
+        pushed.append(stack.push("owned"))  # type: ignore[arg-type]
+
+    t = threading.Thread(target=pusher)
+    t.start()
+    t.join()
+
+    (scope_obj,) = pushed
+    assert scope_obj is not None
+    stack.close_and_remove(scope_obj)
+    assert scope_obj.end_ns is not None
+
+    closed = stack.drain_closed_all()
+    assert closed == [scope_obj]
+
+
 def test_drop_count_all_aggregates_across_threads():
     stack = ScopeStack()
 
