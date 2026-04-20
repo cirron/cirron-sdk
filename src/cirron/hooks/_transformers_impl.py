@@ -24,6 +24,7 @@ from cirron.core.mark import mark as _mark
 if TYPE_CHECKING:
     from cirron.core.config import Cirron
     from cirron.core.scope import Scope, ScopeStack
+    from cirron.hooks._registry import HookContext
 
 log = logging.getLogger("cirron.hooks.transformers")
 
@@ -212,15 +213,36 @@ def _make_callback_class(scope_stack: ScopeStack) -> type:
     return CirronTrainerCallback
 
 
-def install(scope_stack: ScopeStack, cirron: Cirron) -> TransformersHookHandle:
-    """Install the TrainerCallback auto-attach via ``Trainer.__init__`` monkey-patch."""
+def install(
+    scope_stack: ScopeStack, cirron: Cirron, context: HookContext
+) -> TransformersHookHandle:
+    """Install the TrainerCallback auto-attach via ``Trainer.__init__`` monkey-patch.
+
+    Claims ``"epoch"`` in ``context.owned_scopes`` so a co-installed
+    torch hook (SDK-20) yields its ``DataLoader.__iter__`` epoch
+    rotation — otherwise HF ``Trainer`` would drive both callbacks and
+    produce duplicate ``epoch`` spans.
+    """
     del cirron  # unused today; kept for registry signature parity.
 
     from transformers import Trainer  # type: ignore[import-not-found]
 
+    claimed_epoch = "epoch" not in context.owned_scopes
+    if claimed_epoch:
+        context.owned_scopes["epoch"] = "transformers"
+
     callback_cls = _make_callback_class(scope_stack)
 
     handle = TransformersHookHandle()
+    if claimed_epoch:
+        handle.add_undo(
+            "release_epoch_claim",
+            lambda: (
+                context.owned_scopes.pop("epoch", None)
+                if context.owned_scopes.get("epoch") == "transformers"
+                else None
+            ),
+        )
 
     # Idempotency guard: if a previous install left a tagged wrapper in
     # place (e.g. a leaked install in a test), don't double-patch.
