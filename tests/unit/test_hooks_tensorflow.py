@@ -19,6 +19,7 @@ keras = tf.keras  # exposed for test readability
 from cirron.core.config import Cirron  # noqa: E402
 from cirron.core.mark import get_default_mark_buffer  # noqa: E402
 from cirron.core.scope import get_default_stack  # noqa: E402
+from cirron.hooks._registry import HookContext  # noqa: E402
 from cirron.hooks._tf_impl import install as tf_install  # noqa: E402
 
 
@@ -49,6 +50,11 @@ def ci(tmp_path):
     return Cirron(output_dir=str(tmp_path))
 
 
+@pytest.fixture
+def ctx():
+    return HookContext()
+
+
 def _tiny_model():
     model = keras.Sequential([keras.layers.Dense(2, input_shape=(4,))])
     model.compile(optimizer="sgd", loss="mse", metrics=["mae"])
@@ -61,30 +67,30 @@ def _tiny_data(n=6):
     return x, y
 
 
-def test_install_returns_handle_with_tensorflow_name(stack, ci):
-    h = tf_install(stack, ci)
+def test_install_returns_handle_with_tensorflow_name(stack, ci, ctx):
+    h = tf_install(stack, ci, ctx)
     try:
         assert h.name == "tensorflow"
     finally:
         h.uninstall()
 
 
-def test_uninstall_restores_fit(stack, ci):
+def test_uninstall_restores_fit(stack, ci, ctx):
     orig_fit = keras.Model.fit
-    h = tf_install(stack, ci)
+    h = tf_install(stack, ci, ctx)
     assert keras.Model.fit is not orig_fit
     h.uninstall()
     assert keras.Model.fit is orig_fit
 
 
-def test_double_uninstall_is_noop(stack, ci):
-    h = tf_install(stack, ci)
+def test_double_uninstall_is_noop(stack, ci, ctx):
+    h = tf_install(stack, ci, ctx)
     h.uninstall()
     h.uninstall()
 
 
-def test_fit_produces_epoch_and_batch_scope_tree(stack, ci):
-    h = tf_install(stack, ci)
+def test_fit_produces_epoch_and_batch_scope_tree(stack, ci, ctx):
+    h = tf_install(stack, ci, ctx)
     try:
         model = _tiny_model()
         x, y = _tiny_data(n=6)
@@ -101,8 +107,8 @@ def test_fit_produces_epoch_and_batch_scope_tree(stack, ci):
     assert [s.index for s in batches] == [0, 1, 2, 0, 1, 2]
 
 
-def test_batches_are_children_of_their_epoch(stack, ci):
-    h = tf_install(stack, ci)
+def test_batches_are_children_of_their_epoch(stack, ci, ctx):
+    h = tf_install(stack, ci, ctx)
     try:
         model = _tiny_model()
         x, y = _tiny_data(n=4)
@@ -116,10 +122,10 @@ def test_batches_are_children_of_their_epoch(stack, ci):
         assert b.parent_id == epoch.id
 
 
-def test_callback_attaches_on_every_fit_without_mutating_caller(stack, ci):
+def test_callback_attaches_on_every_fit_without_mutating_caller(stack, ci, ctx):
     """AC #2: every fit gets a CirronKerasCallback, and the caller's
     ``callbacks`` list is not mutated across calls."""
-    h = tf_install(stack, ci)
+    h = tf_install(stack, ci, ctx)
     try:
         callback_cls = h.CirronKerasCallback  # type: ignore[attr-defined]
 
@@ -148,8 +154,8 @@ def test_callback_attaches_on_every_fit_without_mutating_caller(stack, ci):
     assert not any(isinstance(cb, callback_cls) for cb in cbs)
 
 
-def test_user_supplied_callback_instance_is_not_duplicated(stack, ci):
-    h = tf_install(stack, ci)
+def test_user_supplied_callback_instance_is_not_duplicated(stack, ci, ctx):
+    h = tf_install(stack, ci, ctx)
     try:
         callback_cls = h.CirronKerasCallback  # type: ignore[attr-defined]
         user_cb = callback_cls()
@@ -164,11 +170,11 @@ def test_user_supplied_callback_instance_is_not_duplicated(stack, ci):
         h.uninstall()
 
 
-def test_handler_exception_does_not_crash_training(stack, ci, monkeypatch, caplog):
+def test_handler_exception_does_not_crash_training(stack, ci, ctx, monkeypatch, caplog):
     """AC #3: a scope-push failure must be caught; training must complete."""
     from cirron.core.scope import ScopeStack
 
-    h = tf_install(stack, ci)
+    h = tf_install(stack, ci, ctx)
     try:
         monkeypatch.setattr(
             ScopeStack,
@@ -184,8 +190,8 @@ def test_handler_exception_does_not_crash_training(stack, ci, monkeypatch, caplo
         h.uninstall()
 
 
-def test_metric_marks_captured(stack, ci):
-    h = tf_install(stack, ci)
+def test_metric_marks_captured(stack, ci, ctx):
+    h = tf_install(stack, ci, ctx)
     try:
         model = _tiny_model()
         x, y = _tiny_data(n=4)
