@@ -153,6 +153,26 @@ def test_two_epochs_produce_two_epoch_scopes(stack, ci, ctx):
     assert [s.index for s in epochs] == [0, 1]
 
 
+def test_forward_scope_has_mode_attr(stack, ci, ctx):
+    """Forward spans carry ``mode=train|eval`` so trace consumers can
+    distinguish training forwards from inference forwards without
+    reaching into the model."""
+    h = torch_install(stack, ci, ctx)
+    try:
+        model = torch.nn.Linear(4, 2)
+        model.train(True)
+        model(torch.zeros(1, 4))
+        model.train(False)
+        model(torch.zeros(1, 4))
+    finally:
+        h.uninstall()
+    closed = stack.drain_closed_all()
+    forwards = [s for s in closed if s.name == "forward"]
+    assert len(forwards) == 2
+    modes = [s.attrs.get("mode") for s in forwards]
+    assert modes == ["train", "eval"]
+
+
 def test_inference_only_model_no_optimizer(stack, ci, ctx):
     """Model used only for forward inference shouldn't crash or miss spans."""
     h = torch_install(stack, ci, ctx)
@@ -277,6 +297,88 @@ def test_torch_yields_epoch_when_owned_in_context(stack, ci):
     assert epochs == [], f"torch emitted {len(epochs)} epoch spans when ownership was claimed"
     # data_load spans should still land — only epoch rotation is suppressed.
     assert any(s.name == "data_load" for s in closed)
+
+
+def test_step_scope_wraps_forward_backward_optimizer(stack, ci, ctx):
+    """One ``step`` scope per optimizer cycle, containing the per-batch
+    ops as children. This is the canonical shape
+    ``epoch → step → {data_load, forward, backward, optimizer_step}``
+    users expect."""
+    h = torch_install(stack, ci, ctx)
+    try:
+        model = torch.nn.Linear(4, 2)
+        opt = torch.optim.SGD(model.parameters(), lr=0.01)
+        xs = torch.zeros(6, 4)
+        ys = torch.zeros(6, 2)
+        loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(xs, ys), batch_size=2)
+        for x, y in loader:
+            out = model(x)
+            loss = ((out - y) ** 2).mean()
+            loss.backward()
+            opt.step()
+            opt.zero_grad()
+    finally:
+        h.uninstall()
+    closed = stack.drain_closed_all()
+    by_id = {s.id: s for s in closed}
+    steps = [s for s in closed if s.name == "step"]
+    assert len(steps) == 3  # 6 samples / batch 2
+    # Every per-batch op nests inside its step.
+    for op_name in ("data_load", "forward", "backward", "optimizer_step"):
+        ops = [s for s in closed if s.name == op_name]
+        assert ops, f"no {op_name} spans"
+        for op in ops:
+            parent = by_id.get(op.parent_id) if op.parent_id else None
+            assert parent is not None and parent.name == "step", (
+                f"{op_name} parent is {parent.name if parent else None!r}, expected step"
+            )
+
+
+def test_gradient_accumulation_produces_single_step(stack, ci, ctx):
+    """Multiple forward/backward pairs between optimizer steps should
+    produce ONE step span covering all of them."""
+    h = torch_install(stack, ci, ctx)
+    try:
+        model = torch.nn.Linear(4, 2)
+        opt = torch.optim.SGD(model.parameters(), lr=0.01)
+        xs = torch.zeros(4, 4)
+        ys = torch.zeros(4, 2)
+        loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(xs, ys), batch_size=1)
+        iter_count = 0
+        for x, y in loader:
+            out = model(x)
+            loss = ((out - y) ** 2).mean()
+            loss.backward()
+            iter_count += 1
+            if iter_count % 2 == 0:
+                opt.step()
+                opt.zero_grad()
+    finally:
+        h.uninstall()
+    closed = stack.drain_closed_all()
+    steps = [s for s in closed if s.name == "step"]
+    # 4 batches, optimizer.step every 2 → 2 step spans.
+    assert len(steps) == 2
+
+
+def test_torch_yields_step_when_owned_in_context(stack, ci):
+    """When another hook owns ``step``, torch does not open its own."""
+    ctx_owned = HookContext(owned_scopes={"step": "transformers"})
+    h = torch_install(stack, ci, ctx_owned)
+    try:
+        model = torch.nn.Linear(4, 2)
+        opt = torch.optim.SGD(model.parameters(), lr=0.01)
+        xs = torch.zeros(2, 4)
+        ys = torch.zeros(2, 2)
+        loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(xs, ys), batch_size=2)
+        for x, y in loader:
+            out = model(x)
+            ((out - y) ** 2).mean().backward()
+            opt.step()
+    finally:
+        h.uninstall()
+    closed = stack.drain_closed_all()
+    assert not [s for s in closed if s.name == "step"]
 
 
 def test_user_scope_wrapping_training_loop_survives_epoch_rotation(stack, ci, ctx):
