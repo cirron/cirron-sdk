@@ -345,6 +345,10 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
             scope_obj, start_ev = entries.pop()
         _maybe_end_cuda(scope_obj, start_ev)
         _close(scope_obj)
+        # Capture grad references while ``.grad`` is still populated —
+        # the user's ``zero_grad`` runs after ``optimizer.step`` returns
+        # and would otherwise strip the grads before the epoch boundary.
+        _catch("snapshot_grad_stash", _stash_grad_refs)
         # Close the implicit step scope (opened on the prior
         # ``DataLoader.__next__``). Gradient-accumulation loops call
         # forward/backward multiple times per optimizer step; the step
@@ -390,6 +394,56 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
 
     # --- DataLoader ---------------------------------------------------------
 
+    # Grad tensors stashed at each ``opt_post`` so ``capture`` can read
+    # them at the epoch boundary even after the user's
+    # ``opt.zero_grad(set_to_none=True)`` has nulled ``Parameter.grad``.
+    # Cleared on epoch rotation; replaced wholesale on every step so the
+    # snapshot reflects the final step's grads.
+    grad_refs_state: dict[str, list[tuple[str, Any]]] = {"refs": []}
+
+    def _stash_grad_refs() -> None:
+        from cirron.core.profiler import get_watched_model
+
+        if cirron.snapshots not in ("stats", "sampled", "full"):
+            return
+        # Suppress the "no model registered" diagnostic here — this
+        # fires every optimizer step, including in HF/Keras workflows
+        # that don't require ``ci.watch()`` at all. The epoch-boundary
+        # call in ``_capture_epoch_snapshots`` is the right place for
+        # the user-visible signal.
+        model = get_watched_model(warn_if_missing=False)
+        if model is None:
+            return
+        named = getattr(model, "named_parameters", None)
+        if not callable(named):
+            return
+        try:
+            grad_refs_state["refs"] = [
+                (str(n), p.grad) for n, p in named() if p.grad is not None
+            ]
+        except Exception:
+            log.warning("cirron.hooks.torch: grad ref stash failed", exc_info=True)
+
+    def _capture_epoch_snapshots(span_id: str) -> None:
+        """Snapshot weights + grads for the currently watched model.
+
+        Weights are read live off the model. Grads are read from the
+        refs stashed by ``_stash_grad_refs`` at the last ``opt_post``
+        — the user's ``zero_grad`` runs between that hook and the next
+        epoch rotation, so ``Parameter.grad`` itself is already ``None``
+        by now.
+        """
+        from cirron.core.profiler import get_watched_model
+        from cirron.core.snapshot_buffer import get_default_snapshot_buffer
+        from cirron.snapshots.stats import capture, capture_grad_stats_from_refs
+
+        model = get_watched_model()
+        records = capture(cirron, model, span_id, include_grads=False)
+        records.extend(capture_grad_stats_from_refs(grad_refs_state["refs"], span_id))
+        grad_refs_state["refs"] = []
+        if records:
+            get_default_snapshot_buffer().extend(records)
+
     def _unwind_through(scope_obj: Scope) -> None:
         """Close ``scope_obj`` and surgically remove it from the stack.
 
@@ -416,7 +470,12 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
                 step_state["scope"] = None
                 step_state["index"] += 1
         prev = epoch_state["scope"]
+        # Capture weight + gradient stats against the outgoing epoch span
+        # *before* we unwind it — the span id is what the snapshots link
+        # to (spec §5.4). Skipped silently when ``snapshots`` is off or
+        # ``ci.watch()`` was never called (bare torch case).
         if prev is not None:
+            _catch("snapshot_capture", _capture_epoch_snapshots, prev.id)
             _unwind_through(prev)
         new_scope = _open("epoch", index=epoch_state["index"])
         epoch_state["scope"] = new_scope
@@ -486,6 +545,9 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
             step_state["scope"] = None
         sc = epoch_state["scope"]
         if sc is not None:
+            # Snapshot the final epoch before its span closes — otherwise
+            # the last epoch in the run would miss its weight/grad record.
+            _catch("snapshot_capture_final", _capture_epoch_snapshots, sc.id)
             _unwind_through(sc)
             epoch_state["scope"] = None
 

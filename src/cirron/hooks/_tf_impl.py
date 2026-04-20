@@ -58,7 +58,7 @@ class TFHookHandle:
         self._undos = []
 
 
-def _make_callback_class(scope_stack: ScopeStack, context: HookContext) -> type:
+def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> type:
     """Build ``CirronKerasCallback`` bound to the given scope stack and
     shared ``HookContext``.
 
@@ -90,6 +90,17 @@ def _make_callback_class(scope_stack: ScopeStack, context: HookContext) -> type:
                 scope_stack.close_scope(scope_obj)
         except Exception:
             log.warning("cirron.hooks.tensorflow: scope close failed", exc_info=True)
+
+    def _capture_epoch_snapshots(model: Any, span_id: str) -> None:
+        """Keras callback exposes the model via ``self.model``; capture
+        weight stats against the span id before the epoch closes. No-ops
+        when snapshots are disabled or the model is unset."""
+        from cirron.core.snapshot_buffer import get_default_snapshot_buffer
+        from cirron.snapshots.stats import capture
+
+        records = capture(cirron, model, span_id)
+        if records:
+            get_default_snapshot_buffer().extend(records)
 
     def _record_logs(logs: Any) -> None:
         if not logs:
@@ -148,6 +159,17 @@ def _make_callback_class(scope_stack: ScopeStack, context: HookContext) -> type:
         def on_epoch_end(self, epoch: int, logs: Any = None) -> None:
             def _do() -> None:
                 _catch("on_epoch_end.logs", _record_logs, logs)
+                # Capture weight stats against the open epoch span
+                # before we close it — keras callbacks expose the model
+                # as ``self.model``, set by the fit() runtime.
+                scope_obj = self._epoch_scope
+                if scope_obj is not None:
+                    _catch(
+                        "on_epoch_end.snapshot",
+                        _capture_epoch_snapshots,
+                        getattr(self, "model", None),
+                        scope_obj.id,
+                    )
                 _close(self._epoch_scope)
                 self._epoch_scope = None
 
@@ -177,14 +199,12 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> TF
     torch hook yields its own epoch rotation (same coexistence pattern
     as transformers).
     """
-    del cirron  # unused today; kept for registry signature parity.
-
     import keras  # type: ignore[import-not-found]
 
     # ``epoch`` ownership is claimed at ``on_train_begin`` (not here).
     # Keeps vanilla torch loops in a process where keras happens to be
     # importable from losing their own epoch spans.
-    callback_cls = _make_callback_class(scope_stack, context)
+    callback_cls = _make_callback_class(scope_stack, cirron, context)
 
     handle = TFHookHandle()
 
