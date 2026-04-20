@@ -277,6 +277,62 @@ def test_epoch_scopes_are_siblings_not_nested(stack, ci, ctx):
         assert s.parent_id not in epoch_ids, f"epoch {s.index} is nested under another epoch"
 
 
+def test_torch_does_not_yield_when_context_claimed_post_install(stack, ci):
+    """Regression for CI: if ``HookContext.owned_scopes`` is empty at
+    torch install time AND no other hook's callback runs to claim
+    ownership, torch must still open its own epoch/step spans.
+
+    The earlier implementation captured ``skip_epoch``/``skip_step`` as
+    bools at install time. That meant a process where transformers was
+    merely importable (and pre-claimed ownership at install) would
+    silently lose epoch/step spans on a vanilla torch loop that never
+    invoked HF ``Trainer``."""
+    empty_ctx = HookContext()
+    h = torch_install(stack, ci, empty_ctx)
+    try:
+        xs = torch.zeros(4, 4)
+        ys = torch.zeros(4, 2)
+        loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(xs, ys), batch_size=2)
+        model = torch.nn.Linear(4, 2)
+        opt = torch.optim.SGD(model.parameters(), lr=0.01)
+        for _ in range(2):
+            for xb, yb in loader:
+                out = model(xb)
+                ((out - yb) ** 2).mean().backward()
+                opt.step()
+                opt.zero_grad()
+    finally:
+        h.uninstall()
+    closed = stack.drain_closed_all()
+    names = {s.name for s in closed}
+    assert "epoch" in names
+    assert "step" in names
+
+
+def test_torch_yields_when_context_claim_appears_after_install(stack, ci):
+    """The converse: a claim placed into the shared ``HookContext``
+    *after* torch is installed (mirroring transformers claiming at
+    ``on_train_begin`` rather than install time) must make torch yield
+    on the next iteration."""
+    ctx = HookContext()
+    h = torch_install(stack, ci, ctx)
+    try:
+        xs = torch.zeros(2, 4)
+        ys = torch.zeros(2, 2)
+        loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(xs, ys), batch_size=2)
+        # Simulate another hook claiming epoch/step at runtime.
+        ctx.owned_scopes["epoch"] = "transformers"
+        ctx.owned_scopes["step"] = "transformers"
+        for _ in loader:
+            pass
+    finally:
+        h.uninstall()
+    closed = stack.drain_closed_all()
+    names = {s.name for s in closed}
+    assert "epoch" not in names
+    assert "step" not in names
+
+
 def test_torch_yields_epoch_when_owned_in_context(stack, ci):
     """When another hook has already claimed ``"epoch"``, torch must
     not open its own epoch scope — otherwise the stack gets two epoch
