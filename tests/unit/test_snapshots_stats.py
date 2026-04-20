@@ -39,7 +39,7 @@ class _FakeTensor:
     optionally carries a ``.grad`` tensor.
     """
 
-    def __init__(self, arr: np.ndarray, grad: "_FakeTensor | None" = None) -> None:
+    def __init__(self, arr: np.ndarray, grad: _FakeTensor | None = None) -> None:
         self._arr = np.asarray(arr)
         self.grad = grad
 
@@ -51,10 +51,10 @@ class _FakeTensor:
     def dtype(self) -> Any:
         return self._arr.dtype
 
-    def detach(self) -> "_FakeTensor":
+    def detach(self) -> _FakeTensor:
         return self
 
-    def cpu(self) -> "_FakeTensor":
+    def cpu(self) -> _FakeTensor:
         return self
 
     def numpy(self) -> np.ndarray:
@@ -171,9 +171,7 @@ def test_capture_no_op_when_model_is_none():
 
 def test_capture_default_includes_grads():
     grad = _FakeTensor(np.array([1.0, -1.0], dtype=np.float32))
-    model = _FakeModel(
-        [("layer.weight", _FakeTensor(np.ones((2,), dtype=np.float32), grad=grad))]
-    )
+    model = _FakeModel([("layer.weight", _FakeTensor(np.ones((2,), dtype=np.float32), grad=grad))])
     cirron = _fake_cirron(snapshots="stats")
 
     records = capture(cirron, model, span_id="epoch-1")
@@ -183,9 +181,7 @@ def test_capture_default_includes_grads():
 
 def test_capture_include_grads_false_omits_grads():
     grad = _FakeTensor(np.array([1.0], dtype=np.float32))
-    model = _FakeModel(
-        [("layer.weight", _FakeTensor(np.ones((2,), dtype=np.float32), grad=grad))]
-    )
+    model = _FakeModel([("layer.weight", _FakeTensor(np.ones((2,), dtype=np.float32), grad=grad))])
     cirron = _fake_cirron(snapshots="stats")
 
     records = capture(cirron, model, span_id="epoch-1", include_grads=False)
@@ -200,9 +196,7 @@ def test_snapshots_flow_into_batch_json(tmp_path):
     JSON serialization with shape/dtype preserved."""
     buf = SnapshotBuffer()
     grad = _FakeTensor(np.array([0.1, 0.2], dtype=np.float32))
-    model = _FakeModel(
-        [("layer.weight", _FakeTensor(np.arange(4, dtype=np.float32), grad=grad))]
-    )
+    model = _FakeModel([("layer.weight", _FakeTensor(np.arange(4, dtype=np.float32), grad=grad))])
     cirron = _fake_cirron(snapshots="stats")
 
     buf.extend(capture(cirron, model, span_id="epoch-7"))
@@ -228,12 +222,7 @@ def test_snapshots_flow_into_batch_json(tmp_path):
 
 def test_snapshot_buffer_soft_cap_drops_excess():
     buf = SnapshotBuffer(soft_cap=3)
-    model = _FakeModel(
-        [
-            (f"p{i}", _FakeTensor(np.ones((2,), dtype=np.float32)))
-            for i in range(5)
-        ]
-    )
+    model = _FakeModel([(f"p{i}", _FakeTensor(np.ones((2,), dtype=np.float32))) for i in range(5)])
     cirron = _fake_cirron(snapshots="stats")
 
     buf.extend(capture(cirron, model, span_id="epoch-1", include_grads=False))

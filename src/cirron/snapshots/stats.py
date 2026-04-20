@@ -31,13 +31,22 @@ HISTOGRAM_BINS = 16
 _ACTIVE_MODES = ("stats", "sampled", "full")
 
 
+def _is_torch_tensor(tensor: Any) -> bool:
+    """Cheap ``isinstance(tensor, torch.Tensor)`` without importing torch
+    when it isn't already loaded. ``type(x).__module__`` is a zero-cost
+    attribute lookup — the full isinstance check would force us to have
+    ``torch`` imported."""
+    mod = type(tensor).__module__
+    return mod == "torch" or mod.startswith("torch.")
+
+
 def _to_numpy(tensor: Any) -> Any:
     """Best-effort conversion of a tensor to a ``numpy.ndarray``.
 
-    Tries PyTorch (``.detach().cpu().numpy()``), then the Keras
-    ``.numpy()`` method, then ``np.asarray``. Returns ``None`` when the
-    tensor cannot be read without side effects — the caller skips the
-    record.
+    Used on the Keras / generic path. The torch fast path in
+    :func:`_tensor_stats` skips this to avoid a full host-side copy per
+    parameter — on a ResNet50-scale model ``np.histogram`` on the
+    numpy view dominated the budget.
     """
     import numpy as np  # local import: numpy is a core dep but keep it lazy here
 
@@ -166,9 +175,7 @@ def _make_record(
     try:
         stats = _tensor_stats(arr)
     except Exception:
-        log.warning(
-            "cirron.snapshots: stats computation failed for %r", tensor_name, exc_info=True
-        )
+        log.warning("cirron.snapshots: stats computation failed for %r", tensor_name, exc_info=True)
         return None
     return TraceSnapshot(
         id=uuid.uuid4().hex,
