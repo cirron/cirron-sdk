@@ -36,6 +36,7 @@ from dataclasses import field as dataclass_field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
+from cirron.core.blob_queue import BlobUploadQueue, get_default_blob_queue
 from cirron.core.mark import Mark, MarkBuffer, get_default_mark_buffer
 from cirron.core.scope import Scope, ScopeStack, get_default_stack
 from cirron.core.snapshot_buffer import SnapshotBuffer, get_default_snapshot_buffer
@@ -68,10 +69,15 @@ class Transport(Protocol):
 
     SDK-12 will implement this against the kernel event stream / HTTP
     ingest route. Returning ``False`` or raising causes the batch to stay
-    in the spool (spool is the source of truth).
+    in the spool (spool is the source of truth). ``upload_blob`` (added
+    for SDK-25) uploads a safetensors file and returns its remote URI,
+    or ``None`` on failure; the flush thread uses this to drain the blob
+    queue before the JSON batch that references the blobs.
     """
 
     def send(self, batch: dict[str, Any]) -> bool: ...
+
+    def upload_blob(self, local_path: str | Path, remote_key: str) -> str | None: ...
 
 
 def _scope_to_dict(s: Scope) -> dict[str, Any]:
@@ -205,11 +211,13 @@ class FlushThread(threading.Thread):
         interval: float = DEFAULT_INTERVAL_SEC,
         wake_event: threading.Event | None = None,
         snapshot_buffer: SnapshotBuffer | None = None,
+        blob_queue: BlobUploadQueue | None = None,
     ) -> None:
         super().__init__(daemon=True, name="cirron-flush")
         self._scope_stack = scope_stack
         self._mark_buffer = mark_buffer
         self._snapshot_buffer = snapshot_buffer
+        self._blob_queue = blob_queue
         self._writer = writer
         self._transport = transport
         self._interval = interval
@@ -232,6 +240,16 @@ class FlushThread(threading.Thread):
             self._tick()
 
     def _tick(self) -> None:
+        # Drain pending blob uploads before producing the JSON batch.
+        # Uploading *first* means the worker's "blob must exist when
+        # metadata arrives" contract (spec §5.3) holds even in the face
+        # of interleaved retries. Blob upload failures are logged and
+        # the queue retains nothing — the local safetensors file is
+        # already on disk; the JSON batch's ``blob_uri`` still points
+        # at the local file, and a later retry path can be added in a
+        # platform-side ticket.
+        if self._blob_queue is not None and self._transport is not None:
+            self._drain_blobs()
         batch = self.drain_once()
         if batch is None:
             return
@@ -241,6 +259,25 @@ class FlushThread(threading.Thread):
                 self._transport.send(batch.to_json())
             except Exception:
                 log.warning("cirron transport.send failed; batch remains in spool", exc_info=True)
+
+    def _drain_blobs(self) -> None:
+        assert self._blob_queue is not None and self._transport is not None
+        pending = self._blob_queue.drain()
+        for blob in pending:
+            try:
+                remote_uri = self._transport.upload_blob(blob.local_path, blob.remote_key)
+            except Exception:
+                log.warning(
+                    "cirron transport.upload_blob raised for %s; local blob retained",
+                    blob.remote_key,
+                    exc_info=True,
+                )
+                continue
+            if remote_uri is None:
+                log.warning(
+                    "cirron transport.upload_blob failed for %s; local blob retained",
+                    blob.remote_key,
+                )
 
     def drain_once(self) -> Batch | None:
         # Drain across all producer threads — ``ScopeStack``/``MarkBuffer``
@@ -422,6 +459,7 @@ def start_flush_thread(
         stack = get_default_stack()
         buf = get_default_mark_buffer()
         snap_buf = get_default_snapshot_buffer()
+        blob_q = get_default_blob_queue()
         # Wire producer-side buffer-full signaling into the shared wake event
         # so the flush thread can drain ahead of its interval when pressure
         # builds up.
@@ -439,6 +477,7 @@ def start_flush_thread(
                 resolved_interval,
                 wake_ref,
                 snapshot_buffer=snap_buf,
+                blob_queue=blob_q,
             )
 
         _supervisor = _Supervisor(factory, transport)
