@@ -17,11 +17,15 @@ import pytest
 
 import cirron as ci
 from cirron.core.mark import (
+    MARK_KIND_POINT,
+    MARK_KIND_SUMMARY,
     MAX_STRING_BYTES,
     ROOT_SPAN_ID,
     Mark,
     MarkBuffer,
     get_default_mark_buffer,
+    get_fallback_span_id,
+    set_fallback_span_id,
 )
 from cirron.core.scope import get_default_stack
 
@@ -71,6 +75,51 @@ def test_mark_without_scope_attaches_to_root():
     assert marks[0].span_id == ROOT_SPAN_ID
     assert marks[0].value == 42
     assert marks[0].value_type == "int"
+
+
+def test_mark_without_scope_uses_fallback_span_id_when_set():
+    """When ``ci.profile()`` has set the session root scope id as the
+    fallback, marks fired with no open scope on the current thread
+    attach to the session span — not to the legacy ``"root"`` sentinel."""
+    set_fallback_span_id("session-id-abc")
+    try:
+        ci.mark("top-level", 42)
+        marks = get_default_mark_buffer().drain()
+        assert len(marks) == 1
+        assert marks[0].span_id == "session-id-abc"
+    finally:
+        set_fallback_span_id(None)
+
+
+def test_mark_kind_defaults_to_point():
+    with ci.scope("s"):
+        ci.mark("loss", 0.5)
+    marks = get_default_mark_buffer().drain()
+    assert len(marks) == 1
+    assert marks[0].kind == MARK_KIND_POINT
+
+
+def test_mark_kind_summary_is_recorded():
+    with ci.scope("s"):
+        ci.mark("final_loss", 0.1, kind=MARK_KIND_SUMMARY)
+    marks = get_default_mark_buffer().drain()
+    assert len(marks) == 1
+    assert marks[0].kind == MARK_KIND_SUMMARY
+
+
+def test_mark_kind_invalid_raises():
+    with ci.scope("s"), pytest.raises(ValueError, match="kind"):
+        ci.mark("x", 1, kind="whatever")
+
+
+def test_fallback_id_accessor_roundtrips():
+    assert get_fallback_span_id() is None
+    set_fallback_span_id("xyz")
+    try:
+        assert get_fallback_span_id() == "xyz"
+    finally:
+        set_fallback_span_id(None)
+    assert get_fallback_span_id() is None
 
 
 def test_mark_records_attrs_and_timestamp():
