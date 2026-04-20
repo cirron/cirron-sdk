@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from cirron.core.config import Cirron
     from cirron.core.scope import Scope, ScopeStack
+    from cirron.hooks._registry import HookContext
 
 log = logging.getLogger("cirron.hooks.torch")
 
@@ -118,8 +119,15 @@ def _drain_cuda(pending: _CudaPending, *, force: bool = False) -> None:
     pending.items = keep
 
 
-def install(scope_stack: ScopeStack, cirron: Cirron) -> TorchHookHandle:
-    """Install PyTorch forward/backward/optimizer/DataLoader hooks."""
+def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> TorchHookHandle:
+    """Install PyTorch forward/backward/optimizer/DataLoader hooks.
+
+    When ``context.owned_scopes`` already claims ``"epoch"`` (because a
+    higher-level framework like transformers installed first), torch
+    skips its own epoch rotation path — otherwise HF ``Trainer``, which
+    drives the patched ``DataLoader.__iter__`` itself, would cause two
+    ``epoch`` spans per epoch.
+    """
     import torch
     from torch.utils.data import DataLoader
 
@@ -132,6 +140,7 @@ def install(scope_stack: ScopeStack, cirron: Cirron) -> TorchHookHandle:
     pending_cuda = _CudaPending() if cuda_available else None
     handle._cuda = pending_cuda
 
+    skip_epoch = "epoch" in context.owned_scopes
     epoch_steps = _resolve_epoch_steps(cirron)
     fwd_depth = _ForwardDepth()
 
@@ -308,6 +317,10 @@ def install(scope_stack: ScopeStack, cirron: Cirron) -> TorchHookHandle:
             scope_obj, start_ev = entries.pop()
         _maybe_end_cuda(scope_obj, start_ev)
         _close(scope_obj)
+        if skip_epoch:
+            # Epoch ownership claimed by another hook (e.g. transformers
+            # ``on_epoch_begin``); don't fire the step-count fallback.
+            return
         # Epoch-detection fallback: rotate the epoch scope every
         # ``epoch_steps`` optimizer steps if the DataLoader signal
         # hasn't fired.
@@ -366,7 +379,8 @@ def install(scope_stack: ScopeStack, cirron: Cirron) -> TorchHookHandle:
     orig_dl_iter = DataLoader.__iter__
 
     def _dl_iter(self: Any) -> Any:
-        _catch("epoch_rotate", _rotate_epoch)
+        if not skip_epoch:
+            _catch("epoch_rotate", _rotate_epoch)
         base_iter = orig_dl_iter(self)
         return _wrap_iter(base_iter)
 

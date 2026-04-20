@@ -21,6 +21,7 @@ from cirron.core.mark import mark as _mark
 if TYPE_CHECKING:
     from cirron.core.config import Cirron
     from cirron.core.scope import Scope, ScopeStack
+    from cirron.hooks._registry import HookContext
 
 log = logging.getLogger("cirron.hooks.tensorflow")
 
@@ -145,15 +146,33 @@ def _make_callback_class(scope_stack: ScopeStack) -> type:
     return CirronKerasCallback
 
 
-def install(scope_stack: ScopeStack, cirron: Cirron) -> TFHookHandle:
-    """Install the Keras callback auto-attach via ``Model.fit`` monkey-patch."""
+def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> TFHookHandle:
+    """Install the Keras callback auto-attach via ``Model.fit`` monkey-patch.
+
+    Claims ``"epoch"`` in ``context.owned_scopes`` so a co-installed
+    torch hook yields its own epoch rotation (same coexistence pattern
+    as transformers).
+    """
     del cirron  # unused today; kept for registry signature parity.
 
     import keras  # type: ignore[import-not-found]
 
+    claimed_epoch = "epoch" not in context.owned_scopes
+    if claimed_epoch:
+        context.owned_scopes["epoch"] = "tensorflow"
+
     callback_cls = _make_callback_class(scope_stack)
 
     handle = TFHookHandle()
+    if claimed_epoch:
+        handle.add_undo(
+            "release_epoch_claim",
+            lambda: (
+                context.owned_scopes.pop("epoch", None)
+                if context.owned_scopes.get("epoch") == "tensorflow"
+                else None
+            ),
+        )
 
     model_cls = keras.Model
     orig_fit = model_cls.fit
