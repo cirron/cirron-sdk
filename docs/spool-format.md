@@ -12,7 +12,7 @@ stay stable within a major SDK version.
     <created_ns>-<batch_id>.json      # one batch per file
   snapshots/
     <span_id>/
-      <tensor>.safetensors            # (SDK-24/25; not written yet)
+      <tensor>.safetensors            # (SDK-25; not written yet)
 ```
 
 - `<created_ns>`: wall-clock time the batch was sealed, nanoseconds since
@@ -32,7 +32,8 @@ stay stable within a major SDK version.
   "batch_id": "abcdef...",
   "created_ns": 1234567890000000000,
   "spans": [ ... ],
-  "marks": [ ... ]
+  "marks": [ ... ],
+  "snapshots": [ ... ]
 }
 ```
 
@@ -88,6 +89,45 @@ no scope is open, it attaches to the `cirron.session` scope opened by
 - `"summary"` — a canonical end-of-span value (final loss for epoch,
   epoch-level validation metric). Viewers typically render point marks
   as a time series and summary marks as a single value on the span.
+
+### `snapshots[]`
+
+```json
+{
+  "id": "hex32",
+  "span_id": "hex32",
+  "tensor_name": "layer1.0.conv1.weight",
+  "shape": [64, 3, 7, 7],
+  "dtype": "float32",
+  "mode": "stats",
+  "stats": {
+    "mean": 0.0,
+    "std": 0.0,
+    "min": 0.0,
+    "max": 0.0,
+    "norm": 0.0,
+    "histogram": { "bins": [ ... 17 floats ... ], "counts": [ ... 16 ints ... ] }
+  },
+  "blob_uri": null,
+  "ts_ns": 0,
+  "attrs": {}
+}
+```
+
+Per-tensor statistics captured at epoch boundaries by framework hooks
+(SDK-24). Fields mirror the `TraceSnapshot` model in platform spec §5.4.
+`span_id` points at the epoch span this record belongs to.
+
+`mode` distinguishes three capture strategies:
+- `"stats"` — inline statistics only (mean, std, min, max, norm, 16-bucket
+  histogram). `blob_uri` is `null`. This is the default mode.
+- `"sampled"` and `"full"` — reserved for SDK-25. Same `stats` shape, plus
+  the raw tensor values serialized to `./.cirron/snapshots/<span_id>/
+  <tensor>.safetensors` with `blob_uri` set to the local path.
+
+Gradient records use the same shape; their `tensor_name` is the parameter
+name plus a `.grad` suffix (e.g. `"layer1.0.conv1.weight.grad"`). They
+appear only when the parameter's gradient was non-`None` at capture time.
 
 ## Parent semantics of pre-loop operations
 
