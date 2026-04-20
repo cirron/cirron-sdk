@@ -25,7 +25,6 @@ from requests.adapters import HTTPAdapter
 log = logging.getLogger("cirron.ingest")
 
 DEFAULT_INGEST_PATH = "/api/traces"
-DEFAULT_BLOB_PATH = "/api/traces/blob"
 GZIP_MIN_BYTES = 1024
 MAX_BACKOFF_SEC = 30.0
 # Cap Retry-After so a misbehaving server can't stall the flush thread for
