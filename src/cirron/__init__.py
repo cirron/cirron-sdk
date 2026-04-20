@@ -36,7 +36,7 @@ from cirron.core.errors import (
     CirronError,
     CirronSecretNotFound,
 )
-from cirron.core.profiler import Profiler, flush, health, shutdown
+from cirron.core.profiler import Profiler, flush, health, shutdown, watch
 from cirron.core.yaml_types import CirronYaml, ProfilingConfig, ServingConfig
 
 try:
@@ -131,5 +131,6 @@ __all__ = [
     "scope",
     "secret",
     "shutdown",
+    "watch",
     "wrap",
 ]
