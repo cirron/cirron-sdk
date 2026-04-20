@@ -291,9 +291,9 @@ def _wrap_async(
     return _runner()
 
 
-# ---------------------------------------------------------------------------
+
 # HuggingFace ``GenerationMixin.generate`` patch
-# ---------------------------------------------------------------------------
+
 
 _hf_lock = threading.Lock()
 _hf_patched = False
