@@ -141,6 +141,7 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
     handle._cuda = pending_cuda
 
     skip_epoch = "epoch" in context.owned_scopes
+    skip_step = "step" in context.owned_scopes
     epoch_steps = _resolve_epoch_steps(cirron)
     fwd_depth = _ForwardDepth()
 
@@ -149,6 +150,16 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
         "scope": None,  # currently open epoch Scope | None
         "step_count": 0,  # optimizer steps since last epoch rotate
         "index": 0,  # next epoch index to assign
+    }
+    # Implicit ``step`` scope: opens on the first ``DataLoader.__next__``
+    # (which is how a torch training loop normally starts a batch) and
+    # closes on the following ``optimizer_step`` post hook. An eval-only
+    # loop never calls ``optimizer.step()``, so ``step_state["scope"]``
+    # stays open across ``__next__`` calls; we reset it on epoch rotation
+    # and at uninstall so the span lands and doesn't leak.
+    step_state: dict[str, Any] = {
+        "scope": None,
+        "index": 0,
     }
 
     def _open(name: str, **attrs: Any) -> Scope | None:
@@ -205,11 +216,19 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
     # thread-local stack of (scope, cuda_start). Only depth==1 opens a span.
     fwd_cuda_stack = threading.local()
 
-    def _fwd_pre(_module: Any, _inputs: Any) -> None:
+    def _fwd_pre(module: Any, _inputs: Any) -> None:
         fwd_depth.n += 1
         if fwd_depth.n != 1:
             return
-        scope_obj = _open("forward")
+        # ``module.training`` is the standard PyTorch convention; missing
+        # or non-bool values fall back to ``"train"`` silently rather
+        # than polluting the span with a None attr.
+        mode = "train"
+        try:
+            mode = "train" if bool(module.training) else "eval"
+        except Exception:
+            pass
+        scope_obj = _open("forward", mode=mode)
         fwd_depth.scope = scope_obj
         start_ev = _maybe_start_cuda(scope_obj)
         if not hasattr(fwd_cuda_stack, "ev"):
@@ -317,6 +336,16 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
             scope_obj, start_ev = entries.pop()
         _maybe_end_cuda(scope_obj, start_ev)
         _close(scope_obj)
+        # Close the implicit step scope (opened on the prior
+        # ``DataLoader.__next__``). Gradient-accumulation loops call
+        # forward/backward multiple times per optimizer step; the step
+        # scope stays open across those and closes exactly here.
+        if not skip_step:
+            step_scope = step_state["scope"]
+            if step_scope is not None:
+                _close(step_scope)
+                step_state["scope"] = None
+                step_state["index"] += 1
         if skip_epoch:
             # Epoch ownership claimed by another hook (e.g. transformers
             # ``on_epoch_begin``); don't fire the step-count fallback.
@@ -368,6 +397,15 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
             log.warning("cirron.hooks.torch: unwind epoch failed", exc_info=True)
 
     def _rotate_epoch() -> None:
+        # Close any step span still open from an eval-only pass through
+        # the loader (no optimizer.step to close it), so new epochs don't
+        # nest inside a stale step.
+        if not skip_step:
+            lingering = step_state["scope"]
+            if lingering is not None:
+                _close(lingering)
+                step_state["scope"] = None
+                step_state["index"] += 1
         prev = epoch_state["scope"]
         if prev is not None:
             _unwind_through(prev)
@@ -399,6 +437,13 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
                 t0 = _t.perf_counter_ns()
                 item = next(base_iter)
                 dt = _t.perf_counter_ns() - t0
+                # Open the implicit ``step`` span just before ``data_load``
+                # so data_load / forward / backward / optimizer_step all
+                # nest inside step. Closing happens in ``_opt_post``;
+                # eval loops (no optimizer.step) leave it to the epoch
+                # rotation / uninstall fallback.
+                if not skip_step and step_state["scope"] is None:
+                    step_state["scope"] = _open("step", index=step_state["index"])
                 scope_obj = _open("data_load")
                 if scope_obj is not None:
                     try:
@@ -425,6 +470,11 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
     # --- close-open-epoch on uninstall -------------------------------------
 
     def _close_open_epoch() -> None:
+        # Drain any step span first so it lands before its epoch parent.
+        step_scope = step_state["scope"]
+        if step_scope is not None:
+            _close(step_scope)
+            step_state["scope"] = None
         sc = epoch_state["scope"]
         if sc is not None:
             _unwind_through(sc)
