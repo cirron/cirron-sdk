@@ -418,9 +418,7 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
         if not callable(named):
             return
         try:
-            grad_refs_state["refs"] = [
-                (str(n), p.grad) for n, p in named() if p.grad is not None
-            ]
+            grad_refs_state["refs"] = [(str(n), p.grad) for n, p in named() if p.grad is not None]
         except Exception:
             log.warning("cirron.hooks.torch: grad ref stash failed", exc_info=True)
 
@@ -431,15 +429,17 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
         refs stashed by ``_stash_grad_refs`` at the last ``opt_post``
         — the user's ``zero_grad`` runs between that hook and the next
         epoch rotation, so ``Parameter.grad`` itself is already ``None``
-        by now.
+        by now. The refs are handed through to ``capture`` so the
+        sampled/full blob path serializes the stashed grads instead of
+        trying (and failing) to re-read them off the live parameters.
         """
         from cirron.core.profiler import get_watched_model
         from cirron.core.snapshot_buffer import get_default_snapshot_buffer
-        from cirron.snapshots.stats import capture, capture_grad_stats_from_refs
+        from cirron.snapshots.stats import capture
 
         model = get_watched_model()
-        records = capture(cirron, model, span_id, include_grads=False)
-        records.extend(capture_grad_stats_from_refs(grad_refs_state["refs"], span_id))
+        refs = grad_refs_state["refs"]
+        records = capture(cirron, model, span_id, include_grads=True, grad_refs=refs)
         grad_refs_state["refs"] = []
         if records:
             get_default_snapshot_buffer().extend(records)
