@@ -58,7 +58,7 @@ def _request_span_id():
     return requests[0].id
 
 
-def test_openai_attr_usage_marks_tokens():
+def test_openai_attr_usage_marks_native_and_normalized():
     @ci.inference
     def predict():
         return _Resp(_Usage(10, 20, 30))
@@ -66,13 +66,19 @@ def test_openai_attr_usage_marks_tokens():
     predict()
     span_id = _request_span_id()
     marks = {m.name: m for m in get_default_mark_buffer().drain_all() if m.span_id == span_id}
+    # native (provider-preserving)
     assert marks["prompt_tokens"].value == 10
     assert marks["completion_tokens"].value == 20
+    assert marks["prompt_tokens"].attrs == {"source": "openai"}
+    # normalized overlay (canonical cross-provider names)
+    assert marks["input_tokens"].value == 10
+    assert marks["output_tokens"].value == 20
     assert marks["total_tokens"].value == 30
+    assert marks["input_tokens"].attrs == {"source": "openai", "normalized": True}
     assert marks["prompt_tokens"].kind == "summary"
 
 
-def test_openai_dict_usage_marks_tokens():
+def test_openai_dict_usage_computes_total_when_absent():
     @ci.inference
     def predict():
         return {"choices": [], "usage": {"prompt_tokens": 3, "completion_tokens": 7}}
@@ -82,7 +88,10 @@ def test_openai_dict_usage_marks_tokens():
     marks = {m.name: m for m in get_default_mark_buffer().drain_all() if m.span_id == span_id}
     assert marks["prompt_tokens"].value == 3
     assert marks["completion_tokens"].value == 7
-    assert "total_tokens" not in marks  # not provided in payload
+    # total_tokens is *not* in the payload, but the normalized overlay
+    # computes it so the dashboard always has a comparable total.
+    assert marks["total_tokens"].value == 10
+    assert marks["total_tokens"].attrs == {"source": "openai", "normalized": True}
 
 
 def test_non_llm_return_emits_no_token_marks():
@@ -121,6 +130,62 @@ def test_detection_failure_is_silent():
 # ---------------------------------------------------------------------------
 # Streaming
 # ---------------------------------------------------------------------------
+
+
+def test_stream_emits_request_duration_ms():
+    @ci.inference
+    def predict():
+        def gen():
+            time.sleep(0.002)
+            yield 1
+            time.sleep(0.002)
+            yield 2
+
+        return gen()
+
+    list(predict())
+    span_id = _request_span_id()
+    marks = {m.name: m for m in get_default_mark_buffer().drain_all() if m.span_id == span_id}
+    assert "request_duration_ms" in marks
+    # total latency >= TTFT — sanity check the three-number story
+    assert marks["request_duration_ms"].value >= marks["time_to_first_token_ms"].value
+
+
+def test_stream_chunk_timing_requires_config():
+    @ci.inference
+    def predict_default():
+        def gen():
+            for i in range(3):
+                time.sleep(0.001)
+                yield i
+
+        return gen()
+
+    list(predict_default())
+    span_id = _request_span_id()
+    marks = [m for m in get_default_mark_buffer().drain_all() if m.span_id == span_id]
+    assert not any(m.name == "chunk_ms" for m in marks)
+
+
+def test_stream_chunk_timing_opt_in_emits_point_marks():
+    @ci.inference(config={"stream_chunk_timing": True})
+    def predict():
+        def gen():
+            for i in range(4):
+                time.sleep(0.001)
+                yield i
+
+        return gen()
+
+    list(predict())
+    span_id = _request_span_id()
+    marks = [m for m in get_default_mark_buffer().drain_all() if m.span_id == span_id]
+    chunk_marks = [m for m in marks if m.name == "chunk_ms"]
+    # N items → N-1 inter-chunk gaps (we don't mark the first chunk,
+    # that's the TTFT signal).
+    assert len(chunk_marks) == 3
+    assert all(m.kind == "point" for m in chunk_marks)
+    assert {m.attrs.get("index") for m in chunk_marks} == {1, 2, 3}
 
 
 def test_sync_streaming_marks_ttft_and_throughput():
@@ -242,6 +307,9 @@ def test_hf_generate_patch_marks_input_and_output_tokens(monkeypatch):
         marks = {m.name: m for m in get_default_mark_buffer().drain_all() if m.span_id == span_id}
         assert marks["input_tokens"].value == 7
         assert marks["output_tokens"].value == 3  # (7+3) - 7
+        # normalized overlay carries total = input + generated
+        assert marks["total_tokens"].value == 10
+        assert marks["input_tokens"].attrs == {"source": "hf", "normalized": True}
     finally:
         llm_mod.uninstall_hf_generate_patch()
 
