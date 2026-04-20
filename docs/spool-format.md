@@ -12,7 +12,8 @@ stay stable within a major SDK version.
     <created_ns>-<batch_id>.json      # one batch per file
   snapshots/
     <span_id>/
-      <tensor>.safetensors            # (SDK-24/25; not written yet)
+      weights.safetensors             # one multi-tensor file per epoch (SDK-25)
+      gradients.safetensors           # emitted only when gradients are captured
 ```
 
 - `<created_ns>`: wall-clock time the batch was sealed, nanoseconds since
@@ -32,7 +33,8 @@ stay stable within a major SDK version.
   "batch_id": "abcdef...",
   "created_ns": 1234567890000000000,
   "spans": [ ... ],
-  "marks": [ ... ]
+  "marks": [ ... ],
+  "snapshots": [ ... ]
 }
 ```
 
@@ -88,6 +90,64 @@ no scope is open, it attaches to the `cirron.session` scope opened by
 - `"summary"` — a canonical end-of-span value (final loss for epoch,
   epoch-level validation metric). Viewers typically render point marks
   as a time series and summary marks as a single value on the span.
+
+### `snapshots[]`
+
+```json
+{
+  "id": "hex32",
+  "span_id": "hex32",
+  "tensor_name": "layer1.0.conv1.weight",
+  "shape": [64, 3, 7, 7],
+  "dtype": "float32",
+  "mode": "stats",
+  "stats": {
+    "mean": 0.0,
+    "std": 0.0,
+    "min": 0.0,
+    "max": 0.0,
+    "norm": 0.0,
+    "histogram": { "bins": [ ... 17 floats ... ], "counts": [ ... 16 ints ... ] }
+  },
+  "blob_uri": null,
+  "ts_ns": 0,
+  "attrs": {}
+}
+```
+
+Per-tensor statistics captured at epoch boundaries by framework hooks
+(SDK-24). Fields mirror the `TraceSnapshot` model in platform spec §5.4.
+`span_id` points at the epoch span this record belongs to.
+
+`mode` distinguishes three capture strategies:
+- `"stats"` — inline statistics only (mean, std, min, max, norm, 16-bucket
+  histogram). `blob_uri` is `null`. This is the default mode.
+- `"sampled"` — same `stats` shape; additionally, on a
+  `random() < sample_rate` roll at the epoch boundary, raw tensor values
+  are serialized and `blob_uri` is set. Records that lose the roll stay
+  `mode="stats"` with a null `blob_uri`.
+- `"full"` — same as sampled with the roll short-circuited; every epoch
+  writes a blob. Debug-only; not recommended for 100M+ parameter models.
+
+Sampled and full write **one safetensors file per (span, kind)** — all
+weight tensors into `./.cirron/snapshots/<span_id>/weights.safetensors`
+and all gradient tensors into `./.cirron/snapshots/<span_id>/gradients.safetensors`.
+Every record for that span shares the same `blob_uri` (a `file://` URL for
+disconnected runs, a platform blob URL when a transport is connected);
+the record's `tensor_name` is used verbatim as the key inside the
+safetensors container. Safetensors accepts arbitrary UTF-8 strings as
+keys, so consumers can load the file once and look up tensors with
+`container[record["tensor_name"]]` — no sanitization or extra mapping
+is required on either side.
+
+If a sampled/full epoch's total tensor payload exceeds **100 MB**, the
+SDK logs a warning that includes the byte count and parameter count
+(spec §4.2). The capture still proceeds — the warning is a nudge toward
+a lower `sample_rate`, not a hard cap.
+
+Gradient records use the same shape; their `tensor_name` is the parameter
+name plus a `.grad` suffix (e.g. `"layer1.0.conv1.weight.grad"`). They
+appear only when the parameter's gradient was non-`None` at capture time.
 
 ## Parent semantics of pre-loop operations
 
