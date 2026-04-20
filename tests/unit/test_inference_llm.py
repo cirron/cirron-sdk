@@ -34,9 +34,9 @@ def _drain():
     get_default_mark_buffer().drain_all()
 
 
-# ---------------------------------------------------------------------------
+
 # OpenAI-style usage
-# ---------------------------------------------------------------------------
+
 
 
 class _Usage:
@@ -127,9 +127,9 @@ def test_detection_failure_is_silent():
     assert token_marks == []
 
 
-# ---------------------------------------------------------------------------
+
 # Streaming
-# ---------------------------------------------------------------------------
+
 
 
 def test_stream_emits_request_duration_ms():
@@ -253,9 +253,9 @@ def test_stream_exhaustion_closes_request_scope_exactly_once():
     assert len(requests) == 1
 
 
-# ---------------------------------------------------------------------------
+
 # HuggingFace generate patch
-# ---------------------------------------------------------------------------
+
 
 
 class _FakeTensor:
