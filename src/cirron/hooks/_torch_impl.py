@@ -406,7 +406,12 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
 
         if cirron.snapshots not in ("stats", "sampled", "full"):
             return
-        model = get_watched_model()
+        # Suppress the "no model registered" diagnostic here — this
+        # fires every optimizer step, including in HF/Keras workflows
+        # that don't require ``ci.watch()`` at all. The epoch-boundary
+        # call in ``_capture_epoch_snapshots`` is the right place for
+        # the user-visible signal.
+        model = get_watched_model(warn_if_missing=False)
         if model is None:
             return
         named = getattr(model, "named_parameters", None)
