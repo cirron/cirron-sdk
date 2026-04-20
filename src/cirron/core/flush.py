@@ -99,6 +99,7 @@ def _mark_to_dict(m: Mark) -> dict[str, Any]:
         "value": m.value,
         "attrs": m.attrs,
         "ts_ns": m.ts_ns,
+        "kind": m.kind,
     }
 
 
