@@ -83,12 +83,32 @@ def serialize_and_enqueue(
         return
     path, size_bytes = result
 
+    try:
+        local_uri = path.resolve().as_uri()
+    except Exception:
+        log.warning(
+            "cirron.snapshots.sampled: could not build file URI for %s", path, exc_info=True
+        )
+        return
+
+    tensor_names = {name for name, _ in named_tensors}
+    # Weight records identify themselves by the bare parameter name; grad
+    # records carry a ``.grad`` suffix. Match either shape so the
+    # upgrade works for both kinds.
+    if kind == "gradients":
+        tensor_names = {f"{n}.grad" for n in tensor_names}
+    _upgrade_records(records, tensor_names, local_uri, mode)
+
+    # Enqueue after records are upgraded so the flush thread has a
+    # populated ``local_uri`` to match against when it swaps in the
+    # remote URI post-upload.
     filename = WEIGHTS_FILENAME if kind == "weights" else GRADIENTS_FILENAME
     remote_key = blob_remote_key(span_id, filename)
     try:
         get_default_blob_queue().enqueue(
             PendingBlob(
                 local_path=path,
+                local_uri=local_uri,
                 remote_key=remote_key,
                 span_id=span_id,
                 kind=kind,
@@ -99,18 +119,3 @@ def serialize_and_enqueue(
         log.warning(
             "cirron.snapshots.sampled: enqueue failed for %s/%s", span_id, kind, exc_info=True
         )
-
-    try:
-        blob_uri = path.resolve().as_uri()
-    except Exception:
-        log.warning(
-            "cirron.snapshots.sampled: could not build file URI for %s", path, exc_info=True
-        )
-        return
-    tensor_names = {name for name, _ in named_tensors}
-    # Weight records identify themselves by the bare parameter name; grad
-    # records carry a ``.grad`` suffix. Match either shape so the
-    # upgrade works for both kinds.
-    if kind == "gradients":
-        tensor_names = {f"{n}.grad" for n in tensor_names}
-    _upgrade_records(records, tensor_names, blob_uri, mode)
