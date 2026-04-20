@@ -16,6 +16,7 @@ import random
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -24,6 +25,7 @@ from requests.adapters import HTTPAdapter
 log = logging.getLogger("cirron.ingest")
 
 DEFAULT_INGEST_PATH = "/api/traces"
+DEFAULT_BLOB_PATH = "/api/traces/blob"
 GZIP_MIN_BYTES = 1024
 MAX_BACKOFF_SEC = 30.0
 # Cap Retry-After so a misbehaving server can't stall the flush thread for
@@ -32,6 +34,7 @@ MAX_RETRY_AFTER_SEC = 60.0
 AUTH_HEADER = "X-Cluster-Api-Key"
 SDK_VERSION_HEADER = "X-Cirron-SDK-Version"
 BATCH_ID_HEADER = "X-Cirron-Batch-Id"
+BLOB_KEY_HEADER = "X-Cirron-Blob-Key"
 
 
 def _sdk_version() -> str:
@@ -49,6 +52,14 @@ def _sdk_version() -> str:
 @dataclass(frozen=True)
 class IngestResult:
     ok: bool
+    retryable: bool = False
+    status: int | None = None
+
+
+@dataclass(frozen=True)
+class BlobUploadResult:
+    ok: bool
+    remote_uri: str | None = None
     retryable: bool = False
     status: int | None = None
 
@@ -101,12 +112,17 @@ class IngestClient:
         timeout: float = 10.0,
         max_retries: int = 5,
         *,
+        blob_path: str = DEFAULT_BLOB_PATH,
         session: requests.Session | None = None,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         if not path.startswith("/"):
             path = "/" + path
-        self._url = f"{api_endpoint.rstrip('/')}{path}"
+        if not blob_path.startswith("/"):
+            blob_path = "/" + blob_path
+        self._endpoint = api_endpoint.rstrip("/")
+        self._url = f"{self._endpoint}{path}"
+        self._blob_base_url = f"{self._endpoint}{blob_path}"
         self._api_key = api_key
         self._timeout = timeout
         self._max_retries = max_retries
@@ -196,6 +212,98 @@ class IngestClient:
             return
         log.warning("cirron ingest auth failed (%d) — check api_key / workspace", status)
         self._auth_warned = True
+
+    def post_blob(self, local_path: Path, remote_key: str) -> BlobUploadResult:
+        """Upload a safetensors blob to the platform blob store.
+
+        Streams the file bytes to ``{blob_base}/{remote_key}`` with
+        ``application/octet-stream`` and the same auth + SDK-version
+        headers as ``post_batch``. The server is expected to return the
+        remote URI (S3 path, CDN URL, etc.) in the response body or a
+        ``Location`` header; for now we treat a 2xx with a non-empty
+        body as success and use the response text as ``remote_uri``.
+
+        The file is streamed via a fresh open handle on each attempt —
+        ``requests`` uses chunked transfer when ``data`` is a file-like,
+        so a 1 GB blob doesn't balloon the flush thread's resident set.
+        Retries network errors and 5xx / 429 with exponential backoff
+        like ``post_batch``. 4xx (other than 429) is non-retryable —
+        usually a quota or permissions issue the flush thread can't
+        resolve by itself.
+        """
+        try:
+            size = local_path.stat().st_size
+        except OSError as e:
+            log.warning("cirron ingest: could not stat blob %s: %s", local_path, e)
+            return BlobUploadResult(ok=False, retryable=False)
+
+        url = f"{self._blob_base_url.rstrip('/')}/{remote_key.lstrip('/')}"
+        headers = {
+            AUTH_HEADER: self._api_key,
+            "Content-Type": "application/octet-stream",
+            "Content-Length": str(size),
+            SDK_VERSION_HEADER: self._sdk_version,
+            BLOB_KEY_HEADER: remote_key,
+        }
+        for attempt in range(self._max_retries + 1):
+            result = self._blob_attempt(url, local_path, headers, attempt)
+            if result is not None:
+                return result
+        return BlobUploadResult(ok=False, retryable=True)
+
+    def _blob_attempt(
+        self,
+        url: str,
+        local_path: Path,
+        headers: dict[str, str],
+        attempt: int,
+    ) -> BlobUploadResult | None:
+        last_attempt = attempt >= self._max_retries
+        try:
+            with local_path.open("rb") as fh:
+                resp = self._session.put(url, data=fh, headers=headers, timeout=self._timeout)
+        except (requests.RequestException, OSError) as e:
+            log.debug("cirron ingest blob network error: %s", e)
+            if last_attempt:
+                return BlobUploadResult(ok=False, retryable=True)
+            self._sleep(self._backoff(attempt))
+            return None
+
+        status = resp.status_code
+        if 200 <= status < 300:
+            remote_uri = self._parse_blob_response(resp, url)
+            return BlobUploadResult(ok=True, status=status, remote_uri=remote_uri)
+        if status in (401, 403):
+            self._warn_auth_once(status)
+            return BlobUploadResult(ok=False, retryable=False, status=status)
+        if status == 429:
+            if last_attempt:
+                return BlobUploadResult(ok=False, retryable=True, status=status)
+            wait = _parse_retry_after(resp.headers.get("Retry-After"))
+            self._sleep(
+                min(wait, MAX_RETRY_AFTER_SEC) if wait is not None else self._backoff(attempt)
+            )
+            return None
+        if 500 <= status < 600:
+            if last_attempt:
+                return BlobUploadResult(ok=False, retryable=True, status=status)
+            self._sleep(self._backoff(attempt))
+            return None
+        log.warning("cirron ingest blob unexpected status %d; not retrying", status)
+        return BlobUploadResult(ok=False, retryable=False, status=status)
+
+    @staticmethod
+    def _parse_blob_response(resp: Any, fallback_url: str) -> str:
+        """Prefer a ``Location`` header or trimmed response body; fall back
+        to the URL we PUT to so the record always has *some* pointer."""
+        loc = resp.headers.get("Location")
+        if loc:
+            return str(loc)
+        text = getattr(resp, "text", "") or ""
+        body = text.strip()
+        if body and len(body) < 2048 and "\n" not in body:
+            return body
+        return fallback_url
 
     @staticmethod
     def _backoff(attempt: int) -> float:

@@ -54,6 +54,7 @@ class _FakeSession:
         # Each entry is either a ``_Resp`` or an ``Exception`` to raise.
         self._responses = list(responses)
         self.calls: list[dict[str, Any]] = []
+        self.put_calls: list[dict[str, Any]] = []
 
     def post(
         self,
@@ -63,6 +64,25 @@ class _FakeSession:
         timeout: float,
     ) -> _Resp:
         self.calls.append({"url": url, "data": data, "headers": dict(headers), "timeout": timeout})
+        resp = self._responses.pop(0)
+        if isinstance(resp, Exception):
+            raise resp
+        return resp
+
+    def put(
+        self,
+        url: str,
+        data: Any,
+        headers: dict[str, str],
+        timeout: float,
+    ) -> _Resp:
+        # The SDK passes a file handle for streaming uploads; materialize
+        # into bytes here so assertions can inspect the payload.
+        if hasattr(data, "read"):
+            data = data.read()
+        self.put_calls.append(
+            {"url": url, "data": data, "headers": dict(headers), "timeout": timeout}
+        )
         resp = self._responses.pop(0)
         if isinstance(resp, Exception):
             raise resp
@@ -350,3 +370,90 @@ def test_ingest_result_defaults() -> None:
     r = IngestResult(ok=True)
     assert r.retryable is False
     assert r.status is None
+
+
+# SDK-25 — upload_blob across all three transports
+
+
+def test_file_only_upload_blob_returns_file_uri(tmp_path) -> None:
+    t = FileOnlyTransport()
+    blob = tmp_path / "weights.safetensors"
+    blob.write_bytes(b"data")
+    uri = t.upload_blob(blob, "snapshots/span/weights.safetensors")
+    assert uri is not None
+    assert uri.startswith("file://")
+    assert uri.endswith("weights.safetensors")
+
+
+def test_event_stream_upload_blob_emits_sentinel(tmp_path) -> None:
+    from cirron.core.transport import EVENT_TYPE_BLOB
+
+    buf = io.StringIO()
+    t = EventStreamTransport(stream=buf)
+    blob = tmp_path / "weights.safetensors"
+    blob.write_bytes(b"abc")
+    uri = t.upload_blob(blob, "snapshots/span/weights.safetensors")
+    assert uri is not None
+    envelope = json.loads(buf.getvalue())
+    assert envelope[EVENT_STREAM_MARKER] == EVENT_TYPE_BLOB
+    assert envelope["payload"]["remote_key"] == "snapshots/span/weights.safetensors"
+    assert envelope["payload"]["local_path"].endswith("weights.safetensors")
+
+
+def test_http_upload_blob_puts_bytes(tmp_path) -> None:
+    from cirron.core.ingest import BLOB_KEY_HEADER
+
+    session = _FakeSession([_Resp(200, text="https://blobs.example/span/weights")])
+    client = _make_client(session)
+    transport = HttpTransport(client)
+
+    blob = tmp_path / "weights.safetensors"
+    blob.write_bytes(b"hello world")
+    uri = transport.upload_blob(blob, "snapshots/span/weights.safetensors")
+
+    assert uri == "https://blobs.example/span/weights"
+    assert len(session.put_calls) == 1
+    call = session.put_calls[0]
+    assert call["url"].endswith("/api/traces/blob/snapshots/span/weights.safetensors")
+    assert call["data"] == b"hello world"
+    assert call["headers"][AUTH_HEADER] == "secret-key"
+    assert call["headers"][BLOB_KEY_HEADER] == "snapshots/span/weights.safetensors"
+    assert call["headers"]["Content-Type"] == "application/octet-stream"
+
+
+def test_http_upload_blob_location_header_preferred(tmp_path) -> None:
+    session = _FakeSession([_Resp(201, headers={"Location": "s3://bucket/key"}, text="ignored")])
+    transport = HttpTransport(_make_client(session))
+
+    blob = tmp_path / "weights.safetensors"
+    blob.write_bytes(b"x")
+    assert transport.upload_blob(blob, "snapshots/span/weights.safetensors") == "s3://bucket/key"
+
+
+def test_http_upload_blob_retries_on_5xx(tmp_path) -> None:
+    session = _FakeSession([_Resp(500), _Resp(200, text="ok-uri")])
+    client = _make_client(session)
+    transport = HttpTransport(client)
+
+    blob = tmp_path / "weights.safetensors"
+    blob.write_bytes(b"d")
+    assert transport.upload_blob(blob, "snapshots/span/weights.safetensors") == "ok-uri"
+    assert len(session.put_calls) == 2
+
+
+def test_http_upload_blob_returns_none_on_terminal_failure(tmp_path) -> None:
+    session = _FakeSession([_Resp(400, text="bad")])
+    transport = HttpTransport(_make_client(session))
+
+    blob = tmp_path / "weights.safetensors"
+    blob.write_bytes(b"d")
+    assert transport.upload_blob(blob, "snapshots/span/weights.safetensors") is None
+
+
+def test_http_upload_blob_missing_local_file_returns_none(tmp_path) -> None:
+    session = _FakeSession([])
+    transport = HttpTransport(_make_client(session))
+
+    missing = tmp_path / "nope.safetensors"
+    assert transport.upload_blob(missing, "snapshots/span/weights.safetensors") is None
+    assert len(session.put_calls) == 0
