@@ -329,6 +329,7 @@ def capture(
     span_id: str,
     *,
     include_grads: bool = True,
+    grad_refs: list[tuple[str, Any]] | None = None,
 ) -> list[TraceSnapshot]:
     """One-shot gate used by framework hooks at epoch boundaries.
 
@@ -336,26 +337,117 @@ def capture(
     no model is available. The empty return lets call sites stay
     single-line: ``buffer.extend(capture(ci, model, span_id))``.
 
+    Under ``snapshots="sampled"``/``"full"`` this additionally serializes
+    the actual tensor values to safetensors (see
+    :mod:`cirron.snapshots.sampled`) and enqueues a blob upload on the
+    process queue. ``"sampled"`` rolls against ``cirron.sample_rate`` per
+    epoch; ``"full"`` always writes. The returned records carry both
+    inline stats and a ``blob_uri`` pointing at the safetensors file, so
+    the dashboard never has to download a blob just to render a
+    histogram.
+
+    Callers on the torch hook path may pass ``grad_refs`` — the
+    pre-stashed ``(name, grad_tensor)`` pairs collected at ``opt_post``
+    before ``zero_grad()`` nulled them. When provided, these replace the
+    live ``.grad`` read performed by :func:`capture_gradient_stats`.
+
     If the weight pass raises partway through, any records already
     collected are returned — an epoch with 900 of 1000 tensors captured
-    is strictly more useful than a dropped epoch, and the per-tensor
-    guards in ``capture_weight_stats`` / ``capture_gradient_stats``
-    already handle the common failures; this outer catch is for
-    catastrophic failures (e.g. ``named_parameters`` itself raises).
+    is strictly more useful than a dropped epoch.
     """
-    if getattr(cirron, "snapshots", None) not in _ACTIVE_MODES:
+    mode = getattr(cirron, "snapshots", None)
+    if mode not in _ACTIVE_MODES:
         return []
     if model is None:
         return []
+
     out: list[TraceSnapshot] = []
     try:
         out.extend(capture_weight_stats(model, span_id))
         if include_grads:
-            out.extend(capture_gradient_stats(model, span_id))
+            if grad_refs is not None:
+                out.extend(capture_grad_stats_from_refs(grad_refs, span_id))
+            else:
+                out.extend(capture_gradient_stats(model, span_id))
     except Exception:
         log.warning(
             "cirron.snapshots: capture raised; returning %d partial record(s)",
             len(out),
             exc_info=True,
         )
+
+    if mode != "stats":
+        try:
+            _maybe_serialize_blobs(cirron, model, span_id, mode, out, grad_refs, include_grads)
+        except Exception:
+            log.warning(
+                "cirron.snapshots: blob serialization raised; stats records preserved",
+                exc_info=True,
+            )
+
     return out
+
+
+def _maybe_serialize_blobs(
+    cirron: Cirron,
+    model: Any,
+    span_id: str,
+    mode: str,
+    records: list[TraceSnapshot],
+    grad_refs: list[tuple[str, Any]] | None,
+    include_grads: bool,
+) -> None:
+    """Serialize weights/grads to safetensors when mode is sampled/full.
+
+    Split out so :func:`capture` stays under the project's complexity
+    budget and so tests can drive the serialization path directly.
+    Failures inside this helper never raise; they log and leave the
+    stats records unmodified (``mode`` stays ``"stats"``, ``blob_uri``
+    stays ``None``) so the epoch's summary data still reaches the spool.
+    """
+    from cirron.snapshots.sampled import serialize_and_enqueue, should_sample
+
+    if mode == "sampled":
+        sample_rate = float(getattr(cirron, "sample_rate", 0.0) or 0.0)
+        if not should_sample(sample_rate):
+            return
+
+    output_dir = getattr(cirron, "output_dir", "./.cirron/")
+    try:
+        weights = _iter_named_params(model)
+    except Exception:
+        log.warning("cirron.snapshots: iter_named_params raised in blob path", exc_info=True)
+        weights = []
+
+    if weights:
+        serialize_and_enqueue(span_id, "weights", weights, output_dir, mode, records)
+
+    if include_grads:
+        grads = _resolve_grad_tensors(model, grad_refs)
+        if grads:
+            serialize_and_enqueue(span_id, "gradients", grads, output_dir, mode, records)
+
+
+def _resolve_grad_tensors(
+    model: Any,
+    grad_refs: list[tuple[str, Any]] | None,
+) -> list[tuple[str, Any]]:
+    """Collect ``(name, grad_tensor)`` pairs for the gradient blob.
+
+    Prefer the caller-supplied ``grad_refs`` (pre-stashed at
+    ``opt_post`` by the torch hook before ``zero_grad`` fired). Fall
+    back to a live read off ``model.named_parameters()[i].grad`` for
+    Keras or bare-torch loops that didn't stash.
+    """
+    if grad_refs is not None:
+        return [(n, g) for n, g in grad_refs if g is not None]
+    try:
+        out: list[tuple[str, Any]] = []
+        for name, param in _iter_named_params(model):
+            grad = getattr(param, "grad", None)
+            if grad is not None:
+                out.append((name, grad))
+        return out
+    except Exception:
+        log.warning("cirron.snapshots: grad resolution raised in blob path", exc_info=True)
+        return []
