@@ -276,6 +276,29 @@ def capture_weight_stats(model: Any, span_id: str) -> list[TraceSnapshot]:
     return out
 
 
+def capture_grad_stats_from_refs(
+    grad_refs: list[tuple[str, Any]], span_id: str
+) -> list[TraceSnapshot]:
+    """Compute grad stats from pre-stashed ``(name, grad_tensor)`` pairs.
+
+    PyTorch's default ``optimizer.zero_grad(set_to_none=True)`` nulls
+    every ``Parameter.grad`` as soon as the user's training loop
+    completes a step, so by the time the epoch boundary fires there's
+    nothing left to read off the model. The torch hook works around
+    this by stashing the grad tensors at ``opt_post`` — the refs keep
+    the tensors alive past ``zero_grad()`` without copying the data.
+    """
+    ts_ns = time.time_ns()
+    out: list[TraceSnapshot] = []
+    for name, grad in grad_refs:
+        if grad is None:
+            continue
+        rec = _make_record(span_id, f"{name}.grad", grad, ts_ns)
+        if rec is not None:
+            out.append(rec)
+    return out
+
+
 def capture_gradient_stats(model: Any, span_id: str) -> list[TraceSnapshot]:
     """Compute stats for every parameter's ``.grad`` tensor.
 
