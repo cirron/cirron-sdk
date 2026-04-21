@@ -1,4 +1,4 @@
-"""Filesystem-source pattern matching (``ci.load(match=...)``) — SDK-29.
+"""Filesystem-source pattern matching (``ci.load(match=...)``).
 
 Per spec §4.7, ``match`` is a dict with ``path`` (glob), ``filename``
 (regex), ``extension`` (shorthand), and ``columns`` (pushdown). The
