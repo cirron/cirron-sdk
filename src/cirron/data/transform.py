@@ -92,7 +92,5 @@ def _map_with_index(rows: list[Any], fn: Callable[..., Any]) -> list[Any]:
             preview = repr(row)
             if len(preview) > 200:
                 preview = preview[:200] + "..."
-            raise CirronError(
-                f"map= callable raised on row {i} ({preview}): {e}"
-            ) from e
+            raise CirronError(f"map= callable raised on row {i} ({preview}): {e}") from e
     return out
