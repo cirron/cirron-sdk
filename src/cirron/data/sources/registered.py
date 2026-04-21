@@ -143,7 +143,7 @@ class RegisteredDataset:
             # Normalize once; downstream code + the fallback sum both
             # read from this filtered list, so a malformed entry can't
             # sneak through as an AttributeError.
-            page_normalized = [
+            page_normalized: list[dict[str, Any]] = [
                 {
                     "key": str(o["key"]),
                     "size_bytes": int(o.get("size_bytes") or 0),
@@ -152,7 +152,8 @@ class RegisteredDataset:
                 if isinstance(o, dict) and o.get("key")
             ]
             all_normalized.extend(page_normalized)
-            running_total += sum(o["size_bytes"] for o in page_normalized)
+            page_sum = sum(int(o["size_bytes"]) for o in page_normalized)
+            running_total += page_sum
 
             page_total = payload.get("total_size_bytes")
             if isinstance(page_total, int):
