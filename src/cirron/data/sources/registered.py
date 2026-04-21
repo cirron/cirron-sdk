@@ -270,6 +270,38 @@ def _rmtree_quiet(path: Path) -> None:
     shutil.rmtree(path, ignore_errors=True)
 
 
+def _materialize_file_handles(result: Any) -> Any:
+    """Force any lazy file-backed objects in ``result`` to fully load.
+
+    Today only PIL ``Image`` handles are lazy — ``Image.open`` keeps the
+    source file open until pixel data is read. Before we hand ``result``
+    back to the caller (at which point the tempdir may be reclaimed by
+    the finalizer), call ``.load()`` on each image and copy it into a
+    detached in-memory image so subsequent reads don't touch disk.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        return result
+
+    def _detach(img: Image.Image) -> Image.Image:
+        img.load()
+        # Image.copy() returns an in-memory image whose data is no
+        # longer bound to the original file handle.
+        detached = img.copy()
+        try:
+            img.close()
+        except Exception:
+            pass
+        return detached
+
+    if isinstance(result, Image.Image):
+        return _detach(result)
+    if isinstance(result, list) and result and isinstance(result[0], Image.Image):
+        return [_detach(item) if isinstance(item, Image.Image) else item for item in result]
+    return result
+
+
 class PlatformBucketSource(DataSource):
     """Materializes a platform bucket listing into a local directory."""
 
@@ -323,7 +355,15 @@ class PlatformBucketSource(DataSource):
             SourceConfig(source_type="local", path=str(tempdir)),
             self._request_for_local(),
         )
-        return local.load()
+        result = local.load()
+        # Eagerly materialize any file-backed handles so the tempdir can
+        # be reclaimed cleanly when the finalizer runs. On Windows, an
+        # open PIL handle would cause ``rmtree(ignore_errors=True)`` to
+        # silently leak the directory; on Unix it works by accident
+        # because open fds keep the inode alive. Both cases are fragile
+        # — force a full read while the tempdir is still guaranteed to
+        # exist and close the underlying file.
+        return _materialize_file_handles(result)
 
     def _request_for_local(self) -> LoadRequest | None:
         """Derive a LoadRequest for the downstream LocalDataSource.
