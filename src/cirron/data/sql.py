@@ -227,7 +227,13 @@ class CredentialResolver:
         if not creds.password and not creds.token:
             fallback = self._try_env_secret()
             if fallback is not None:
-                creds.password = fallback
+                # Databricks auth is a bearer token, not a password —
+                # route it to the right field so the driver doesn't
+                # see a stray password= kwarg.
+                if self.uri.scheme == "databricks":
+                    creds.token = fallback
+                else:
+                    creds.password = fallback
 
         self._require_connectable(creds)
         return creds
