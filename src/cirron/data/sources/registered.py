@@ -24,11 +24,13 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
 import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+import weakref
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -49,6 +51,10 @@ _OBJECT_URL_PATH_TEMPLATE = "/api/data/{bucket}/objects/{key}"
 _TIMEOUT_SEC = 10.0
 _DOWNLOAD_TIMEOUT_SEC = 300.0
 _LIST_PAGE_LIMIT = 10_000
+# Hard ceiling on listing pagination — protects against a buggy cursor
+# loop silently hammering the API. 10 pages × 10k = 100k objects, which
+# is far above the sane ci.load() working set.
+_MAX_LIST_PAGES = 10
 
 
 def _sdk_version() -> str:
@@ -103,34 +109,101 @@ class RegisteredDataset:
         )
 
     def _fetch_listing(self) -> dict[str, Any]:
-        path = _OBJECTS_PATH_TEMPLATE.format(
+        """Walk the listing endpoint's cursor until all pages are drained.
+
+        The platform caps a single response at ``_LIST_PAGE_LIMIT`` and
+        returns a ``cursor`` when more remain. The dispatcher's size-tier
+        policy needs the *full* byte-sum before any download runs, so we
+        have to aggregate here rather than streaming per-page.
+        """
+        base_path = _OBJECTS_PATH_TEMPLATE.format(
             bucket=urllib.parse.quote(self.name, safe="")
         )
-        params: dict[str, str] = {"limit": str(_LIST_PAGE_LIMIT)}
-        url = f"{self.cirron.api_endpoint.rstrip('/')}{path}?{urllib.parse.urlencode(params)}"
-        payload = _http_json_get(url, self.cirron.api_key or "", self.name)
+        base_url = f"{self.cirron.api_endpoint.rstrip('/')}{base_path}"
 
-        objects = payload.get("objects")
-        if not isinstance(objects, list):
-            raise CirronPlatformRequired(
-                f"platform listing response missing 'objects' array: {payload!r}"
-            )
-        total = payload.get("total_size_bytes")
-        if not isinstance(total, int):
-            # Fall back to summing object sizes if the platform didn't
-            # pre-aggregate — keeps us resilient to minor shape changes.
-            total = sum(int(o.get("size_bytes") or 0) for o in objects)
+        all_normalized: list[dict[str, Any]] = []
+        running_total = 0
+        platform_total: int | None = None
+        cursor: str | None = None
+        pages = 0
 
-        # Normalize to the shape we actually use downstream.
-        normalized = [
-            {
-                "key": str(o["key"]),
-                "size_bytes": int(o.get("size_bytes") or 0),
-            }
-            for o in objects
-            if isinstance(o, dict) and o.get("key")
-        ]
-        return {"objects": normalized, "total_size_bytes": total}
+        while True:
+            params: dict[str, str] = {"limit": str(_LIST_PAGE_LIMIT)}
+            if cursor:
+                params["cursor"] = cursor
+            url = f"{base_url}?{urllib.parse.urlencode(params)}"
+            payload = _http_json_get(url, self.cirron.api_key or "", self.name)
+
+            objects = payload.get("objects")
+            if not isinstance(objects, list):
+                raise CirronPlatformRequired(
+                    f"platform listing response missing 'objects' array: {payload!r}"
+                )
+
+            # Normalize once; downstream code + the fallback sum both
+            # read from this filtered list, so a malformed entry can't
+            # sneak through as an AttributeError.
+            page_normalized = [
+                {
+                    "key": str(o["key"]),
+                    "size_bytes": int(o.get("size_bytes") or 0),
+                }
+                for o in objects
+                if isinstance(o, dict) and o.get("key")
+            ]
+            all_normalized.extend(page_normalized)
+            running_total += sum(o["size_bytes"] for o in page_normalized)
+
+            page_total = payload.get("total_size_bytes")
+            if isinstance(page_total, int):
+                # Each page reports the total for its own set, not the
+                # grand total — but the last page typically carries the
+                # whole sum when it's a single-page listing. Track the
+                # max we've seen as a sanity value.
+                platform_total = page_total if platform_total is None else max(
+                    platform_total, page_total
+                )
+
+            cursor = payload.get("cursor")
+            pages += 1
+            if not cursor or not isinstance(cursor, str):
+                break
+            # Defense-in-depth: bail on runaway pagination rather than
+            # spinning forever on a buggy cursor loop.
+            if pages >= _MAX_LIST_PAGES:
+                raise CirronPlatformRequired(
+                    f"bucket '{self.name}' listing exceeded {_MAX_LIST_PAGES} "
+                    "pages; narrow the query with match= / ext= / prefix="
+                )
+
+        # Single-page listings trust the platform's total (it was computed
+        # server-side over the filtered set); multi-page listings sum as
+        # we went.
+        total = platform_total if pages == 1 and platform_total is not None else running_total
+        return {"objects": all_normalized, "total_size_bytes": total}
+
+
+# Filesystem-safe characters for the tempdir prefix. Everything outside
+# this set gets replaced with ``-``. Bucket names are arbitrary user
+# input (passed through ``ci.load(name, source="platform")``), so we
+# can't assume the platform's naming constraints carry over.
+_PREFIX_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _sanitize_bucket_prefix(bucket: str) -> str:
+    """Produce a filesystem-safe prefix fragment from a bucket name."""
+    sanitized = _PREFIX_SAFE.sub("-", bucket).strip("-") or "bucket"
+    # Cap length so pathological names don't blow past macOS NAME_MAX (255).
+    return sanitized[:64]
+
+
+def _rmtree_quiet(path: Path) -> None:
+    """Finalizer body: delete the download tempdir, swallow errors.
+
+    The weakref finalizer runs during GC (or at interpreter shutdown),
+    where propagating an OSError would be unhelpful noise.
+    """
+    shutil.rmtree(path, ignore_errors=True)
 
 
 class PlatformBucketSource(DataSource):
@@ -153,6 +226,7 @@ class PlatformBucketSource(DataSource):
         self._objects = objects
         self._total_size_bytes = total_size_bytes
         self._tempdir: Path | None = None
+        self._finalizer: weakref.finalize | None = None
 
     def estimate_size(self) -> tuple[int | None, int | None]:
         return (self._total_size_bytes, len(self._objects))
@@ -166,31 +240,40 @@ class PlatformBucketSource(DataSource):
                 f"bucket '{self._bucket}' is empty or no objects matched"
             )
 
-        tempdir = Path(tempfile.mkdtemp(prefix=f"cirron-bucket-{self._bucket}-"))
+        prefix = f"cirron-bucket-{_sanitize_bucket_prefix(self._bucket)}-"
+        tempdir = Path(tempfile.mkdtemp(prefix=prefix))
         self._tempdir = tempdir
-        try:
-            for obj in self._objects:
-                self._download_into(tempdir, obj["key"])
-            from cirron.data.sources.local import LocalDataSource
 
-            local = LocalDataSource(
-                SourceConfig(source_type="local", path=str(tempdir)),
-                self.request,
-            )
-            return local.load()
-        finally:
-            # Tempdir outlives the load() call so the returned DataFrame's
-            # backing files stay valid for downstream conversion. Caller
-            # or GC cleans up; worst case it's /tmp cruft.
-            # (Intentional: callers don't hold a handle to this source
-            # after as_= conversion, so we can't reliably join cleanup.)
-            pass
+        # Register a finalizer bound to *this source instance* so the
+        # tempdir is removed whenever the source is garbage-collected —
+        # covering the typical case where the caller holds only the
+        # returned DataFrame. The finalizer captures ``tempdir`` by
+        # value (not ``self``) to avoid creating a reference cycle that
+        # would keep the source alive indefinitely.
+        self._finalizer = weakref.finalize(self, _rmtree_quiet, tempdir)
+
+        for obj in self._objects:
+            self._download_into(tempdir, obj["key"])
+
+        from cirron.data.sources.local import LocalDataSource
+
+        local = LocalDataSource(
+            SourceConfig(source_type="local", path=str(tempdir)),
+            self.request,
+        )
+        return local.load()
 
     def cleanup(self) -> None:
-        """Best-effort removal of the download tempdir."""
-        if self._tempdir and self._tempdir.exists():
-            shutil.rmtree(self._tempdir, ignore_errors=True)
-            self._tempdir = None
+        """Best-effort removal of the download tempdir.
+
+        Normally the ``weakref.finalize`` registered in ``load()`` handles
+        this when the source is garbage-collected; this method is the
+        explicit escape hatch for tests or long-lived callers.
+        """
+        if self._finalizer is not None and self._finalizer.alive:
+            self._finalizer()  # runs _rmtree_quiet and detaches
+            self._finalizer = None
+        self._tempdir = None
 
     def _download_into(self, tempdir: Path, key: str) -> None:
         url_info = self._fetch_presigned_url(key)
@@ -200,11 +283,10 @@ class PlatformBucketSource(DataSource):
                 f"platform returned no presigned URL for object '{key}' in "
                 f"bucket '{self._bucket}'"
             )
-        # Flatten key to a filename that preserves the extension but
-        # drops directory structure — LocalDataSource concatenates the
-        # whole tempdir, so layout doesn't matter.
-        safe_name = key.replace("/", "__")
-        dest = tempdir / safe_name
+
+        dest = self._resolve_dest(tempdir, key)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+
         try:
             with urllib.request.urlopen(presigned, timeout=_DOWNLOAD_TIMEOUT_SEC) as resp:  # noqa: S310
                 with dest.open("wb") as fh:
@@ -215,6 +297,32 @@ class PlatformBucketSource(DataSource):
             raise CirronPlatformRequired(
                 f"failed to download '{key}' from presigned URL: {e}"
             ) from e
+
+    def _resolve_dest(self, tempdir: Path, key: str) -> Path:
+        """Map an object key to a path under ``tempdir`` that preserves
+        its directory structure while rejecting path-traversal tricks.
+
+        Downstream loaders may use the directory layout as semantics
+        (``year=2025/month=01/...``), so we can't flatten; but a
+        platform-returned key like ``../../etc/passwd`` must not
+        materialize outside the tempdir.
+        """
+        parts = [p for p in key.split("/") if p != ""]
+        if not parts or any(p in {".", ".."} for p in parts):
+            raise CirronPlatformRequired(
+                f"platform returned an unsupported object key '{key}' in "
+                f"bucket '{self._bucket}'"
+            )
+        dest = tempdir.joinpath(*parts)
+        # Belt-and-suspenders: refuse any path that, after normalization,
+        # escapes the tempdir (symlinks, platform-specific parsing, etc.).
+        try:
+            dest.resolve(strict=False).relative_to(tempdir.resolve(strict=False))
+        except ValueError as e:
+            raise CirronPlatformRequired(
+                f"object key '{key}' resolves outside the download root"
+            ) from e
+        return dest
 
     def _fetch_presigned_url(self, key: str) -> dict[str, Any]:
         path = _OBJECT_URL_PATH_TEMPLATE.format(
