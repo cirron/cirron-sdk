@@ -84,9 +84,7 @@ class RegisteredDataset:
       per-call tempdir, then delegates to ``LocalDataSource``.
     """
 
-    def __init__(
-        self, name: str, cirron: Cirron, request: LoadRequest | None = None
-    ) -> None:
+    def __init__(self, name: str, cirron: Cirron, request: LoadRequest | None = None) -> None:
         self.name = name
         self.cirron = cirron
         self.request = request
@@ -115,12 +113,18 @@ class RegisteredDataset:
         returns a ``cursor`` when more remain. The dispatcher's size-tier
         policy needs the *full* byte-sum before any download runs, so we
         have to aggregate here rather than streaming per-page.
+
+        ``match=`` / ``ext=`` on the request are pushed to the platform
+        route as query params — the route filters server-side via
+        ``minimatch`` + case-insensitive extension match, so we avoid
+        downloading a full bucket manifest just to drop most of it. A
+        regex ``filename`` in ``match`` is *not* pushed (the platform
+        only speaks glob); it's applied client-side after materializing.
         """
-        base_path = _OBJECTS_PATH_TEMPLATE.format(
-            bucket=urllib.parse.quote(self.name, safe="")
-        )
+        base_path = _OBJECTS_PATH_TEMPLATE.format(bucket=urllib.parse.quote(self.name, safe=""))
         base_url = f"{self.cirron.api_endpoint.rstrip('/')}{base_path}"
 
+        platform_filters = self._platform_filter_params()
         all_normalized: list[dict[str, Any]] = []
         running_total = 0
         platform_total: int | None = None
@@ -129,6 +133,7 @@ class RegisteredDataset:
 
         while True:
             params: dict[str, str] = {"limit": str(_LIST_PAGE_LIMIT)}
+            params.update(platform_filters)
             if cursor:
                 params["cursor"] = cursor
             url = f"{base_url}?{urllib.parse.urlencode(params)}"
@@ -161,8 +166,8 @@ class RegisteredDataset:
                 # grand total — but the last page typically carries the
                 # whole sum when it's a single-page listing. Track the
                 # max we've seen as a sanity value.
-                platform_total = page_total if platform_total is None else max(
-                    platform_total, page_total
+                platform_total = (
+                    page_total if platform_total is None else max(platform_total, page_total)
                 )
 
             cursor = payload.get("cursor")
@@ -177,11 +182,69 @@ class RegisteredDataset:
                     "pages; narrow the query with match= / ext= / prefix="
                 )
 
+        # Client-side regex filename pass for a match dict whose filename
+        # isn't a glob — the platform route only supports glob, so we
+        # have to re-filter here. ``apply_match`` against just the regex
+        # is equivalent to filtering on the basename.
+        all_normalized = self._post_filter(all_normalized)
+
+        # Recompute the total to reflect any client-side filtering so the
+        # dispatcher's size-tier check matches the actual download set.
+        if self._has_post_filter():
+            running_total = sum(int(o["size_bytes"]) for o in all_normalized)
+
         # Single-page listings trust the platform's total (it was computed
         # server-side over the filtered set); multi-page listings sum as
         # we went.
-        total = platform_total if pages == 1 and platform_total is not None else running_total
+        total = (
+            platform_total
+            if (pages == 1 and platform_total is not None and not self._has_post_filter())
+            else running_total
+        )
         return {"objects": all_normalized, "total_size_bytes": total}
+
+    def _platform_filter_params(self) -> dict[str, str]:
+        """Translate the request's ``MatchConfig`` into platform-route
+        query params.
+
+        The platform route accepts ``match`` (single glob), ``ext``
+        (comma-separated), and ``prefix``. ``path`` + ``filename_glob``
+        combine into one ``match`` string; ``filename_regex`` can't be
+        pushed (route only speaks glob) and is re-applied client-side.
+        """
+        if self.request is None or self.request.match is None:
+            return {}
+        cfg = self.request.match
+        params: dict[str, str] = {}
+
+        if cfg.path and cfg.filename_glob:
+            params["match"] = f"{cfg.path.rstrip('/')}/{cfg.filename_glob}"
+        elif cfg.path:
+            params["match"] = cfg.path
+        elif cfg.filename_glob:
+            params["match"] = cfg.filename_glob
+
+        if cfg.extension:
+            params["ext"] = ",".join(cfg.extension)
+        return params
+
+    def _has_post_filter(self) -> bool:
+        """True when we must re-filter the platform's response locally —
+        only ``filename_regex`` qualifies; the glob / path / extension
+        filters are already applied server-side."""
+        if self.request is None or self.request.match is None:
+            return False
+        return self.request.match.filename_regex is not None
+
+    def _post_filter(self, objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not self._has_post_filter():
+            return objects
+        assert self.request is not None and self.request.match is not None
+        from cirron.data.match import apply_match
+
+        keys = [o["key"] for o in objects]
+        kept = set(apply_match(keys, self.request.match))
+        return [o for o in objects if o["key"] in kept]
 
 
 # Filesystem-safe characters for the tempdir prefix. Everything outside
@@ -237,9 +300,7 @@ class PlatformBucketSource(DataSource):
 
     def load(self) -> Any:
         if not self._objects:
-            raise CirronDatasetNotFound(
-                f"bucket '{self._bucket}' is empty or no objects matched"
-            )
+            raise CirronDatasetNotFound(f"bucket '{self._bucket}' is empty or no objects matched")
 
         prefix = f"cirron-bucket-{_sanitize_bucket_prefix(self._bucket)}-"
         tempdir = Path(tempfile.mkdtemp(prefix=prefix))
@@ -260,9 +321,35 @@ class PlatformBucketSource(DataSource):
 
         local = LocalDataSource(
             SourceConfig(source_type="local", path=str(tempdir)),
-            self.request,
+            self._request_for_local(),
         )
         return local.load()
+
+    def _request_for_local(self) -> LoadRequest | None:
+        """Derive a LoadRequest for the downstream LocalDataSource.
+
+        The platform route already applied the push-able parts of the
+        match config (``path``, ``filename_glob``, ``extension``) when
+        listing, and we post-filtered for any regex ``filename`` before
+        downloading. Running those filters a second time against the
+        tempdir would drop every object (the tempdir is flat, so e.g.
+        a ``path='year=2025/*'`` glob won't match). Hand LocalDataSource
+        a match with only ``columns`` preserved — that's still needed
+        for parquet column pushdown."""
+        if self.request is None:
+            return None
+        if self.request.match is None or self.request.match.columns is None:
+            from dataclasses import replace
+
+            return replace(self.request, match=None)
+        from dataclasses import replace
+
+        from cirron.data.match import MatchConfig
+
+        return replace(
+            self.request,
+            match=MatchConfig(columns=self.request.match.columns),
+        )
 
     def cleanup(self) -> None:
         """Best-effort removal of the download tempdir.
@@ -281,8 +368,7 @@ class PlatformBucketSource(DataSource):
         presigned = url_info.get("url")
         if not isinstance(presigned, str) or not presigned:
             raise CirronPlatformRequired(
-                f"platform returned no presigned URL for object '{key}' in "
-                f"bucket '{self._bucket}'"
+                f"platform returned no presigned URL for object '{key}' in bucket '{self._bucket}'"
             )
 
         dest = self._resolve_dest(tempdir, key)
@@ -311,8 +397,7 @@ class PlatformBucketSource(DataSource):
         parts = [p for p in key.split("/") if p != ""]
         if not parts or any(p in {".", ".."} for p in parts):
             raise CirronPlatformRequired(
-                f"platform returned an unsupported object key '{key}' in "
-                f"bucket '{self._bucket}'"
+                f"platform returned an unsupported object key '{key}' in bucket '{self._bucket}'"
             )
         dest = tempdir.joinpath(*parts)
         # Belt-and-suspenders: refuse any path that, after normalization,
@@ -369,9 +454,7 @@ def _http_json_get(url: str, api_key: str, bucket_for_error: str) -> dict[str, A
                 "platform data API not available; pass a full URI like "
                 "'s3://...' or use source='local' for now."
             ) from e
-        raise CirronPlatformRequired(
-            f"platform data API call failed: HTTP {e.code}"
-        ) from e
+        raise CirronPlatformRequired(f"platform data API call failed: HTTP {e.code}") from e
     except OSError as e:
         # OSError covers urllib.error.URLError and TimeoutError.
         raise CirronPlatformRequired(
@@ -380,6 +463,4 @@ def _http_json_get(url: str, api_key: str, bucket_for_error: str) -> dict[str, A
         ) from e
     except ValueError as e:
         # ValueError covers json.JSONDecodeError.
-        raise CirronPlatformRequired(
-            f"platform data API returned invalid JSON: {e}"
-        ) from e
+        raise CirronPlatformRequired(f"platform data API returned invalid JSON: {e}") from e
