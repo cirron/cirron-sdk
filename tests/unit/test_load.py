@@ -114,9 +114,37 @@ def test_scheme_routing_rejects_unknown():
         ci.load("weird://thing")
 
 
-def test_postgres_scheme_defers_to_sdk_30():
-    with pytest.raises(NotImplementedError, match="SDK-30"):
-        ci.load("postgres://prod/events")
+def test_postgres_scheme_routes_to_postgres_source(monkeypatch):
+    """SDK-30 wired postgres:// through to ``PostgresDataSource``; the
+    driver import is what should fail on a dev machine without psycopg,
+    not the dispatcher."""
+    from cirron.data.sources import postgres as pg_mod
+
+    captured: dict[str, Any] = {}
+
+    class _FakePg:
+        def __init__(self, uri, cirron, request):
+            captured["uri"] = uri
+            captured["cirron"] = cirron
+            captured["request"] = request
+
+        def load(self):
+            return pd.DataFrame({"id": [1, 2]})
+
+        def validate(self):
+            return True
+
+        def estimate_size(self):
+            return (None, None)
+
+    monkeypatch.setattr(pg_mod, "PostgresDataSource", _FakePg)
+    result = ci.load("postgres://user:pw@prod/mydb/events", where="id > 0")
+    assert captured["uri"].scheme == "postgres"
+    assert captured["uri"].host == "prod"
+    assert captured["uri"].database == "mydb"
+    assert captured["uri"].table == "events"
+    assert captured["request"].where == "id > 0"
+    assert list(result["id"]) == [1, 2]
 
 
 # -- source='local' default ---------------------------------------------------
@@ -698,9 +726,10 @@ def test_platform_regex_filename_is_post_filtered(monkeypatch, tmp_path):
 # -- accept-and-raise for deferred params -------------------------------------
 
 
-def test_where_raises_sdk30(tmp_path):
+def test_where_rejected_for_non_sql_sources(tmp_path):
+    """``where=`` is SQL-only. Filesystem sources filter post-load."""
     path = _write_parquet(tmp_path, [{"a": 1}])
-    with pytest.raises(NotImplementedError, match="SDK-30"):
+    with pytest.raises(NotImplementedError, match="only implemented for SQL"):
         ci.load(str(path), where="a > 0")
 
 
