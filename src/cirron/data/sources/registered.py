@@ -84,9 +84,7 @@ class RegisteredDataset:
       per-call tempdir, then delegates to ``LocalDataSource``.
     """
 
-    def __init__(
-        self, name: str, cirron: Cirron, request: LoadRequest | None = None
-    ) -> None:
+    def __init__(self, name: str, cirron: Cirron, request: LoadRequest | None = None) -> None:
         self.name = name
         self.cirron = cirron
         self.request = request
@@ -123,9 +121,7 @@ class RegisteredDataset:
         regex ``filename`` in ``match`` is *not* pushed (the platform
         only speaks glob); it's applied client-side after materializing.
         """
-        base_path = _OBJECTS_PATH_TEMPLATE.format(
-            bucket=urllib.parse.quote(self.name, safe="")
-        )
+        base_path = _OBJECTS_PATH_TEMPLATE.format(bucket=urllib.parse.quote(self.name, safe=""))
         base_url = f"{self.cirron.api_endpoint.rstrip('/')}{base_path}"
 
         platform_filters = self._platform_filter_params()
@@ -170,8 +166,8 @@ class RegisteredDataset:
                 # grand total — but the last page typically carries the
                 # whole sum when it's a single-page listing. Track the
                 # max we've seen as a sanity value.
-                platform_total = page_total if platform_total is None else max(
-                    platform_total, page_total
+                platform_total = (
+                    page_total if platform_total is None else max(platform_total, page_total)
                 )
 
             cursor = payload.get("cursor")
@@ -200,11 +196,11 @@ class RegisteredDataset:
         # Single-page listings trust the platform's total (it was computed
         # server-side over the filtered set); multi-page listings sum as
         # we went.
-        total = platform_total if (
-            pages == 1
-            and platform_total is not None
-            and not self._has_post_filter()
-        ) else running_total
+        total = (
+            platform_total
+            if (pages == 1 and platform_total is not None and not self._has_post_filter())
+            else running_total
+        )
         return {"objects": all_normalized, "total_size_bytes": total}
 
     def _platform_filter_params(self) -> dict[str, str]:
@@ -304,9 +300,7 @@ class PlatformBucketSource(DataSource):
 
     def load(self) -> Any:
         if not self._objects:
-            raise CirronDatasetNotFound(
-                f"bucket '{self._bucket}' is empty or no objects matched"
-            )
+            raise CirronDatasetNotFound(f"bucket '{self._bucket}' is empty or no objects matched")
 
         prefix = f"cirron-bucket-{_sanitize_bucket_prefix(self._bucket)}-"
         tempdir = Path(tempfile.mkdtemp(prefix=prefix))
@@ -374,8 +368,7 @@ class PlatformBucketSource(DataSource):
         presigned = url_info.get("url")
         if not isinstance(presigned, str) or not presigned:
             raise CirronPlatformRequired(
-                f"platform returned no presigned URL for object '{key}' in "
-                f"bucket '{self._bucket}'"
+                f"platform returned no presigned URL for object '{key}' in bucket '{self._bucket}'"
             )
 
         dest = self._resolve_dest(tempdir, key)
@@ -404,8 +397,7 @@ class PlatformBucketSource(DataSource):
         parts = [p for p in key.split("/") if p != ""]
         if not parts or any(p in {".", ".."} for p in parts):
             raise CirronPlatformRequired(
-                f"platform returned an unsupported object key '{key}' in "
-                f"bucket '{self._bucket}'"
+                f"platform returned an unsupported object key '{key}' in bucket '{self._bucket}'"
             )
         dest = tempdir.joinpath(*parts)
         # Belt-and-suspenders: refuse any path that, after normalization,
@@ -462,9 +454,7 @@ def _http_json_get(url: str, api_key: str, bucket_for_error: str) -> dict[str, A
                 "platform data API not available; pass a full URI like "
                 "'s3://...' or use source='local' for now."
             ) from e
-        raise CirronPlatformRequired(
-            f"platform data API call failed: HTTP {e.code}"
-        ) from e
+        raise CirronPlatformRequired(f"platform data API call failed: HTTP {e.code}") from e
     except OSError as e:
         # OSError covers urllib.error.URLError and TimeoutError.
         raise CirronPlatformRequired(
@@ -473,6 +463,4 @@ def _http_json_get(url: str, api_key: str, bucket_for_error: str) -> dict[str, A
         ) from e
     except ValueError as e:
         # ValueError covers json.JSONDecodeError.
-        raise CirronPlatformRequired(
-            f"platform data API returned invalid JSON: {e}"
-        ) from e
+        raise CirronPlatformRequired(f"platform data API returned invalid JSON: {e}") from e
