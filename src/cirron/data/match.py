@@ -93,7 +93,7 @@ class MatchConfig:
                 extensions = _normalize_extensions(e)
             c = match.get("columns")
             if c is not None:
-                cols = tuple(str(x) for x in c)
+                cols = _normalize_columns(c)
         elif match is not None:
             raise TypeError(f"match= must be str, Mapping, or None; got {type(match).__name__}")
 
@@ -103,7 +103,7 @@ class MatchConfig:
         if ext:
             extensions = _normalize_extensions(ext)
         if columns:
-            cols = tuple(str(x) for x in columns)
+            cols = _normalize_columns(columns)
 
         return cls(
             path=path,
@@ -119,7 +119,31 @@ def _normalize_extensions(raw: Any) -> tuple[str, ...]:
         parts: list[str] = [raw]
     else:
         parts = list(raw)
-    return tuple(p.strip().lower().lstrip(".") for p in parts if p)
+    # Strip before filtering so whitespace-only values ("  ", "\t") don't
+    # slip through as empty extensions — an empty ext would turn the
+    # ``endswith('.<ext>')`` check into ``endswith('.')`` and match any
+    # filename that happens to end in a period.
+    normalized: list[str] = []
+    for p in parts:
+        stripped = p.strip()
+        if not stripped:
+            continue
+        ext = stripped.lower().lstrip(".")
+        if ext:
+            normalized.append(ext)
+    return tuple(normalized)
+
+
+def _normalize_columns(raw: Any) -> tuple[str, ...]:
+    """Accept a list/tuple of column names. Reject a bare string — which
+    would iterate character-by-character and silently turn ``"abc"`` into
+    three "columns" a/b/c."""
+    if isinstance(raw, str):
+        raise TypeError(
+            f"columns must be a list of column names, got a bare string {raw!r}; "
+            "wrap it in a list: columns=[{raw!r}]"
+        )
+    return tuple(str(x) for x in raw)
 
 
 def apply_match(paths: Iterable[str], cfg: MatchConfig) -> list[str]:
