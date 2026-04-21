@@ -116,9 +116,7 @@ class TestParseSqlUri:
         assert uri.table == "table"
 
     def test_databricks_dotted(self):
-        uri = parse_sql_uri(
-            "databricks://dbc.cloud.databricks.com/main.default.events"
-        )
+        uri = parse_sql_uri("databricks://dbc.cloud.databricks.com/main.default.events")
         assert uri.scheme == "databricks"
         assert uri.database == "main"
         assert uri.schema == "default"
@@ -211,9 +209,7 @@ class TestCredentialResolver:
 
     def test_platform_404_falls_through_to_env(self, monkeypatch):
         def _fake_urlopen(req, timeout=None):
-            raise urllib.error.HTTPError(
-                req.full_url, 404, "Not Found", hdrs=None, fp=None
-            )
+            raise urllib.error.HTTPError(req.full_url, 404, "Not Found", hdrs=None, fp=None)
 
         monkeypatch.setattr("cirron.data.sql.urllib.request.urlopen", _fake_urlopen)
         monkeypatch.setenv("PGPASSWORD", "env-pass")
