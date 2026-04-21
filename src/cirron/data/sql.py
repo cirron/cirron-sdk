@@ -29,9 +29,10 @@ import logging
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError, version
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from cirron.core.errors import (
     CirronDependencyError,
@@ -274,8 +275,7 @@ class CredentialResolver:
             if e.code in (404, 501):
                 return None
             log.warning(
-                "platform integration resolve returned HTTP %d; "
-                "falling back to local credentials",
+                "platform integration resolve returned HTTP %d; falling back to local credentials",
                 e.code,
             )
             return None
