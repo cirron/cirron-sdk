@@ -1,40 +1,38 @@
-"""Platform-resolved dataset source — ``ci.load(name, source='platform')``.
+"""Platform-resolved bucket source — ``ci.load(name, source='platform')``.
 
-Spec §4.7 describes a "registered dataset" lookup where the SDK hands a
-name to the platform and gets back a storage pointer (S3 / GCS / Azure
-bucket, or a local-mounted path for air-gapped) plus a scoped,
-short-lived credential. Today the platform does not yet expose this
-endpoint — see ``Repos/cirron/apps/app/app/api/``; there is a
-``DatasetVersion`` model but no ``/v1/datasets/resolve`` route.
+SDK-50 replaces the legacy ``/v1/datasets/resolve`` flow with a bucket-
+oriented contract served by the platform monorepo under
+``apps/app/app/api/data/``:
 
-SDK-28 ships the client-side call against the **proposed** contract:
+    GET  {api_endpoint}/api/data/{bucket}/objects?limit=<n>&prefix=<p>
+    GET  {api_endpoint}/api/data/{bucket}/objects/{key}
 
-    GET {api_endpoint}/v1/datasets/resolve?name=<name>&workspace_id=<ws>
-    Header: X-Cluster-Api-Key: <api_key>
-    200 → { "source_type": "s3"|"gcs"|"azure"|"local",
-            "format": "parquet"|"csv"|...,
-            "bucket_name": ...,           # for s3/gcs
-            "container_name": ...,        # for azure
-            "account_name": ...,          # for azure
-            "folder_path": ...,
-            "path": ...,                  # for local / direct file
-            "credentials": { ... } }       # scoped short-lived
-    404 → CirronDatasetNotFound
-    401/403 → CirronPlatformRequired (credentials bad)
-    other / connection error → CirronPlatformRequired (platform unavailable)
+The listing call returns every object's size and the aggregate
+``total_size_bytes`` so the dispatcher can enforce the load-size tier
+policy (:mod:`cirron.data.size`) *before* any bytes move off the
+platform. When the tier check passes, the source downloads each object
+through a short-lived presigned URL and hands the materialized tempdir
+to ``LocalDataSource``, which handles the actual format reads
+(csv/parquet/json/…) exactly like a local directory of files.
 
-Until the platform ships the endpoint, every call will land on the
-"platform unavailable" path and raise with a clear actionable message.
+Auth: ``Authorization: Bearer <api_key>``. The ``api_key`` is a
+workspace-scoped JWT minted by the platform (same token CLI uses). No
+raw S3/GCS credentials ever reach the SDK.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import re
+import shutil
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+import weakref
 from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from cirron.core.errors import CirronDatasetNotFound, CirronPlatformRequired
@@ -46,10 +44,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("cirron.load.registered")
 
-_AUTH_HEADER = "X-Cluster-Api-Key"
+_AUTH_HEADER = "Authorization"
 _SDK_VERSION_HEADER = "X-Cirron-SDK-Version"
-_RESOLVE_PATH = "/v1/datasets/resolve"
+_OBJECTS_PATH_TEMPLATE = "/api/data/{bucket}/objects"
+_OBJECT_URL_PATH_TEMPLATE = "/api/data/{bucket}/objects/{key}"
 _TIMEOUT_SEC = 10.0
+_DOWNLOAD_TIMEOUT_SEC = 300.0
+_LIST_PAGE_LIMIT = 10_000
+# Hard ceiling on listing pagination — protects against a buggy cursor
+# loop silently hammering the API. 10 pages × 10k = 100k objects, which
+# is far above the sane ci.load() working set.
+_MAX_LIST_PAGES = 10
 
 
 def _sdk_version() -> str:
@@ -59,10 +64,29 @@ def _sdk_version() -> str:
         return "0.0.0"
 
 
-class RegisteredDataset:
-    """Resolve a registered dataset name to a concrete ``DataSource``."""
+def _bearer(api_key: str) -> str:
+    return f"Bearer {api_key}"
 
-    def __init__(self, name: str, cirron: Cirron, request: LoadRequest | None = None) -> None:
+
+class RegisteredDataset:
+    """Resolve a workspace bucket name to a materialized local source.
+
+    The heavy work happens in two stages:
+
+    * ``resolve()`` — HTTP listing only. Cheap. Populates
+      ``self._objects`` with ``{key, size_bytes}`` entries and computes
+      ``self._total_size_bytes``. Returns a :class:`PlatformBucketSource`
+      whose ``estimate_size`` / ``count`` satisfy the dispatcher's tier
+      check without downloading anything.
+
+    * ``PlatformBucketSource.load()`` — runs after the tier check
+      passes. Downloads each object through a presigned URL into a
+      per-call tempdir, then delegates to ``LocalDataSource``.
+    """
+
+    def __init__(
+        self, name: str, cirron: Cirron, request: LoadRequest | None = None
+    ) -> None:
         self.name = name
         self.cirron = cirron
         self.request = request
@@ -75,87 +99,287 @@ class RegisteredDataset:
                 "scheme URI (s3://, gs://, ...) for credential-free access."
             )
 
-        payload = self._fetch()
-        return _build_source(payload, self.request)
-
-    def _fetch(self) -> dict[str, Any]:
-        params = {"name": self.name}
-        if self.cirron.workspace_id:
-            params["workspace_id"] = self.cirron.workspace_id
-        url = f"{self.cirron.api_endpoint.rstrip('/')}{_RESOLVE_PATH}?{urllib.parse.urlencode(params)}"
-        req = urllib.request.Request(
-            url,
-            headers={
-                _AUTH_HEADER: self.cirron.api_key or "",
-                _SDK_VERSION_HEADER: _sdk_version(),
-                "Accept": "application/json",
-            },
+        listing = self._fetch_listing()
+        return PlatformBucketSource(
+            bucket=self.name,
+            cirron=self.cirron,
+            request=self.request,
+            objects=listing["objects"],
+            total_size_bytes=listing["total_size_bytes"],
         )
-        try:
-            with urllib.request.urlopen(req, timeout=_TIMEOUT_SEC) as resp:  # noqa: S310
-                body = resp.read().decode("utf-8")
-                return json.loads(body)  # type: ignore[no-any-return]
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
-                raise CirronDatasetNotFound(
-                    f"dataset '{self.name}' not found in workspace "
-                    f"{self.cirron.workspace_id or '(default)'}"
-                ) from e
-            if e.code in (401, 403):
+
+    def _fetch_listing(self) -> dict[str, Any]:
+        """Walk the listing endpoint's cursor until all pages are drained.
+
+        The platform caps a single response at ``_LIST_PAGE_LIMIT`` and
+        returns a ``cursor`` when more remain. The dispatcher's size-tier
+        policy needs the *full* byte-sum before any download runs, so we
+        have to aggregate here rather than streaming per-page.
+        """
+        base_path = _OBJECTS_PATH_TEMPLATE.format(
+            bucket=urllib.parse.quote(self.name, safe="")
+        )
+        base_url = f"{self.cirron.api_endpoint.rstrip('/')}{base_path}"
+
+        all_normalized: list[dict[str, Any]] = []
+        running_total = 0
+        platform_total: int | None = None
+        cursor: str | None = None
+        pages = 0
+
+        while True:
+            params: dict[str, str] = {"limit": str(_LIST_PAGE_LIMIT)}
+            if cursor:
+                params["cursor"] = cursor
+            url = f"{base_url}?{urllib.parse.urlencode(params)}"
+            payload = _http_json_get(url, self.cirron.api_key or "", self.name)
+
+            objects = payload.get("objects")
+            if not isinstance(objects, list):
                 raise CirronPlatformRequired(
-                    f"platform rejected the API key ({e.code}). Run `cirron login`."
-                ) from e
-            if e.code in (501, 502, 503, 504):
+                    f"platform listing response missing 'objects' array: {payload!r}"
+                )
+
+            # Normalize once; downstream code + the fallback sum both
+            # read from this filtered list, so a malformed entry can't
+            # sneak through as an AttributeError.
+            page_normalized: list[dict[str, Any]] = [
+                {
+                    "key": str(o["key"]),
+                    "size_bytes": int(o.get("size_bytes") or 0),
+                }
+                for o in objects
+                if isinstance(o, dict) and o.get("key")
+            ]
+            all_normalized.extend(page_normalized)
+            page_sum = sum(int(o["size_bytes"]) for o in page_normalized)
+            running_total += page_sum
+
+            page_total = payload.get("total_size_bytes")
+            if isinstance(page_total, int):
+                # Each page reports the total for its own set, not the
+                # grand total — but the last page typically carries the
+                # whole sum when it's a single-page listing. Track the
+                # max we've seen as a sanity value.
+                platform_total = page_total if platform_total is None else max(
+                    platform_total, page_total
+                )
+
+            cursor = payload.get("cursor")
+            pages += 1
+            if not cursor or not isinstance(cursor, str):
+                break
+            # Defense-in-depth: bail on runaway pagination rather than
+            # spinning forever on a buggy cursor loop.
+            if pages >= _MAX_LIST_PAGES:
                 raise CirronPlatformRequired(
-                    "platform dataset registry not yet available; pass a full "
-                    "URI like 's3://...' or use source='local' for now."
-                ) from e
-            raise CirronPlatformRequired(f"platform dataset resolve failed: HTTP {e.code}") from e
-        except (urllib.error.URLError, TimeoutError, OSError) as e:
-            raise CirronPlatformRequired(
-                "platform dataset registry not reachable; pass a full URI "
-                f"like 's3://...' or use source='local' for now ({e})."
-            ) from e
-        except (ValueError, json.JSONDecodeError) as e:
-            raise CirronPlatformRequired(
-                f"platform dataset resolve returned invalid JSON: {e}"
-            ) from e
+                    f"bucket '{self.name}' listing exceeded {_MAX_LIST_PAGES} "
+                    "pages; narrow the query with match= / ext= / prefix="
+                )
+
+        # Single-page listings trust the platform's total (it was computed
+        # server-side over the filtered set); multi-page listings sum as
+        # we went.
+        total = platform_total if pages == 1 and platform_total is not None else running_total
+        return {"objects": all_normalized, "total_size_bytes": total}
 
 
-def _build_source(payload: dict[str, Any], request: LoadRequest | None) -> DataSource:
-    """Turn a resolve-endpoint response into a concrete ``DataSource``."""
-    source_type = payload.get("source_type")
-    if not source_type:
-        raise CirronPlatformRequired(f"platform resolve response missing source_type: {payload!r}")
-    config = SourceConfig(
-        source_type=source_type,
-        format=payload.get("format"),
-        path=payload.get("path"),
-        bucket_name=payload.get("bucket_name"),
-        container_name=payload.get("container_name"),
-        account_name=payload.get("account_name"),
-        folder_path=payload.get("folder_path"),
-        credentials=payload.get("credentials"),
-    )
-    if source_type == "s3":
-        from cirron.data.sources.s3 import S3DataSource
+# Filesystem-safe characters for the tempdir prefix. Everything outside
+# this set gets replaced with ``-``. Bucket names are arbitrary user
+# input (passed through ``ci.load(name, source="platform")``), so we
+# can't assume the platform's naming constraints carry over.
+_PREFIX_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
-        return S3DataSource(config, request)
-    if source_type in ("gs", "gcs"):
-        from cirron.data.sources.gcs import GCSDataSource
 
-        return GCSDataSource(config, request)
-    if source_type == "azure":
-        # TODO(SDK-29): AzureDataSource builds account_url from
-        # container_name instead of account_name, so platform-resolved
-        # Azure datasets will hit the wrong endpoint even though this
-        # resolver correctly forwards account_name on SourceConfig.
-        # Tracked as an SDK-29 bug-fix item in docs/refactor-stories.md.
-        from cirron.data.sources.azure import AzureDataSource
+def _sanitize_bucket_prefix(bucket: str) -> str:
+    """Produce a filesystem-safe prefix fragment from a bucket name."""
+    sanitized = _PREFIX_SAFE.sub("-", bucket).strip("-") or "bucket"
+    # Cap length so pathological names don't blow past macOS NAME_MAX (255).
+    return sanitized[:64]
 
-        return AzureDataSource(config, request)
-    if source_type == "local":
+
+def _rmtree_quiet(path: Path) -> None:
+    """Finalizer body: delete the download tempdir, swallow errors.
+
+    The weakref finalizer runs during GC (or at interpreter shutdown),
+    where propagating an OSError would be unhelpful noise.
+    """
+    shutil.rmtree(path, ignore_errors=True)
+
+
+class PlatformBucketSource(DataSource):
+    """Materializes a platform bucket listing into a local directory."""
+
+    def __init__(
+        self,
+        *,
+        bucket: str,
+        cirron: Cirron,
+        request: LoadRequest | None,
+        objects: list[dict[str, Any]],
+        total_size_bytes: int,
+    ) -> None:
+        # Stand up a SourceConfig so DataSource's base contract is happy,
+        # but this source bypasses the config-driven loader entirely.
+        super().__init__(SourceConfig(source_type="platform"), request)
+        self._bucket = bucket
+        self._cirron = cirron
+        self._objects = objects
+        self._total_size_bytes = total_size_bytes
+        self._tempdir: Path | None = None
+        self._finalizer: weakref.finalize | None = None
+
+    def estimate_size(self) -> tuple[int | None, int | None]:
+        return (self._total_size_bytes, len(self._objects))
+
+    def validate(self) -> bool:
+        return True
+
+    def load(self) -> Any:
+        if not self._objects:
+            raise CirronDatasetNotFound(
+                f"bucket '{self._bucket}' is empty or no objects matched"
+            )
+
+        prefix = f"cirron-bucket-{_sanitize_bucket_prefix(self._bucket)}-"
+        tempdir = Path(tempfile.mkdtemp(prefix=prefix))
+        self._tempdir = tempdir
+
+        # Register a finalizer bound to *this source instance* so the
+        # tempdir is removed whenever the source is garbage-collected —
+        # covering the typical case where the caller holds only the
+        # returned DataFrame. The finalizer captures ``tempdir`` by
+        # value (not ``self``) to avoid creating a reference cycle that
+        # would keep the source alive indefinitely.
+        self._finalizer = weakref.finalize(self, _rmtree_quiet, tempdir)
+
+        for obj in self._objects:
+            self._download_into(tempdir, obj["key"])
+
         from cirron.data.sources.local import LocalDataSource
 
-        return LocalDataSource(config, request)
-    raise CirronPlatformRequired(f"platform resolve returned unknown source_type: {source_type!r}")
+        local = LocalDataSource(
+            SourceConfig(source_type="local", path=str(tempdir)),
+            self.request,
+        )
+        return local.load()
+
+    def cleanup(self) -> None:
+        """Best-effort removal of the download tempdir.
+
+        Normally the ``weakref.finalize`` registered in ``load()`` handles
+        this when the source is garbage-collected; this method is the
+        explicit escape hatch for tests or long-lived callers.
+        """
+        if self._finalizer is not None and self._finalizer.alive:
+            self._finalizer()  # runs _rmtree_quiet and detaches
+            self._finalizer = None
+        self._tempdir = None
+
+    def _download_into(self, tempdir: Path, key: str) -> None:
+        url_info = self._fetch_presigned_url(key)
+        presigned = url_info.get("url")
+        if not isinstance(presigned, str) or not presigned:
+            raise CirronPlatformRequired(
+                f"platform returned no presigned URL for object '{key}' in "
+                f"bucket '{self._bucket}'"
+            )
+
+        dest = self._resolve_dest(tempdir, key)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            with urllib.request.urlopen(presigned, timeout=_DOWNLOAD_TIMEOUT_SEC) as resp:  # noqa: S310
+                with dest.open("wb") as fh:
+                    shutil.copyfileobj(resp, fh)
+        except OSError as e:
+            # OSError covers urllib.error.URLError and TimeoutError (both
+            # are OSError subclasses in Python 3.10+).
+            raise CirronPlatformRequired(
+                f"failed to download '{key}' from presigned URL: {e}"
+            ) from e
+
+    def _resolve_dest(self, tempdir: Path, key: str) -> Path:
+        """Map an object key to a path under ``tempdir`` that preserves
+        its directory structure while rejecting path-traversal tricks.
+
+        Downstream loaders may use the directory layout as semantics
+        (``year=2025/month=01/...``), so we can't flatten; but a
+        platform-returned key like ``../../etc/passwd`` must not
+        materialize outside the tempdir.
+        """
+        parts = [p for p in key.split("/") if p != ""]
+        if not parts or any(p in {".", ".."} for p in parts):
+            raise CirronPlatformRequired(
+                f"platform returned an unsupported object key '{key}' in "
+                f"bucket '{self._bucket}'"
+            )
+        dest = tempdir.joinpath(*parts)
+        # Belt-and-suspenders: refuse any path that, after normalization,
+        # escapes the tempdir (symlinks, platform-specific parsing, etc.).
+        try:
+            dest.resolve(strict=False).relative_to(tempdir.resolve(strict=False))
+        except ValueError as e:
+            raise CirronPlatformRequired(
+                f"object key '{key}' resolves outside the download root"
+            ) from e
+        return dest
+
+    def _fetch_presigned_url(self, key: str) -> dict[str, Any]:
+        path = _OBJECT_URL_PATH_TEMPLATE.format(
+            bucket=urllib.parse.quote(self._bucket, safe=""),
+            key=urllib.parse.quote(key, safe=""),
+        )
+        url = f"{self._cirron.api_endpoint.rstrip('/')}{path}"
+        return _http_json_get(url, self._cirron.api_key or "", self._bucket)
+
+
+def _http_json_get(url: str, api_key: str, bucket_for_error: str) -> dict[str, Any]:
+    """Shared GET helper with consistent error → exception mapping.
+
+    404 on either endpoint means "bucket doesn't exist for this
+    workspace"; 401/403 means the token is bad; 5xx / connection errors
+    mean the platform is unavailable. The error taxonomy matches the
+    pre-SDK-50 resolver so callers see the same exception shape.
+    """
+    req = urllib.request.Request(
+        url,
+        headers={
+            _AUTH_HEADER: _bearer(api_key),
+            _SDK_VERSION_HEADER: _sdk_version(),
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=_TIMEOUT_SEC) as resp:  # noqa: S310
+            body = resp.read().decode("utf-8")
+            return json.loads(body)  # type: ignore[no-any-return]
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            raise CirronDatasetNotFound(
+                f"bucket '{bucket_for_error}' not found in this workspace"
+            ) from e
+        if e.code in (401, 403):
+            raise CirronPlatformRequired(
+                f"platform rejected the API key ({e.code}). Run `cirron login` "
+                "or verify Cirron(api_key=...) against the current workspace."
+            ) from e
+        if e.code in (501, 502, 503, 504):
+            raise CirronPlatformRequired(
+                "platform data API not available; pass a full URI like "
+                "'s3://...' or use source='local' for now."
+            ) from e
+        raise CirronPlatformRequired(
+            f"platform data API call failed: HTTP {e.code}"
+        ) from e
+    except OSError as e:
+        # OSError covers urllib.error.URLError and TimeoutError.
+        raise CirronPlatformRequired(
+            "platform data API not reachable; pass a full URI like "
+            f"'s3://...' or use source='local' for now ({e})."
+        ) from e
+    except ValueError as e:
+        # ValueError covers json.JSONDecodeError.
+        raise CirronPlatformRequired(
+            f"platform data API returned invalid JSON: {e}"
+        ) from e
