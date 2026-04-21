@@ -44,6 +44,7 @@ from cirron.core.errors import (
 )
 from cirron.core.profiler import Profiler, flush, health, shutdown, watch
 from cirron.core.yaml_types import CirronYaml, ProfilingConfig, ServingConfig
+from cirron.data.transform import batch_map
 
 try:
     __version__ = _pkg_version("cirron-sdk")
@@ -122,6 +123,7 @@ __all__ = [
     "ProfilingConfig",
     "Profiler",
     "ServingConfig",
+    "batch_map",
     "batches",
     "env",
     "epochs",
