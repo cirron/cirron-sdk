@@ -5,7 +5,7 @@ oriented contract served by the platform monorepo under
 ``apps/app/app/api/data/``:
 
     GET  {api_endpoint}/api/data/{bucket}/objects?limit=<n>&prefix=<p>
-    GET  {api_endpoint}/api/data/{bucket}/objects/{key}/url
+    GET  {api_endpoint}/api/data/{bucket}/objects/{key}
 
 The listing call returns every object's size and the aggregate
 ``total_size_bytes`` so the dispatcher can enforce the load-size tier
@@ -45,7 +45,7 @@ logger = logging.getLogger("cirron.load.registered")
 _AUTH_HEADER = "Authorization"
 _SDK_VERSION_HEADER = "X-Cirron-SDK-Version"
 _OBJECTS_PATH_TEMPLATE = "/api/data/{bucket}/objects"
-_OBJECT_URL_PATH_TEMPLATE = "/api/data/{bucket}/objects/{key}/url"
+_OBJECT_URL_PATH_TEMPLATE = "/api/data/{bucket}/objects/{key}"
 _TIMEOUT_SEC = 10.0
 _DOWNLOAD_TIMEOUT_SEC = 300.0
 _LIST_PAGE_LIMIT = 10_000
