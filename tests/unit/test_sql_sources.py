@@ -90,6 +90,42 @@ class TestParseSqlUri:
         assert uri.database is None
         assert uri.table == "events"
 
+    def test_postgres_three_segment_path(self):
+        """``/database/schema/table`` — fully qualified, slash-separated."""
+        uri = parse_sql_uri("postgres://host/app/public/events")
+        assert uri.database == "app"
+        assert uri.schema == "public"
+        assert uri.table == "events"
+
+    def test_postgres_dotted_schema_in_last_segment(self):
+        """Canonical Postgres ``schema.table`` convention.
+
+        Before PR #35 review this folded into ``table='public.events'``
+        and emitted invalid ``FROM "public.events"`` (one quoted
+        identifier). Now the dot splits into schema + table.
+        """
+        uri = parse_sql_uri("postgres://host/app/public.events")
+        assert uri.database == "app"
+        assert uri.schema == "public"
+        assert uri.table == "events"
+
+    def test_postgres_bare_dotted_schema(self):
+        """``/schema.table`` with no database."""
+        uri = parse_sql_uri("postgres://host/public.events")
+        assert uri.database is None
+        assert uri.schema == "public"
+        assert uri.table == "events"
+
+    def test_postgres_rejects_four_segments(self):
+        with pytest.raises(ValueError, match="too many path segments"):
+            parse_sql_uri("postgres://h/a/b/c/d")
+
+    def test_mysql_three_segment_path(self):
+        uri = parse_sql_uri("mysql://h/db/schema/orders")
+        assert uri.database == "db"
+        assert uri.schema == "schema"
+        assert uri.table == "orders"
+
     def test_postgres_requires_table(self):
         with pytest.raises(ValueError, match="must include a table"):
             parse_sql_uri("postgres://prod")
@@ -147,6 +183,15 @@ class TestBuildQuery:
     def test_mysql_uses_backticks(self):
         uri = parse_sql_uri("mysql://h/db/orders")
         assert build_query(uri, where=None, columns=["id"]) == "SELECT `id` FROM `orders`"
+
+    def test_postgres_schema_qualified(self):
+        """Schema from the URI must surface as ``"schema"."table"``."""
+        uri = parse_sql_uri("postgres://h/app/public.events")
+        assert build_query(uri, where=None, columns=None) == 'SELECT * FROM "public"."events"'
+
+    def test_mysql_schema_qualified(self):
+        uri = parse_sql_uri("mysql://h/db/reporting/orders")
+        assert build_query(uri, where=None, columns=None) == "SELECT * FROM `reporting`.`orders`"
 
     def test_snowflake_qualified_table(self):
         uri = parse_sql_uri("snowflake://acme/DB.PUBLIC.T")
