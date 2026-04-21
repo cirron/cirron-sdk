@@ -95,9 +95,7 @@ class MatchConfig:
             if c is not None:
                 cols = tuple(str(x) for x in c)
         elif match is not None:
-            raise TypeError(
-                f"match= must be str, Mapping, or None; got {type(match).__name__}"
-            )
+            raise TypeError(f"match= must be str, Mapping, or None; got {type(match).__name__}")
 
         # Flat kwargs override their dict equivalents — no one calls the
         # dict shape in production yet, and the flat kwargs are the

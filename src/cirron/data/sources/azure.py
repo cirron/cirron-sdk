@@ -97,9 +97,9 @@ class AzureDataSource(DataSource):
             container_name = self.config.container_name
             if container_name is None or not self.config.account_name:
                 return False
-            container = BlobServiceClient(
-                account_url=self._account_url()
-            ).get_container_client(container_name)
+            container = BlobServiceClient(account_url=self._account_url()).get_container_client(
+                container_name
+            )
             return bool(container.exists())
         except Exception as e:
             logger.warning(f"Azure validation failed: {e}")
