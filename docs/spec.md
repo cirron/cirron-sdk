@@ -413,7 +413,7 @@ Applied for SQL-backed sources (Postgres, Databricks, Snowflake). A SQL WHERE cl
 
 **Mapping (`map`)**
 
-A callable applied row-wise (default) or batch-wise (if decorated with `@ci.batch_map`). Runs after load, before return. Heavy transforms should live in the pipeline, not in the load call.
+A callable applied row-wise (default) or batch-wise (if decorated with `@ci.map`). Runs after load, before return. Heavy transforms should live in the pipeline, not in the load call. The decorator's sole purpose is marking the callable as batch-wise — the absence of a decorator means row-wise, so plain lambdas and functions "just work".
 
 **Return types**
 
