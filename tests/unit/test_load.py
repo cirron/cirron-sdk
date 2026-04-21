@@ -154,19 +154,39 @@ def test_platform_without_api_key_raises(monkeypatch):
         c.load("training-data", source="platform")
 
 
-def test_platform_resolve_hits_expected_url(monkeypatch, tmp_path):
-    # Build a concrete file the returned LocalDataSource will read.
+def test_platform_bucket_lists_and_downloads(monkeypatch, tmp_path):
+    # Build a concrete parquet file the presigned URL will "serve".
     path = _write_parquet(tmp_path, [{"x": 1}])
-    payload = {
-        "source_type": "local",
-        "path": str(path),
-        "format": "parquet",
+    parquet_bytes = path.read_bytes()
+
+    list_payload = {
+        "objects": [
+            {"key": "a.parquet", "size_bytes": len(parquet_bytes)},
+        ],
+        "total_size_bytes": len(parquet_bytes),
+        "total_count": 1,
     }
-    captured: dict[str, Any] = {}
+    url_payload = {
+        "url": "https://presigned.example/a.parquet",
+        "expires_at": "2099-01-01T00:00:00Z",
+        "size_bytes": len(parquet_bytes),
+    }
+
+    captured: dict[str, Any] = {"calls": []}
 
     class _Resp:
+        """Minimal urlopen-response shim.
+
+        Uses an underlying BytesIO so both ``resp.read()`` (JSON
+        endpoints) and ``shutil.copyfileobj(resp, ...)`` (presigned
+        download, which calls ``read(chunk_size)`` in a loop) terminate
+        correctly instead of looping forever.
+        """
+
         def __init__(self, body: bytes) -> None:
-            self._body = body
+            import io
+
+            self._buf = io.BytesIO(body)
 
         def __enter__(self):
             return self
@@ -174,24 +194,44 @@ def test_platform_resolve_hits_expected_url(monkeypatch, tmp_path):
         def __exit__(self, *a):
             return False
 
-        def read(self):
-            return self._body
+        def read(self, size=-1):
+            return self._buf.read(size)
 
     def _fake_urlopen(req, timeout=None):
-        captured["url"] = req.full_url
-        captured["headers"] = dict(req.header_items())
-        return _Resp(json.dumps(payload).encode("utf-8"))
+        # req can be a string (the presigned URL download) or a Request.
+        if isinstance(req, str):
+            url = req
+            headers: dict[str, str] = {}
+        else:
+            url = req.full_url
+            headers = dict(req.header_items())
+        captured["calls"].append({"url": url, "headers": headers})
+        # Listing: /api/data/training-data/objects?...
+        # Presigned URL: /api/data/training-data/objects/<key>
+        if "/api/data/training-data/objects/" in url:
+            return _Resp(json.dumps(url_payload).encode("utf-8"))
+        if "/api/data/training-data/objects" in url:
+            return _Resp(json.dumps(list_payload).encode("utf-8"))
+        if url == url_payload["url"]:
+            return _Resp(parquet_bytes)
+        raise AssertionError(f"unexpected URL in test: {url}")
 
     monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
     c = Cirron(api_key="sk-test", api_endpoint="https://p.example", workspace_id="ws-1")
     df = c.load("training-data", source="platform")
     assert df.shape == (1, 1)
-    assert "/v1/datasets/resolve" in captured["url"]
-    assert "name=training-data" in captured["url"]
-    assert "workspace_id=ws-1" in captured["url"]
+
+    list_call = captured["calls"][0]
+    assert "/api/data/training-data/objects" in list_call["url"]
     # urllib normalizes to Title-Case in header_items()
-    headers = {k.lower(): v for k, v in captured["headers"].items()}
-    assert headers["x-cluster-api-key"] == "sk-test"
+    list_headers = {k.lower(): v for k, v in list_call["headers"].items()}
+    assert list_headers["authorization"] == "Bearer sk-test"
+
+    url_call = captured["calls"][1]
+    assert url_call["url"].endswith("/api/data/training-data/objects/a.parquet")
+
+    download_call = captured["calls"][2]
+    assert download_call["url"] == url_payload["url"]
 
 
 def test_platform_404_is_dataset_not_found(monkeypatch):

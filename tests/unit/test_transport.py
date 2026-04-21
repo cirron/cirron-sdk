@@ -191,7 +191,7 @@ def test_http_sends_headers_and_small_body_uncompressed() -> None:
     assert result.ok is True
     call = session.calls[0]
     assert call["url"] == "https://api.example.test/api/traces"
-    assert call["headers"][AUTH_HEADER] == "secret-key"
+    assert call["headers"][AUTH_HEADER] == "Bearer secret-key"
     assert call["headers"]["Content-Type"] == "application/json"
     assert call["headers"][BATCH_ID_HEADER] == "abc123"
     assert SDK_VERSION_HEADER in call["headers"]
@@ -414,9 +414,9 @@ def test_http_upload_blob_puts_bytes(tmp_path) -> None:
     assert uri == "https://blobs.example/span/weights"
     assert len(session.put_calls) == 1
     call = session.put_calls[0]
-    assert call["url"].endswith("/api/traces/blob/snapshots/span/weights.safetensors")
+    assert call["url"].endswith("/api/traces/blobs/snapshots/span/weights.safetensors")
     assert call["data"] == b"hello world"
-    assert call["headers"][AUTH_HEADER] == "secret-key"
+    assert call["headers"][AUTH_HEADER] == "Bearer secret-key"
     assert call["headers"][BLOB_KEY_HEADER] == "snapshots/span/weights.safetensors"
     assert call["headers"]["Content-Type"] == "application/octet-stream"
 
@@ -478,7 +478,7 @@ def test_blob_path_derived_from_custom_ingest_path(tmp_path) -> None:
     transport.upload_blob(blob, "snapshots/span/weights.safetensors")
     call = session.put_calls[0]
     assert call["url"] == (
-        "https://api.example.test/api/v2/traces/blob/snapshots/span/weights.safetensors"
+        "https://api.example.test/api/v2/traces/blobs/snapshots/span/weights.safetensors"
     )
 
 
