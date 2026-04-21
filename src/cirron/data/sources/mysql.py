@@ -1,9 +1,11 @@
-"""Postgres source backend (spec §4.7, SDK-30).
+"""MySQL source backend (spec §4.7, SDK-30).
 
-Thin shim over :mod:`cirron.data.sql`: parse the ``postgres://`` URI,
-resolve credentials, connect via ``psycopg`` (v3), run the composed
-``SELECT`` through :func:`execute_to_pandas`, and return the DataFrame
-to the dispatcher.
+Thin shim over :mod:`cirron.data.sql`: parse the ``mysql://`` URI,
+resolve credentials, connect via ``PyMySQL``, run the composed
+``SELECT`` through :func:`execute_to_pandas`. PyMySQL is pure-Python
+(no libmysqlclient build) and works against PlanetScale — the platform
+runs MySQL here, so first-class MySQL support is consistent with
+§2 "no new infrastructure".
 """
 
 from __future__ import annotations
@@ -25,11 +27,11 @@ if TYPE_CHECKING:
     from cirron.data.load import LoadRequest
 
 
-class PostgresDataSource(DataSource):
-    """Executes a single ``SELECT`` against a Postgres database."""
+class MySqlDataSource(DataSource):
+    """Executes a single ``SELECT`` against a MySQL-compatible database."""
 
     def __init__(self, uri: SqlUri, cirron: Cirron, request: LoadRequest | None) -> None:
-        super().__init__(SourceConfig(source_type="postgres"), request)
+        super().__init__(SourceConfig(source_type="mysql"), request)
         self.uri = uri
         self.cirron = cirron
 
@@ -37,7 +39,7 @@ class PostgresDataSource(DataSource):
         return True
 
     def load(self) -> Any:
-        psycopg = require_driver("psycopg", "postgres")
+        pymysql = require_driver("pymysql", "mysql")
         creds = CredentialResolver(self.cirron, self.uri).resolve()
         query = build_query(
             self.uri,
@@ -53,13 +55,15 @@ class PostgresDataSource(DataSource):
         if creds.port:
             conn_kwargs["port"] = creds.port
         if creds.database:
-            conn_kwargs["dbname"] = creds.database
+            conn_kwargs["database"] = creds.database
 
-        with psycopg.connect(**conn_kwargs) as conn:
+        conn = pymysql.connect(**conn_kwargs)
+        try:
             with conn.cursor() as cursor:
                 return execute_to_pandas(cursor, query)
+        finally:
+            conn.close()
 
 
-def build_source(uri_str: str, cirron: Cirron, request: LoadRequest | None) -> PostgresDataSource:
-    """Factory used by the load dispatcher."""
-    return PostgresDataSource(parse_sql_uri(uri_str), cirron, request)
+def build_source(uri_str: str, cirron: Cirron, request: LoadRequest | None) -> MySqlDataSource:
+    return MySqlDataSource(parse_sql_uri(uri_str), cirron, request)
