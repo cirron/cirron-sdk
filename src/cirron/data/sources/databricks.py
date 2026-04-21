@@ -75,7 +75,5 @@ class DatabricksDataSource(DataSource):
             conn.close()
 
 
-def build_source(
-    uri_str: str, cirron: Cirron, request: LoadRequest | None
-) -> DatabricksDataSource:
+def build_source(uri_str: str, cirron: Cirron, request: LoadRequest | None) -> DatabricksDataSource:
     return DatabricksDataSource(parse_sql_uri(uri_str), cirron, request)
