@@ -57,13 +57,13 @@ def enforce_tiers(
         raise CirronDataSizeError(
             f"cirron: query matches {count_str} totaling {size_human}, which "
             f"exceeds load_max_bytes ({_human(max_bytes)}). Narrow the query "
-            "with match=, columns=, or top_k=, or pass confirm_large=True to "
-            "proceed anyway."
+            "with match= or columns=, or pass confirm_large=True to proceed "
+            "anyway."
         )
     log.warning(
         "cirron: query matches %s totaling %s. This will download all data "
-        "to this machine. Use match=, columns=, or top_k= to narrow the "
-        "query. Set ci.load(..., confirm_large=True) to suppress this warning.",
+        "to this machine. Use match= or columns= to narrow the query. Set "
+        "ci.load(..., confirm_large=True) to suppress this warning.",
         count_str,
         size_human,
     )

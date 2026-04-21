@@ -141,7 +141,7 @@ def _normalize_columns(raw: Any) -> tuple[str, ...]:
     if isinstance(raw, str):
         raise TypeError(
             f"columns must be a list of column names, got a bare string {raw!r}; "
-            "wrap it in a list: columns=[{raw!r}]"
+            f"wrap it in a list: columns=[{raw!r}]"
         )
     return tuple(str(x) for x in raw)
 
