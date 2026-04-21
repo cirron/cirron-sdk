@@ -113,9 +113,7 @@ class LocalDataSource(DataSource):
         if path.is_file():
             return Image.open(path)
         if path.is_dir():
-            return [
-                Image.open(p) for p in path.iterdir() if p.suffix.lower() in _IMAGE_EXTS
-            ]
+            return [Image.open(p) for p in path.iterdir() if p.suffix.lower() in _IMAGE_EXTS]
         raise FileNotFoundError(f"image path does not exist: {path}")
 
     def validate(self) -> bool:

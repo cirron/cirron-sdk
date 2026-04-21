@@ -110,9 +110,7 @@ class RegisteredDataset:
                     "platform dataset registry not yet available; pass a full "
                     "URI like 's3://...' or use source='local' for now."
                 ) from e
-            raise CirronPlatformRequired(
-                f"platform dataset resolve failed: HTTP {e.code}"
-            ) from e
+            raise CirronPlatformRequired(f"platform dataset resolve failed: HTTP {e.code}") from e
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             raise CirronPlatformRequired(
                 "platform dataset registry not reachable; pass a full URI "
@@ -128,9 +126,7 @@ def _build_source(payload: dict[str, Any], request: LoadRequest | None) -> DataS
     """Turn a resolve-endpoint response into a concrete ``DataSource``."""
     source_type = payload.get("source_type")
     if not source_type:
-        raise CirronPlatformRequired(
-            f"platform resolve response missing source_type: {payload!r}"
-        )
+        raise CirronPlatformRequired(f"platform resolve response missing source_type: {payload!r}")
     config = SourceConfig(
         source_type=source_type,
         format=payload.get("format"),
@@ -157,6 +153,4 @@ def _build_source(payload: dict[str, Any], request: LoadRequest | None) -> DataS
         from cirron.data.sources.local import LocalDataSource
 
         return LocalDataSource(config, request)
-    raise CirronPlatformRequired(
-        f"platform resolve returned unknown source_type: {source_type!r}"
-    )
+    raise CirronPlatformRequired(f"platform resolve returned unknown source_type: {source_type!r}")
