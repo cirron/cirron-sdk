@@ -501,6 +501,7 @@ class Cirron:
     def load(self, *args: Any, **kwargs: Any) -> Any:
         from cirron.data.load import load as _load
 
+        kwargs.setdefault("cirron", self)
         return _load(*args, **kwargs)
 
     def inference(
