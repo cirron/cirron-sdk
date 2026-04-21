@@ -271,9 +271,18 @@ def _split_object_path(path: str) -> tuple[str | None, str | None]:
 
 
 def _scheme_source(req: LoadRequest, cirron: Cirron) -> DataSource:
-    """Build a scheme-specific source. Scheme URIs are resource pointers;
-    credentials come from the user's environment (boto3 / google-cloud
-    default credential chains) — the SDK doesn't hold them."""
+    """Build a scheme-specific source. Scheme URIs are resource pointers.
+
+    For object-store schemes (``s3://``, ``gs://`` / ``gcs://``,
+    ``azure://``), credentials come from the user's environment via the
+    provider SDK's default credential chain (boto3, google-cloud, etc.) —
+    the SDK doesn't hold them.
+
+    For SQL and integration-backed schemes (``postgres://``, ``mysql://``,
+    ``databricks://``, ``snowflake://``), the SDK resolves credentials
+    through :class:`cirron.data.sql.CredentialResolver`: URI-inline →
+    Cirron platform integration endpoint → ``ci.secret()`` → driver-
+    specific env var (``PGPASSWORD``, ``MYSQL_PWD``, etc.)."""
     assert req.scheme is not None
     if req.scheme == "s3":
         from cirron.data.sources.s3 import S3DataSource
