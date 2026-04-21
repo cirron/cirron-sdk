@@ -753,7 +753,7 @@ def test_batch_map_receives_full_dataframe(tmp_path):
     path = _write_parquet(tmp_path, [{"a": 1}, {"a": 2}, {"a": 3}])
     seen: dict[str, Any] = {}
 
-    @ci.batch_map
+    @ci.map
     def double(frame: pd.DataFrame) -> pd.DataFrame:
         seen["type"] = type(frame)
         seen["rows"] = len(frame)
@@ -765,8 +765,8 @@ def test_batch_map_receives_full_dataframe(tmp_path):
     assert df["a"].tolist() == [2, 4, 6]
 
 
-def test_batch_map_decorator_sets_marker():
-    @ci.batch_map
+def test_map_decorator_sets_batch_marker():
+    @ci.map
     def fn(frame):
         return frame
 
@@ -810,7 +810,7 @@ def test_map_runs_once_over_concatenated_frame(tmp_path):
     p2 = _write_parquet(tmp_path, [{"a": 3}], "b.parquet")
     calls: list[Any] = []
 
-    @ci.batch_map
+    @ci.map
     def track(frame: pd.DataFrame) -> pd.DataFrame:
         calls.append(len(frame))
         return frame

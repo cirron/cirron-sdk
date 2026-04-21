@@ -1,9 +1,10 @@
 """``map=`` transform for ``ci.load()`` (SDK-31, spec §4.7).
 
-Row-wise by default — the callable receives one ``dict`` per row and
-returns a ``dict``. A callable decorated with :func:`batch_map` instead
-receives the whole concatenated frame and returns a frame of compatible
-type.
+By default, a callable passed to ``ci.load(..., map=fn)`` runs row-wise:
+``fn(row: dict) -> dict``. Decorating the callable with :func:`map`
+flips it to batch-wise: ``fn(frame) -> frame``, called once against the
+whole concatenated result. The decorator is the only way to opt into
+batch mode — the absence of a decorator means row-wise.
 
 Applied post-concat, pre-adapter (see ``load._run_and_convert``). Heavy
 transforms belong in the pipeline, not here — this is for lightweight
@@ -20,12 +21,12 @@ from cirron.core.errors import CirronError
 _BATCH_MAP_ATTR = "_cirron_batch_map"
 
 
-def batch_map(fn: Callable[..., Any]) -> Callable[..., Any]:
+def map(fn: Callable[..., Any]) -> Callable[..., Any]:  # noqa: A001 — public ci.map
     """Mark ``fn`` as a batch-wise ``map=`` callable for ``ci.load()``.
 
-    Without this marker, ``ci.load(..., map=fn)`` invokes ``fn(row)`` per
-    row. With it, ``fn(frame)`` is called once with the full concatenated
-    frame and its return value replaces the frame as-is.
+    Without this decorator, ``ci.load(..., map=fn)`` invokes ``fn(row)``
+    per row. With it, ``fn(frame)`` is called once with the full
+    concatenated frame and its return value replaces the frame as-is.
     """
     setattr(fn, _BATCH_MAP_ATTR, True)
     return fn

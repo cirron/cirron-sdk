@@ -623,13 +623,13 @@ Spec §4.7. SQL-backed sources (Postgres, Databricks, Snowflake). Credentials re
 As an ML engineer, when I call `ci.load("data", map=lambda row: {"text": row["raw"].lower()})`, I want the mapping function applied to each row after loading so that I can do lightweight transforms without a separate step.
 
 **Context**
-Spec §4.7. Row-wise mapping by default, batch-wise with `@ci.batch_map`.
+Spec §4.7. Row-wise mapping by default, batch-wise with `@ci.map`.
 
 **Implementation**
 - In `load.py`: after data is loaded and before return-type conversion, apply `map` function
 - Row-wise: iterate rows, apply function, reconstruct DataFrame
-- Batch-wise: if callable is decorated with `@ci.batch_map`, pass entire DataFrame
-- `@ci.batch_map` decorator: sets `_cirron_batch_map = True` attribute on the callable
+- Batch-wise: if callable is decorated with `@ci.map`, pass entire DataFrame
+- `@ci.map` decorator: sets `_cirron_batch_map = True` attribute on the callable
 
 **Acceptance criteria**
 - Unit test: row-wise map transforms each row
