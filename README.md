@@ -46,7 +46,7 @@ cirron traces export --format parquet    # hand traces to DuckDB, pandas, Polars
 cirron traces export --format otel       # ship to Jaeger / Tempo / Honeycomb
 ```
 
-> **Status:** `ci.profile()`, the local spool writer, and the CLI surface are not yet live. The CLI entrypoint is currently a stub that exits with a "not implemented yet" message. `cirron spool inspect` and `cirron traces view` ship in **SDK-18**; `cirron traces export --format parquet|otel` is a post-launch commitment. Today's working surface is `load_cirron_yaml()` / `find_cirron_yaml()` / `ci.env()` / `ci.secret()` plus the YAML-config scaffold for `Cirron.profile()`. See the Status section below and `docs/refactor-stories.md` for the full story map.
+> **Status:** `ci.profile()`, the local spool writer, and `cirron traces view` are live. `cirron traces export --format parquet|otel` is a post-launch commitment. See the Status section below for what's shipped and what's still coming.
 
 No lock-in. Your traces are yours. If you stop using Cirron, the `./.cirron/` directory still works with any analytics or observability tool that reads Parquet or OpenTelemetry.
 
@@ -156,45 +156,60 @@ Works the same inside FastAPI, Flask, or any serving framework. The decorator do
 
 ## `load()` — unified data access
 
-One function. Scheme in the source string tells the loader what to do. Platform-registered integrations (Databricks, Snowflake, Postgres, internal buckets) are resolved by the platform; the SDK just asks for them by name.
+One function, flat kwargs, local-first. `source=` picks the backend explicitly (`"local"` default, `"platform"` for Cirron-managed storage). A scheme in the string (`s3://`, `gs://`, `postgres://`, ...) overrides `source=` and routes to the right driver.
 
 ```python
-# Registered dataset
-df = ci.load("training-data")
+# Local filesystem — zero config, no network
+df = ci.load("./data/training/events.parquet")
+df = ci.load("training-data")                            # probes ./training-data/, ./data/training-data/
 
-# Cloud storage with pattern matching
-df = ci.load(
-    "s3://ml-data/events/",
-    match={
-        "path": "year=2025/month=*/",
-        "filename": r"events_.*\.parquet",
-        "columns": ["user_id", "ts", "event_type"],
-    },
-)
+# Platform-managed storage — explicit, requires credentials
+df = ci.load("bucket1", source="platform")
 
-# Platform-integrated sources
-df = ci.load("postgres://prod/events", where="created_at > '2025-01-01'")
-df = ci.load("databricks://analytics.clicks")
-df = ci.load("snowflake://warehouse/db/schema/table")
+# External sources — scheme in the string is the signal
+df = ci.load("s3://ml-data/events/")
 
-# Multiple sources, unioned
-df = ci.load([
-    {"source": "s3://bucket/a/", "match": {"filename": r".*\.csv"}},
-    {"source": "postgres://prod/events", "where": "ts > '2025-01-01'"},
-])
+# Multi-source union — concats in parallel
+df = ci.load(["./data/a/", "./data/b/"])
 
-# Row-level mapping at load time
-df = ci.load(
-    "training-data",
-    map=lambda row: {"text": row["raw_text"].lower(), "label": row["y"]},
-)
+# Column selection (pushdown to parquet reader)
+df = ci.load("./events.parquet", columns=["user_id", "ts", "event_type"])
 
 # Return type and loading mode
-df = ci.load("training-data", as_="polars")          # "pandas" | "polars" | "iter" | "tensor" | "hf"
-df = ci.load("training-data", lazy=True)             # returns a handle; call .collect()
+df = ci.load("./events.parquet", as_="polars")           # "pandas" | "polars" | "iter" | "tensor" | "hf"
+handle = ci.load("./events.parquet", lazy=True)          # LazyHandle; call handle.collect()
 ```
 
-If neither pandas nor polars is installed, `ci.load()` raises with an install hint. If both are installed, pandas is the default. Override with `as_=`.
+**Planned** (parameter accepted today, execution raises a clear "not yet implemented" error so call sites stay stable):
+
+```python
+# Filesystem glob + extension filter
+df = ci.load("s3://ml-data/events/", match="year=2025/month=*/*.parquet")
+df = ci.load("./data/", ext=["csv", "parquet"])
+
+# SQL sources and where= pushdown
+df = ci.load("postgres://prod/events", where="created_at > '2025-01-01'")
+
+# Row-wise / batch-wise transform at load time
+df = ci.load(
+    "./raw/",
+    columns=["raw_text", "label"],
+    map=lambda row: {"text": row["raw_text"].lower(), "label": int(row["label"])},
+)
+
+# Semantic search over a platform-managed vector index
+df = ci.load("embeddings", source="platform", search="billing complaints", top_k=50)
+```
+
+**Size guardrails.** Before downloading anything, `ci.load()` sums the matched bytes. Over 1 GB logs a warning with narrowing hints; over 10 GB raises `CirronDataSizeError` unless you pass `confirm_large=True`. The thresholds live on the `Cirron` instance:
+
+```python
+from cirron import Cirron
+c = Cirron(load_warn_bytes=500_000_000, load_max_bytes=5_000_000_000)
+c.load("large-bucket", source="platform")
+```
+
+If neither pandas nor polars is installed, `ci.load()` raises `CirronDependencyError` with an install hint. pandas is the default; override with `as_=`. `as_="tensor"` prefers torch and falls back to TensorFlow; `as_="hf"` returns a `datasets.Dataset`.
 
 ## Secrets and environment
 
@@ -277,7 +292,24 @@ CIRRON_SAMPLE_MODELS_PATH=/path/to/cirron-sample-models/models \
 
 ### Status
 
-This is the SDK-8 scaffold. The public surface in `src/cirron/__init__.py` matches the spec (`docs/spec.md` §4), but most runtime behavior is deferred: `ci.scope` / `mark` / `epochs` / `batches` / `inference` / `wrap` are no-ops that warn once, and `ci.load` raises `NotImplementedError`. The YAML-config wiring for `Cirron.profile()` is real (see `tests/unit/test_profile.py`). Runtime lands story-by-story — scope in SDK-9, mark in SDK-10, flush in SDK-11, transport in SDK-12, `profile()` orchestration in SDK-13, wrappers in SDK-14, hooks in SDK-19–23, snapshots in SDK-24/25, inference in SDK-26/27, data loading in SDK-28–31. See `docs/refactor-stories.md`.
+Shipped:
+
+- `ci.profile()` with framework autodetect, `ci.scope` / `ci.mark`, `ci.epochs` / `ci.batches`
+- Flush thread + local spool; HTTP and kernel-event-stream transports
+- Framework hooks for PyTorch, TensorFlow / Keras, HuggingFace `transformers`, and opt-in scikit-learn via `ci.wrap()`
+- Snapshots: `snapshots="stats" | "sampled" | "full"` with safetensors blob upload
+- `@ci.inference` — sync and async, per-request ContextVar isolation, OpenAI / HF LLM detectors with TTFT and throughput marks
+- `ci.env` / `ci.secret`, the `Cirron` config class, and YAML loader
+- `cirron traces view` CLI (terminal flamegraph)
+- `ci.load()` — local-first dispatcher, explicit `source="platform"`, scheme routing for `s3://` / `gs://` / `azure://` / `file://` / `postgres://` / `databricks://` / `snowflake://`, multi-source concat, all five `as_=` return types, `lazy=True`, and size-tier guardrails
+
+Coming:
+
+- Filesystem glob (`match=` / `ext=`) and the current S3 pagination / Azure `account_url` / GCS + Azure `validate()` bug fixes
+- Full SQL execution for `postgres://` / `databricks://` / `snowflake://` including `where=` pushdown
+- `map=` row-wise / batch-wise transform at load time
+- Platform-managed embeddings search (`search=` / `top_k=`)
+- `cirron traces export --format parquet|otel`
 
 ## Further reading
 
