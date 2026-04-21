@@ -373,13 +373,329 @@ def test_missing_polars_raises_dependency_error(monkeypatch):
         ci.load("anything", as_="polars")
 
 
+# -- match=/ext= execution ---------------------------------------------
+
+
+def test_local_match_path_glob_filters_files(tmp_path):
+    for year, month in [("2024", "01"), ("2025", "01"), ("2025", "02"), ("2026", "01")]:
+        d = tmp_path / f"year={year}" / f"month={month}"
+        d.mkdir(parents=True)
+        pd.DataFrame({"y": [int(year)]}).to_parquet(d / "events.parquet")
+
+    df = ci.load(
+        str(tmp_path),
+        match={"path": "year=2025/*"},
+    )
+    assert sorted(df["y"].tolist()) == [2025, 2025]
+
+
+def test_local_match_filename_regex_filters_files(tmp_path):
+    pd.DataFrame({"a": [1]}).to_parquet(tmp_path / "events_001.parquet")
+    pd.DataFrame({"a": [2]}).to_parquet(tmp_path / "events_002.parquet")
+    pd.DataFrame({"a": [3]}).to_parquet(tmp_path / "summary.parquet")
+
+    df = ci.load(
+        str(tmp_path),
+        match={"filename": r"events_.*\.parquet"},
+    )
+    assert sorted(df["a"].tolist()) == [1, 2]
+
+
+def test_local_ext_shorthand_filters(tmp_path):
+    pd.DataFrame({"a": [1]}).to_parquet(tmp_path / "a.parquet")
+    (tmp_path / "b.txt").write_text("ignore me")
+
+    df = ci.load(str(tmp_path), ext=["parquet"])
+    assert df.shape == (1, 1)
+
+
+def test_local_columns_pushdown_to_parquet(monkeypatch, tmp_path):
+    pd.DataFrame({"a": [1], "b": [2], "c": [3]}).to_parquet(tmp_path / "f.parquet")
+
+    captured: dict[str, Any] = {}
+    real_read = pd.read_parquet
+
+    def _spy(path, **kwargs):
+        captured["columns"] = kwargs.get("columns")
+        return real_read(path, **kwargs)
+
+    monkeypatch.setattr(pd, "read_parquet", _spy)
+    df = ci.load(str(tmp_path / "f.parquet"), columns=["a", "c"])
+    assert captured["columns"] == ["a", "c"]
+    assert list(df.columns) == ["a", "c"]
+
+
+def test_s3_paginator_walks_all_pages(monkeypatch):
+    """S3 source must use get_paginator so a folder with >1000 keys
+    doesn't silently truncate at the first list_objects_v2 response."""
+    import io
+
+    from cirron.data.load import LoadRequest
+    from cirron.data.match import MatchConfig
+    from cirron.data.sources import SourceConfig
+    from cirron.data.sources.s3 import S3DataSource
+
+    parquet_body_bytes = io.BytesIO()
+    pd.DataFrame({"x": [1]}).to_parquet(parquet_body_bytes)
+    body_bytes = parquet_body_bytes.getvalue()
+
+    page1 = {"Contents": [{"Key": f"prefix/a{i}.parquet"} for i in range(1000)]}
+    page2 = {"Contents": [{"Key": f"prefix/b{i}.parquet"} for i in range(500)]}
+
+    class _Body:
+        def __init__(self, b):
+            self._b = b
+
+        def read(self):
+            return self._b
+
+    class _Paginator:
+        def paginate(self, **kw):
+            assert kw["Prefix"] == "prefix/"
+            yield page1
+            yield page2
+
+    fetched_keys: list[str] = []
+
+    class _Client:
+        def get_paginator(self, op):
+            assert op == "list_objects_v2"
+            return _Paginator()
+
+        def get_object(self, **kw):
+            fetched_keys.append(kw["Key"])
+            return {"Body": _Body(body_bytes)}
+
+    import sys
+    import types
+
+    boto3_stub = types.ModuleType("boto3")
+    boto3_stub.client = lambda name: _Client()  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "boto3", boto3_stub)
+
+    # Match to only the first N so we can assert filtering works after paging.
+    cfg = MatchConfig(filename_glob="a*.parquet")
+    req = LoadRequest(name="s3://bucket/prefix/", source="local", match=cfg)
+    src = S3DataSource(
+        SourceConfig(
+            source_type="s3",
+            bucket_name="bucket",
+            folder_path="prefix/",
+            format="parquet",
+        ),
+        req,
+    )
+    src.load()
+    assert len(fetched_keys) == 1000
+    assert all(k.startswith("prefix/a") for k in fetched_keys)
+
+
+def test_s3_validate_returns_false_on_error(monkeypatch):
+    import sys
+    import types
+
+    from cirron.data.sources import SourceConfig
+    from cirron.data.sources.s3 import S3DataSource
+
+    class _Client:
+        def head_bucket(self, **_):
+            raise RuntimeError("boom")
+
+    boto3_stub = types.ModuleType("boto3")
+    boto3_stub.client = lambda name: _Client()  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "boto3", boto3_stub)
+
+    src = S3DataSource(SourceConfig(source_type="s3", bucket_name="x"))
+    assert src.validate() is False
+
+
+def test_gcs_validate_returns_actual_bool(monkeypatch):
+    import sys
+    import types
+
+    from cirron.data.sources import SourceConfig
+    from cirron.data.sources.gcs import GCSDataSource
+
+    class _Bucket:
+        def __init__(self, exists_value):
+            self._v = exists_value
+
+        def exists(self):
+            return self._v
+
+    class _Client:
+        def __init__(self):
+            self._bucket = _Bucket(False)
+
+        def bucket(self, name):
+            return self._bucket
+
+    mod = types.ModuleType("google.cloud.storage")
+    mod.Client = _Client  # type: ignore[attr-defined]
+    pkg = types.ModuleType("google.cloud")
+    pkg.storage = mod  # type: ignore[attr-defined]
+    google = types.ModuleType("google")
+    google.cloud = pkg  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "google", google)
+    monkeypatch.setitem(sys.modules, "google.cloud", pkg)
+    monkeypatch.setitem(sys.modules, "google.cloud.storage", mod)
+
+    src = GCSDataSource(SourceConfig(source_type="gs", bucket_name="x"))
+    # Previous implementation returned True regardless; now it reflects .exists().
+    assert src.validate() is False
+
+
+def test_azure_account_url_uses_account_name():
+    """AzureDataSource must build account_url from config.account_name,
+    not container_name (SDK-8 review bug)."""
+    from cirron.data.sources import SourceConfig
+    from cirron.data.sources.azure import AzureDataSource
+
+    src = AzureDataSource(
+        SourceConfig(
+            source_type="azure",
+            account_name="myaccount",
+            container_name="mycontainer",
+        )
+    )
+    assert src._account_url() == "https://myaccount.blob.core.windows.net"
+
+
+def test_azure_account_url_raises_without_account_name():
+    from cirron.data.sources import SourceConfig
+    from cirron.data.sources.azure import AzureDataSource
+
+    src = AzureDataSource(
+        SourceConfig(source_type="azure", container_name="mycontainer"),
+    )
+    with pytest.raises(ValueError, match="account_name"):
+        src._account_url()
+
+
+def test_platform_match_and_ext_forwarded_as_query_params(monkeypatch, tmp_path):
+    """Platform source must push match/ext to the listing route as query
+    params so filtering runs server-side (platform PR #525)."""
+    path = _write_parquet(tmp_path, [{"x": 1}])
+    parquet_bytes = path.read_bytes()
+
+    list_payload = {
+        "objects": [{"key": "a.parquet", "size_bytes": len(parquet_bytes)}],
+        "total_size_bytes": len(parquet_bytes),
+    }
+    url_payload = {
+        "url": "https://presigned.example/a.parquet",
+        "expires_at": "2099-01-01T00:00:00Z",
+        "size_bytes": len(parquet_bytes),
+    }
+
+    captured: list[str] = []
+
+    class _Resp:
+        def __init__(self, body: bytes) -> None:
+            import io
+
+            self._buf = io.BytesIO(body)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, size=-1):
+            return self._buf.read(size)
+
+    def _fake_urlopen(req, timeout=None):
+        url = req if isinstance(req, str) else req.full_url
+        captured.append(url)
+        if "/api/data/bucket-a/objects/" in url:
+            return _Resp(json.dumps(url_payload).encode("utf-8"))
+        if "/api/data/bucket-a/objects" in url:
+            return _Resp(json.dumps(list_payload).encode("utf-8"))
+        if url == url_payload["url"]:
+            return _Resp(parquet_bytes)
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+    c = Cirron(api_key="sk-test", api_endpoint="https://p.example", workspace_id="ws-1")
+    c.load(
+        "bucket-a",
+        source="platform",
+        match={"path": "year=2025/*"},
+        ext=["parquet"],
+    )
+
+    list_url = captured[0]
+    # path is pushed as match= (glob), extension as ext= (CSV).
+    assert "match=year%3D2025%2F%2A" in list_url
+    assert "ext=parquet" in list_url
+
+
+def test_platform_regex_filename_is_post_filtered(monkeypatch, tmp_path):
+    """A regex filename cannot be pushed to the platform route — the
+    SDK must re-filter after listing."""
+    path = _write_parquet(tmp_path, [{"x": 1}])
+    parquet_bytes = path.read_bytes()
+    other_bytes = _write_parquet(tmp_path, [{"x": 2}], "other.parquet").read_bytes()
+
+    # Platform returns both keys (route doesn't know about the regex).
+    list_payload = {
+        "objects": [
+            {"key": "events_01.parquet", "size_bytes": len(parquet_bytes)},
+            {"key": "summary.parquet", "size_bytes": len(other_bytes)},
+        ],
+        "total_size_bytes": len(parquet_bytes) + len(other_bytes),
+    }
+    url_payloads = {
+        "events_01.parquet": {
+            "url": "https://presigned.example/events_01.parquet",
+            "expires_at": "2099-01-01T00:00:00Z",
+            "size_bytes": len(parquet_bytes),
+        },
+    }
+
+    class _Resp:
+        def __init__(self, body: bytes) -> None:
+            import io
+
+            self._buf = io.BytesIO(body)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, size=-1):
+            return self._buf.read(size)
+
+    presigned_hits: list[str] = []
+
+    def _fake_urlopen(req, timeout=None):
+        url = req if isinstance(req, str) else req.full_url
+        if "/api/data/bucket-a/objects/" in url:
+            key = url.split("/api/data/bucket-a/objects/", 1)[1]
+            presigned_hits.append(key)
+            return _Resp(json.dumps(url_payloads[key]).encode("utf-8"))
+        if "/api/data/bucket-a/objects" in url:
+            return _Resp(json.dumps(list_payload).encode("utf-8"))
+        if url == url_payloads["events_01.parquet"]["url"]:
+            return _Resp(parquet_bytes)
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+    c = Cirron(api_key="sk-test", api_endpoint="https://p.example", workspace_id="ws-1")
+    df = c.load(
+        "bucket-a",
+        source="platform",
+        match={"filename": r"events_.*\.parquet"},
+    )
+    # Only the regex-matching object was downloaded.
+    assert presigned_hits == ["events_01.parquet"]
+    assert df.shape == (1, 1)
+
+
 # -- accept-and-raise for deferred params -------------------------------------
-
-
-def test_match_raises_sdk29(tmp_path):
-    path = _write_parquet(tmp_path, [{"a": 1}])
-    with pytest.raises(NotImplementedError, match="SDK-29"):
-        ci.load(str(path), match="*.foo")
 
 
 def test_where_raises_sdk30(tmp_path):
