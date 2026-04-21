@@ -61,9 +61,12 @@ _SCHEMES = {
     "azure": "azure",
     "file": "local",
     "postgres": "postgres",
+    "mysql": "mysql",
     "databricks": "databricks",
     "snowflake": "snowflake",
 }
+
+_SQL_SCHEMES = frozenset({"postgres", "mysql", "databricks", "snowflake"})
 
 
 @dataclass
@@ -220,10 +223,12 @@ def _reject_unsupported(req: LoadRequest) -> None:
             "map= row/batch transform lands in SDK-31; the parameter is "
             "accepted today so call sites remain stable."
         )
-    if req.where is not None:
+    if req.where is not None and req.scheme not in _SQL_SCHEMES:
         raise NotImplementedError(
-            "where= SQL pushdown lands in SDK-30 (Postgres / Databricks / "
-            "Snowflake sources); accepted today so call sites remain stable."
+            "where= filter pushdown is only implemented for SQL sources "
+            "(postgres://, mysql://, databricks://, snowflake://). For "
+            "filesystem sources, filter after load() with the returned "
+            "DataFrame."
         )
     if req.search is not None or req.top_k is not None:
         raise NotImplementedError(
@@ -234,7 +239,7 @@ def _reject_unsupported(req: LoadRequest) -> None:
 
 def _resolve_source(req: LoadRequest, cirron: Cirron) -> DataSource:
     if req.scheme is not None:
-        return _scheme_source(req)
+        return _scheme_source(req, cirron)
     if req.source == "platform":
         from cirron.data.sources.registered import RegisteredDataset
 
@@ -265,10 +270,19 @@ def _split_object_path(path: str) -> tuple[str | None, str | None]:
     return (None, path)
 
 
-def _scheme_source(req: LoadRequest) -> DataSource:
-    """Build a scheme-specific source. Scheme URIs are resource pointers;
-    credentials come from the user's environment (boto3 / google-cloud
-    default credential chains) — the SDK doesn't hold them."""
+def _scheme_source(req: LoadRequest, cirron: Cirron) -> DataSource:
+    """Build a scheme-specific source. Scheme URIs are resource pointers.
+
+    For object-store schemes (``s3://``, ``gs://`` / ``gcs://``,
+    ``azure://``), credentials come from the user's environment via the
+    provider SDK's default credential chain (boto3, google-cloud, etc.) —
+    the SDK doesn't hold them.
+
+    For SQL and integration-backed schemes (``postgres://``, ``mysql://``,
+    ``databricks://``, ``snowflake://``), the SDK resolves credentials
+    through :class:`cirron.data.sql.CredentialResolver`: URI-inline →
+    Cirron platform integration endpoint → ``ci.secret()`` → driver-
+    specific env var (``PGPASSWORD``, ``MYSQL_PWD``, etc.)."""
     assert req.scheme is not None
     if req.scheme == "s3":
         from cirron.data.sources.s3 import S3DataSource
@@ -324,11 +338,22 @@ def _scheme_source(req: LoadRequest) -> DataSource:
             SourceConfig(source_type="local", path=req.name[len("file://") :]),
             req,
         )
-    if req.scheme in ("postgres", "databricks", "snowflake"):
-        raise NotImplementedError(
-            f"{req.scheme}:// sources land in SDK-30; the scheme is parsed "
-            "today so call sites remain stable."
-        )
+    if req.scheme == "postgres":
+        from cirron.data.sources.postgres import build_source as _build_pg
+
+        return _build_pg(req.name, cirron, req)
+    if req.scheme == "mysql":
+        from cirron.data.sources.mysql import build_source as _build_mysql
+
+        return _build_mysql(req.name, cirron, req)
+    if req.scheme == "databricks":
+        from cirron.data.sources.databricks import build_source as _build_dbx
+
+        return _build_dbx(req.name, cirron, req)
+    if req.scheme == "snowflake":
+        from cirron.data.sources.snowflake import build_source as _build_sf
+
+        return _build_sf(req.name, cirron, req)
     raise ValueError(f"unreachable scheme: {req.scheme}")
 
 
