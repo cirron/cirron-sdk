@@ -117,17 +117,7 @@ def parse_sql_uri(uri: str) -> SqlUri:
         )
 
     if scheme in ("postgres", "mysql"):
-        if not path_parts:
-            raise ValueError(
-                f"{scheme}:// URI must include a table: {uri} "
-                f"(expected {scheme}://host/database/table or {scheme}://host/table)"
-            )
-        if len(path_parts) >= 2:
-            database: str | None = path_parts[0]
-            table = "/".join(path_parts[1:])
-        else:
-            database = None
-            table = path_parts[0]
+        database, schema, table = _parse_pg_mysql_path(scheme, path_parts, uri)
         return SqlUri(
             scheme=scheme,
             user=parsed.username,
@@ -135,7 +125,7 @@ def parse_sql_uri(uri: str) -> SqlUri:
             host=parsed.hostname,
             port=parsed.port,
             database=database,
-            schema=None,
+            schema=schema,
             table=table,
             raw=uri,
         )
@@ -155,6 +145,55 @@ def parse_sql_uri(uri: str) -> SqlUri:
         )
 
     raise ValueError(f"unsupported SQL scheme: {scheme!r}")
+
+
+def _parse_pg_mysql_path(
+    scheme: str, path_parts: list[str], uri: str
+) -> tuple[str | None, str | None, str]:
+    """Return ``(database, schema, table)`` for a postgres/mysql URI path.
+
+    Accepts three shapes:
+
+    * ``/table`` — no database, no schema.
+    * ``/database/table`` — database + table, default schema.
+    * ``/database/schema/table`` — fully qualified.
+    * ``/database/schema.table`` — schema dotted into the last segment.
+
+    A 2-segment path with a dot in the last segment (``/db/public.events``)
+    is treated as ``database=db, schema=public, table=events`` so the
+    common Postgres convention of writing ``schema.table`` round-trips
+    correctly through the dispatcher. Without this, ``build_query``
+    would emit ``FROM "public.events"`` (single double-quoted
+    identifier), which is invalid SQL.
+    """
+    if not path_parts:
+        raise ValueError(
+            f"{scheme}:// URI must include a table: {uri} "
+            f"(expected {scheme}://host/database[/schema]/table)"
+        )
+    if len(path_parts) == 1:
+        # Bare table — possibly with a dotted schema (``/public.events``).
+        if "." in path_parts[0]:
+            schema_part, _, table = path_parts[0].partition(".")
+            if not schema_part or not table:
+                raise ValueError(f"{scheme}:// URI has empty schema or table: {uri}")
+            return None, schema_part, table
+        return None, None, path_parts[0]
+    if len(path_parts) == 2:
+        # ``/database/table`` — or ``/database/schema.table``.
+        database = path_parts[0]
+        if "." in path_parts[1]:
+            schema_part, _, table = path_parts[1].partition(".")
+            if not schema_part or not table:
+                raise ValueError(f"{scheme}:// URI has empty schema or table: {uri}")
+            return database, schema_part, table
+        return database, None, path_parts[1]
+    if len(path_parts) == 3:
+        return path_parts[0], path_parts[1], path_parts[2]
+    raise ValueError(
+        f"{scheme}:// URI has too many path segments: {uri} "
+        f"(expected at most database/schema/table)"
+    )
 
 
 # -- credential resolution ----------------------------------------------------
@@ -491,6 +530,17 @@ def execute_to_pandas(cursor: Any, query: str) -> Any:
     :class:`~cirron.data.returns.PandasAdapter` handles ``as_="polars"``
     / ``"iter"`` / ``"tensor"`` / ``"hf"`` — SQL sources don't need
     their own conversion path.
+
+    TODO(SDK-30-followup): streaming path for ``as_='iter'`` / ``lazy=True``.
+    Today ``fetchall`` materializes the whole result set into memory
+    before the adapter slices it into batches — effectively negating
+    ``as_='iter'`` for large tables. A proper fix uses per-driver
+    server-side cursors (Postgres named cursor, PyMySQL ``SSCursor``,
+    ``snowflake.cursor.fetch_pandas_batches``, ``databricks.cursor.
+    fetchmany_arrow``) and routes them through a new
+    ``execute_to_iter`` / streaming ``DataSource`` path. The per-driver
+    surface diverges enough to be worth its own ticket. Raised in PR #35
+    review; tracked as "SDK-30 follow-up: streaming SQL cursor".
     """
     try:
         import pandas as pd
