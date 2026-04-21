@@ -46,7 +46,7 @@ cirron traces export --format parquet    # hand traces to DuckDB, pandas, Polars
 cirron traces export --format otel       # ship to Jaeger / Tempo / Honeycomb
 ```
 
-> **Status:** `ci.profile()`, the local spool writer, and the CLI surface are not yet live. The CLI entrypoint is currently a stub that exits with a "not implemented yet" message. `cirron spool inspect` and `cirron traces view` ship in **SDK-18**; `cirron traces export --format parquet|otel` is a post-launch commitment. Today's working surface is `load_cirron_yaml()` / `find_cirron_yaml()` / `ci.env()` / `ci.secret()` plus the YAML-config scaffold for `Cirron.profile()`. See the Status section below and `docs/refactor-stories.md` for the full story map.
+> **Status:** `ci.profile()`, the local spool writer, and `cirron traces view` are live. `cirron traces export --format parquet|otel` is a post-launch commitment. See the Status section below for what's shipped and what's still coming.
 
 No lock-in. Your traces are yours. If you stop using Cirron, the `./.cirron/` directory still works with any analytics or observability tool that reads Parquet or OpenTelemetry.
 
@@ -165,29 +165,40 @@ df = ci.load("training-data")                            # probes ./training-dat
 
 # Platform-managed storage — explicit, requires credentials
 df = ci.load("bucket1", source="platform")
-df = ci.load("embeddings", source="platform",
-             search="billing complaints", top_k=50)      # semantic search, platform-only
 
 # External sources — scheme in the string is the signal
 df = ci.load("s3://ml-data/events/")
-df = ci.load("postgres://prod/events", where="created_at > '2025-01-01'")
 
-# Multi-source union — same kwargs apply to every source
+# Multi-source union — concats in parallel
 df = ci.load(["./data/a/", "./data/b/"])
 
 # Column selection (pushdown to parquet reader)
 df = ci.load("./events.parquet", columns=["user_id", "ts", "event_type"])
 
-# Row-wise transform at load time
+# Return type and loading mode
+df = ci.load("./events.parquet", as_="polars")           # "pandas" | "polars" | "iter" | "tensor" | "hf"
+handle = ci.load("./events.parquet", lazy=True)          # LazyHandle; call handle.collect()
+```
+
+**Planned** (parameter accepted today, execution raises a clear "not yet implemented" error so call sites stay stable):
+
+```python
+# Filesystem glob + extension filter
+df = ci.load("s3://ml-data/events/", match="year=2025/month=*/*.parquet")
+df = ci.load("./data/", ext=["csv", "parquet"])
+
+# SQL sources and where= pushdown
+df = ci.load("postgres://prod/events", where="created_at > '2025-01-01'")
+
+# Row-wise / batch-wise transform at load time
 df = ci.load(
-    "training-data",
+    "./raw/",
     columns=["raw_text", "label"],
     map=lambda row: {"text": row["raw_text"].lower(), "label": int(row["label"])},
 )
 
-# Return type and loading mode
-df = ci.load("training-data", as_="polars")              # "pandas" | "polars" | "iter" | "tensor" | "hf"
-handle = ci.load("training-data", lazy=True)             # LazyHandle; call handle.collect()
+# Semantic search over a platform-managed vector index
+df = ci.load("embeddings", source="platform", search="billing complaints", top_k=50)
 ```
 
 **Size guardrails.** Before downloading anything, `ci.load()` sums the matched bytes. Over 1 GB logs a warning with narrowing hints; over 10 GB raises `CirronDataSizeError` unless you pass `confirm_large=True`. The thresholds live on the `Cirron` instance:
@@ -281,9 +292,24 @@ CIRRON_SAMPLE_MODELS_PATH=/path/to/cirron-sample-models/models \
 
 ### Status
 
-Everything through SDK-28 is live. Working today: `ci.profile()` with framework autodetect, `ci.scope` / `ci.mark`, `ci.epochs` / `ci.batches`, the flush thread + local spool, HTTP + event-stream transports, torch / tensorflow / transformers / sklearn hooks, `snapshots="stats" | "sampled" | "full"` with safetensors blob upload, `@ci.inference` (sync + async, per-request ContextVar isolation, OpenAI/HF LLM detectors with TTFT and throughput), `ci.env` / `ci.secret`, the `Cirron` config class + YAML loader, the `cirron traces view` CLI, and — as of SDK-28 — the real `ci.load()` dispatcher (local-first default, explicit `source="platform"`, scheme routing for `s3://` / `gs://` / `azure://` / `file://` / `postgres://` / `databricks://` / `snowflake://`, multi-source concat, `as_=` for all five return types, `lazy=True`, and size-tier guardrails).
+Shipped:
 
-Still to land: filesystem glob (`match=` / `ext=`, SDK-29) plus the S3 pagination / Azure `account_url` / GCS+Azure `validate()` bug fixes, SQL `where=` for Postgres / Databricks / Snowflake (SDK-30), `map=` transform (SDK-31), and platform embeddings search (`search=` / `top_k=`, platform feature). See `docs/refactor-stories.md` for the full story map.
+- `ci.profile()` with framework autodetect, `ci.scope` / `ci.mark`, `ci.epochs` / `ci.batches`
+- Flush thread + local spool; HTTP and kernel-event-stream transports
+- Framework hooks for PyTorch, TensorFlow / Keras, HuggingFace `transformers`, and opt-in scikit-learn via `ci.wrap()`
+- Snapshots: `snapshots="stats" | "sampled" | "full"` with safetensors blob upload
+- `@ci.inference` — sync and async, per-request ContextVar isolation, OpenAI / HF LLM detectors with TTFT and throughput marks
+- `ci.env` / `ci.secret`, the `Cirron` config class, and YAML loader
+- `cirron traces view` CLI (terminal flamegraph)
+- `ci.load()` — local-first dispatcher, explicit `source="platform"`, scheme routing for `s3://` / `gs://` / `azure://` / `file://` / `postgres://` / `databricks://` / `snowflake://`, multi-source concat, all five `as_=` return types, `lazy=True`, and size-tier guardrails
+
+Coming:
+
+- Filesystem glob (`match=` / `ext=`) and the current S3 pagination / Azure `account_url` / GCS + Azure `validate()` bug fixes
+- Full SQL execution for `postgres://` / `databricks://` / `snowflake://` including `where=` pushdown
+- `map=` row-wise / batch-wise transform at load time
+- Platform-managed embeddings search (`search=` / `top_k=`)
+- `cirron traces export --format parquet|otel`
 
 ## Further reading
 
