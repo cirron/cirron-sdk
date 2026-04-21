@@ -13,11 +13,11 @@ parameter         executed?     notes
 ================  ============  ==========================================
 ``source``        yes           "local" | "platform" | scheme-in-string
 ``columns``       yes           pushed to parquet reader; slice otherwise
+``match`` /``ext``  yes         filesystem glob + regex filter
 ``as_``           yes           pandas | polars | iter | tensor | hf
 ``lazy``          yes           returns :class:`LazyHandle`
 ``batch_size``    yes           only applied when ``as_='iter'``
 ``confirm_large`` yes           size-tier override
-``match`` /``ext``     raises   SDK-29 filesystem glob
 ``where``              raises   SDK-30 SQL pushdown
 ``map``                raises   SDK-31 row/batch transform
 ``search``/``top_k``   raises   platform embeddings feature
@@ -32,13 +32,14 @@ that will deliver them rather than a cryptic ``TypeError``.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 from cirron.core.errors import CirronDependencyError
 from cirron.data.lazy import LazyHandle
+from cirron.data.match import MatchConfig
 from cirron.data.returns import create_adapter
 from cirron.data.size import enforce_tiers
 from cirron.data.sources import DataSource, SourceConfig
@@ -76,8 +77,7 @@ class LoadRequest:
 
     name: str
     source: Source
-    match: str | None = None
-    ext: list[str] | None = None
+    match: MatchConfig | None = None
     columns: list[str] | None = None
     map: Callable[..., Any] | None = None
     where: str | None = None
@@ -94,7 +94,7 @@ def load(
     name: str | list[str],
     *,
     source: Source = "local",
-    match: str | None = None,
+    match: str | Mapping[str, Any] | None = None,
     ext: list[str] | None = None,
     columns: list[str] | None = None,
     map: Callable[..., Any] | None = None,  # noqa: A002 — public API
@@ -163,7 +163,7 @@ def _build_request(
     name: str,
     *,
     source: Source,
-    match: str | None,
+    match: str | Mapping[str, Any] | None,
     ext: list[str] | None,
     columns: list[str] | None,
     map_: Callable[..., Any] | None,
@@ -176,12 +176,17 @@ def _build_request(
     confirm_large: bool,
 ) -> LoadRequest:
     scheme = _scheme_of(name)
+    match_cfg = MatchConfig.from_any(match, ext, columns)
+    # ``MatchConfig`` may subsume ``columns`` — keep the flat field too so
+    # sources that don't know about MatchConfig (tabular adapter post-
+    # slice) keep working. ``match_cfg.columns`` is the authoritative
+    # source once set.
+    effective_columns = list(match_cfg.columns) if match_cfg and match_cfg.columns else columns
     return LoadRequest(
         name=name,
         source=source,
-        match=match,
-        ext=ext,
-        columns=columns,
+        match=match_cfg,
+        columns=effective_columns,
         map=map_,
         where=where,
         search=search,
@@ -210,11 +215,6 @@ def _reject_unsupported(req: LoadRequest) -> None:
     Kept centralised so every source inherits the same deferred-field
     contract; no source needs its own ``if request.match: raise`` block.
     """
-    if req.match is not None or req.ext is not None:
-        raise NotImplementedError(
-            "match= / ext= filesystem glob execution lands in SDK-29; the "
-            "parameters are accepted today so call sites remain stable."
-        )
     if req.map is not None:
         raise NotImplementedError(
             "map= row/batch transform lands in SDK-31; the parameter is "
@@ -307,12 +307,6 @@ def _scheme_source(req: LoadRequest) -> DataSource:
         account, _, rest = body.partition("/")
         container, _, path = rest.partition("/")
         folder, key = _split_object_path(path)
-        # TODO(SDK-29): AzureDataSource still builds account_url from
-        # container_name (see sources/azure.py:~26), so account_name
-        # populated here is ignored and azure:// loads hit the wrong
-        # endpoint in prod. The dispatcher correctly captures account
-        # and container separately — the fix is on the consumer side
-        # and is owned by SDK-29.
         return AzureDataSource(
             SourceConfig(
                 source_type="azure",

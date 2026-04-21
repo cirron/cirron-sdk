@@ -1,13 +1,13 @@
 """Local-filesystem source backend (CSV/JSON/Parquet/images/text).
 
-SDK-28 adds:
 - bare-name resolution (``ci.load("training-data")`` probes ``./training-data``,
   ``./data/training-data``),
 - directory loading (concatenate all supported files in a directory),
+- ``match=`` / ``ext=`` / ``columns=`` filtering: when the request
+  carries a :class:`MatchConfig`, the source walks the directory
+  recursively, applies :func:`apply_match`, and concatenates the
+  matching files.
 - ``estimate_size`` for the size-tier policy.
-
-``match=`` and ``ext=`` glob execution lands in SDK-29 — today the
-dispatcher raises ``NotImplementedError`` before ``load()`` is called.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from cirron.data.match import MatchConfig, apply_match
 from cirron.data.sources import DataSource
 
 logger = logging.getLogger(__name__)
@@ -62,10 +63,34 @@ class LocalDataSource(DataSource):
         path = self._resolve_path()
         fmt = self.config.format or self._infer_format(path)
 
+        match_cfg = self.request.match if self.request else None
         if path.is_dir():
+            if match_cfg is not None:
+                return self._load_filtered(path, match_cfg)
             return self._load_directory(path, fmt)
 
         return self._load_file(path, fmt)
+
+    def _load_filtered(self, root: Path, match_cfg: MatchConfig) -> Any:
+        """Walk ``root`` recursively and concat files that satisfy
+        ``match_cfg``. Uses POSIX-style relative paths for matching so
+        the user-facing glob is the same on every OS.
+        """
+        all_files = [p for p in root.rglob("*") if p.is_file()]
+        rel_map = {str(p.relative_to(root).as_posix()): p for p in all_files}
+        selected_rel = apply_match(rel_map.keys(), match_cfg)
+        files = sorted(rel_map[r] for r in selected_rel)
+        if not files:
+            raise FileNotFoundError(f"no files under {root} matched match=/ext=")
+
+        suffixes = {p.suffix.lower() for p in files}
+        if len(suffixes) == 1 and next(iter(suffixes)) in _CONCAT_EXTS:
+            inferred = self._infer_format(files[0])
+            import pandas as pd
+
+            frames = [self._load_file(f, inferred) for f in files]
+            return pd.concat(frames, ignore_index=True)
+        return [self._load_file(f, self._infer_format(f)) for f in files]
 
     def _load_file(self, path: Path, fmt: str | None) -> Any:
         columns = (self.request.columns if self.request else None) or None
