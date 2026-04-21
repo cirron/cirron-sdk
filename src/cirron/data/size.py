@@ -25,11 +25,14 @@ log = logging.getLogger("cirron.load")
 
 
 def _human(n: int) -> str:
+    size = float(n)
     for unit in ("B", "KB", "MB", "GB", "TB"):
-        if n < 1024 or unit == "TB":
-            return f"{n:.1f} {unit}" if unit != "B" else f"{n} B"
-        n = n // 1024  # type: ignore[assignment]
-    return f"{n} B"
+        if size < 1024 or unit == "TB":
+            if unit == "B":
+                return f"{int(size)} B"
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{int(size)} B"
 
 
 def enforce_tiers(

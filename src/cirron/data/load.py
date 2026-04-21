@@ -248,6 +248,23 @@ def _resolve_source(req: LoadRequest, cirron: Cirron) -> DataSource:
     )
 
 
+def _split_object_path(path: str) -> tuple[str | None, str | None]:
+    """Classify an object-store path suffix into (folder_path, key).
+
+    - ``""`` (bare bucket) → folder listing rooted at the bucket.
+    - ``"prefix/"`` → folder listing with that prefix.
+    - ``"prefix/file.parquet"`` → single-object key.
+
+    Without this, ``s3://bucket`` would set ``path=""`` and the S3
+    source would call ``get_object(Key="")`` which is not a valid key.
+    """
+    if not path:
+        return ("", None)
+    if path.endswith("/"):
+        return (path, None)
+    return (None, path)
+
+
 def _scheme_source(req: LoadRequest) -> DataSource:
     """Build a scheme-specific source. Scheme URIs are resource pointers;
     credentials come from the user's environment (boto3 / google-cloud
@@ -257,12 +274,13 @@ def _scheme_source(req: LoadRequest) -> DataSource:
         from cirron.data.sources.s3 import S3DataSource
 
         bucket, _, path = req.name[len("s3://") :].partition("/")
+        folder, key = _split_object_path(path)
         return S3DataSource(
             SourceConfig(
                 source_type="s3",
                 bucket_name=bucket,
-                folder_path=path if path.endswith("/") else None,
-                path=None if path.endswith("/") else path,
+                folder_path=folder,
+                path=key,
             ),
             req,
         )
@@ -271,12 +289,13 @@ def _scheme_source(req: LoadRequest) -> DataSource:
 
         prefix = "gs://" if req.name.startswith("gs://") else "gcs://"
         bucket, _, path = req.name[len(prefix) :].partition("/")
+        folder, key = _split_object_path(path)
         return GCSDataSource(
             SourceConfig(
                 source_type="gs",
                 bucket_name=bucket,
-                folder_path=path if path.endswith("/") else None,
-                path=None if path.endswith("/") else path,
+                folder_path=folder,
+                path=key,
             ),
             req,
         )
@@ -287,13 +306,20 @@ def _scheme_source(req: LoadRequest) -> DataSource:
         body = req.name[len("azure://") :]
         account, _, rest = body.partition("/")
         container, _, path = rest.partition("/")
+        folder, key = _split_object_path(path)
+        # TODO(SDK-29): AzureDataSource still builds account_url from
+        # container_name (see sources/azure.py:~26), so account_name
+        # populated here is ignored and azure:// loads hit the wrong
+        # endpoint in prod. The dispatcher correctly captures account
+        # and container separately — the fix is on the consumer side
+        # and is owned by SDK-29.
         return AzureDataSource(
             SourceConfig(
                 source_type="azure",
                 account_name=account,
                 container_name=container,
-                folder_path=path if path.endswith("/") else None,
-                path=None if path.endswith("/") else path,
+                folder_path=folder,
+                path=key,
             ),
             req,
         )
@@ -392,12 +418,21 @@ def _convert(raw: Any, req: LoadRequest) -> Any:
         adapter = create_adapter(raw)
     except ValueError:
         # Raw isn't a tabular type the adapter layer understands (e.g.,
-        # raw bytes, dict). For pandas/other tabular targets that's an
-        # error; pass the raw object through otherwise so "load a JSON
-        # doc" still works.
+        # a JSON document → dict/list, an image → PIL.Image, plain text
+        # → str). pandas is the permissive default: return the raw
+        # payload so ``ci.load('cfg.json')`` or ``ci.load('img.png')``
+        # "just works" on a laptop. The non-pandas targets (polars,
+        # tensor, hf) are explicit opt-ins to a tabular conversion —
+        # if we can't build an adapter, the caller asked for something
+        # we genuinely can't produce, so raise a clear error rather
+        # than silently returning a mis-typed object.
         if req.as_ == "pandas":
-            raise
-        return raw
+            return raw
+        raise CirronDependencyError(
+            f"ci.load(as_={req.as_!r}) requires a tabular source; "
+            f"got {type(raw).__name__}. Use as_='pandas' (default) or "
+            "point at a CSV/Parquet/JSONL source."
+        ) from None
 
     if req.as_ == "pandas":
         _require_pandas()
