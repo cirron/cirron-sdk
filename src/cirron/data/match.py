@@ -27,17 +27,28 @@ from typing import Any
 
 @dataclass(frozen=True)
 class MatchConfig:
-    """Normalized filter config shared by every filesystem backend."""
+    """Normalized filter config shared by every filesystem backend.
+
+    ``filename_glob`` and ``filename_regex`` are mutually exclusive.
+    Separating them matters for :mod:`cirron.data.sources.registered`,
+    which can push a glob to the platform listing route but has to
+    re-apply a regex client-side.
+    """
 
     path: str | None = None
     """Glob pattern applied to the *directory portion* of each candidate
     (everything before the final ``/``). Matched with ``fnmatchcase``.
     ``None`` disables path filtering."""
 
-    filename: str | None = None
-    """Regex applied to the *basename* via :func:`re.fullmatch`. ``None``
-    disables filename filtering. Platform source cannot push arbitrary
-    regex, so it's re-applied client-side after the listing returns."""
+    filename_glob: str | None = None
+    """Glob pattern applied to the basename via :func:`fnmatch.fnmatchcase`.
+    Set when the caller passed ``match="*.parquet"`` (bare string
+    shorthand). Pushable to the platform route."""
+
+    filename_regex: str | None = None
+    """Regex applied to the basename via :func:`re.fullmatch`. Set when
+    the caller passed ``match={"filename": r"..."}`` per spec §4.7.
+    Not pushable to the platform route — the route only speaks glob."""
 
     extension: tuple[str, ...] = ()
     """Lowercase extensions without leading dot, e.g. ``("parquet",
@@ -63,22 +74,20 @@ class MatchConfig:
             return None
 
         path: str | None = None
-        filename: str | None = None
+        filename_glob: str | None = None
+        filename_regex: str | None = None
         extensions: tuple[str, ...] = ()
         cols: tuple[str, ...] | None = None
 
         if isinstance(match, str):
-            # Bare string = filename glob shorthand. fnmatch-style, not
-            # regex — converted to a regex here so the rest of the
-            # pipeline has one code path for filename matching.
-            filename = fnmatch.translate(match)
+            filename_glob = match
         elif isinstance(match, Mapping):
             p = match.get("path")
             if p is not None:
                 path = str(p)
             f = match.get("filename")
             if f is not None:
-                filename = str(f)
+                filename_regex = str(f)
             e = match.get("extension")
             if e is not None:
                 extensions = _normalize_extensions(e)
@@ -90,15 +99,21 @@ class MatchConfig:
                 f"match= must be str, Mapping, or None; got {type(match).__name__}"
             )
 
-        # Flat kwargs win over dict equivalents — they're the newer,
-        # more explicit surface and nothing production calls the dict
-        # shape yet.
+        # Flat kwargs override their dict equivalents — no one calls the
+        # dict shape in production yet, and the flat kwargs are the
+        # spec's public surface.
         if ext:
             extensions = _normalize_extensions(ext)
         if columns:
             cols = tuple(str(x) for x in columns)
 
-        return cls(path=path, filename=filename, extension=extensions, columns=cols)
+        return cls(
+            path=path,
+            filename_glob=filename_glob,
+            filename_regex=filename_regex,
+            extension=extensions,
+            columns=cols,
+        )
 
 
 def _normalize_extensions(raw: Any) -> tuple[str, ...]:
@@ -116,7 +131,7 @@ def apply_match(paths: Iterable[str], cfg: MatchConfig) -> list[str]:
     callers that hand in ``pathlib.Path`` should convert with
     ``str(p.as_posix())`` so Windows paths don't slip through the glob.
     """
-    filename_re = re.compile(cfg.filename) if cfg.filename else None
+    filename_re = re.compile(cfg.filename_regex) if cfg.filename_regex else None
     return [raw for raw in paths if _match_one(raw, cfg, filename_re)]
 
 
@@ -126,6 +141,8 @@ def _match_one(raw: str, cfg: MatchConfig, filename_re: re.Pattern[str] | None) 
     parent = path[: -len(basename) - 1] if "/" in path else ""
 
     if cfg.path is not None and not _match_path(parent, cfg.path):
+        return False
+    if cfg.filename_glob is not None and not fnmatch.fnmatchcase(basename, cfg.filename_glob):
         return False
     if filename_re is not None and not filename_re.fullmatch(basename):
         return False

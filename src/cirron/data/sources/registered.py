@@ -115,12 +115,20 @@ class RegisteredDataset:
         returns a ``cursor`` when more remain. The dispatcher's size-tier
         policy needs the *full* byte-sum before any download runs, so we
         have to aggregate here rather than streaming per-page.
+
+        ``match=`` / ``ext=`` on the request are pushed to the platform
+        route as query params — the route filters server-side via
+        ``minimatch`` + case-insensitive extension match, so we avoid
+        downloading a full bucket manifest just to drop most of it. A
+        regex ``filename`` in ``match`` is *not* pushed (the platform
+        only speaks glob); it's applied client-side after materializing.
         """
         base_path = _OBJECTS_PATH_TEMPLATE.format(
             bucket=urllib.parse.quote(self.name, safe="")
         )
         base_url = f"{self.cirron.api_endpoint.rstrip('/')}{base_path}"
 
+        platform_filters = self._platform_filter_params()
         all_normalized: list[dict[str, Any]] = []
         running_total = 0
         platform_total: int | None = None
@@ -129,6 +137,7 @@ class RegisteredDataset:
 
         while True:
             params: dict[str, str] = {"limit": str(_LIST_PAGE_LIMIT)}
+            params.update(platform_filters)
             if cursor:
                 params["cursor"] = cursor
             url = f"{base_url}?{urllib.parse.urlencode(params)}"
@@ -177,11 +186,69 @@ class RegisteredDataset:
                     "pages; narrow the query with match= / ext= / prefix="
                 )
 
+        # Client-side regex filename pass for a match dict whose filename
+        # isn't a glob — the platform route only supports glob, so we
+        # have to re-filter here. ``apply_match`` against just the regex
+        # is equivalent to filtering on the basename.
+        all_normalized = self._post_filter(all_normalized)
+
+        # Recompute the total to reflect any client-side filtering so the
+        # dispatcher's size-tier check matches the actual download set.
+        if self._has_post_filter():
+            running_total = sum(int(o["size_bytes"]) for o in all_normalized)
+
         # Single-page listings trust the platform's total (it was computed
         # server-side over the filtered set); multi-page listings sum as
         # we went.
-        total = platform_total if pages == 1 and platform_total is not None else running_total
+        total = platform_total if (
+            pages == 1
+            and platform_total is not None
+            and not self._has_post_filter()
+        ) else running_total
         return {"objects": all_normalized, "total_size_bytes": total}
+
+    def _platform_filter_params(self) -> dict[str, str]:
+        """Translate the request's ``MatchConfig`` into platform-route
+        query params.
+
+        The platform route accepts ``match`` (single glob), ``ext``
+        (comma-separated), and ``prefix``. ``path`` + ``filename_glob``
+        combine into one ``match`` string; ``filename_regex`` can't be
+        pushed (route only speaks glob) and is re-applied client-side.
+        """
+        if self.request is None or self.request.match is None:
+            return {}
+        cfg = self.request.match
+        params: dict[str, str] = {}
+
+        if cfg.path and cfg.filename_glob:
+            params["match"] = f"{cfg.path.rstrip('/')}/{cfg.filename_glob}"
+        elif cfg.path:
+            params["match"] = cfg.path
+        elif cfg.filename_glob:
+            params["match"] = cfg.filename_glob
+
+        if cfg.extension:
+            params["ext"] = ",".join(cfg.extension)
+        return params
+
+    def _has_post_filter(self) -> bool:
+        """True when we must re-filter the platform's response locally —
+        only ``filename_regex`` qualifies; the glob / path / extension
+        filters are already applied server-side."""
+        if self.request is None or self.request.match is None:
+            return False
+        return self.request.match.filename_regex is not None
+
+    def _post_filter(self, objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not self._has_post_filter():
+            return objects
+        assert self.request is not None and self.request.match is not None
+        from cirron.data.match import apply_match
+
+        keys = [o["key"] for o in objects]
+        kept = set(apply_match(keys, self.request.match))
+        return [o for o in objects if o["key"] in kept]
 
 
 # Filesystem-safe characters for the tempdir prefix. Everything outside
