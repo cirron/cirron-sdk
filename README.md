@@ -67,6 +67,13 @@ pip install cirron-sdk[pandas]         # + pandas backend for ci.load()
 pip install cirron-sdk[polars]         # + polars backend for ci.load()
 pip install cirron-sdk[torch]          # + PyTorch profiling hooks
 pip install cirron-sdk[tensorflow]     # + TF/Keras profiling hooks
+pip install cirron-sdk[transformers]   # + HuggingFace Trainer hooks
+pip install cirron-sdk[hf]             # + datasets.Dataset return type
+pip install cirron-sdk[postgres]       # + ci.load("postgres://...")
+pip install cirron-sdk[mysql]          # + ci.load("mysql://...")
+pip install cirron-sdk[databricks]     # + ci.load("databricks://...")
+pip install cirron-sdk[snowflake]      # + ci.load("snowflake://...")
+pip install cirron-sdk[sql]            # + all four SQL drivers
 pip install cirron-sdk[all]            # everything
 ```
 
@@ -164,16 +171,42 @@ df = ci.load("./data/training/events.parquet")
 df = ci.load("training-data")                            # probes ./training-data/, ./data/training-data/
 
 # Platform-managed storage — explicit, requires credentials
-df = ci.load("bucket1", source="platform")
+df = ci.load("bucket1", source="platform")               # platform registers the bucket first
 
 # External sources — scheme in the string is the signal
 df = ci.load("s3://ml-data/events/")
+df = ci.load("gs://analytics-bucket/events/")
+df = ci.load("azure://container/events/")
+
+# Filesystem glob + extension filter (match= / ext= work on any filesystem-backed source)
+df = ci.load("s3://ml-data/events/", match="year=2025/month=*/*.parquet")
+df = ci.load("./data/", ext=["csv", "parquet"])
+
+# SQL sources and where= pushdown — credentials resolve via URI / platform / ci.secret / driver env var
+df = ci.load("postgres://prod/events", where="created_at > '2025-01-01'")
+df = ci.load("mysql://analytics/clicks", where="country = 'US'")
+df = ci.load("databricks://analytics.public.clicks", where="country = 'US'")
+df = ci.load("snowflake://warehouse/db/schema/table", where="region = 'EMEA'")
 
 # Multi-source union — concats in parallel
 df = ci.load(["./data/a/", "./data/b/"])
 
-# Column selection (pushdown to parquet reader)
+# Column selection (pushdown to parquet / SQL readers)
 df = ci.load("./events.parquet", columns=["user_id", "ts", "event_type"])
+
+# Row-wise or batch-wise transform at load time
+df = ci.load(
+    "./raw/",
+    columns=["raw_text", "label"],
+    map=lambda row: {"text": row["raw_text"].lower(), "label": int(row["label"])},
+)
+
+@ci.map  # batch-wise — receives the full frame at once
+def to_features(frame):
+    frame["text"] = frame["raw_text"].str.lower()
+    return frame
+
+df = ci.load("./raw/", map=to_features)
 
 # Return type and loading mode
 df = ci.load("./events.parquet", as_="polars")           # "pandas" | "polars" | "iter" | "tensor" | "hf"
@@ -183,20 +216,6 @@ handle = ci.load("./events.parquet", lazy=True)          # LazyHandle; call hand
 **Planned** (parameter accepted today, execution raises a clear "not yet implemented" error so call sites stay stable):
 
 ```python
-# Filesystem glob + extension filter
-df = ci.load("s3://ml-data/events/", match="year=2025/month=*/*.parquet")
-df = ci.load("./data/", ext=["csv", "parquet"])
-
-# SQL sources and where= pushdown
-df = ci.load("postgres://prod/events", where="created_at > '2025-01-01'")
-
-# Row-wise / batch-wise transform at load time
-df = ci.load(
-    "./raw/",
-    columns=["raw_text", "label"],
-    map=lambda row: {"text": row["raw_text"].lower(), "label": int(row["label"])},
-)
-
 # Semantic search over a platform-managed vector index
 df = ci.load("embeddings", source="platform", search="billing complaints", top_k=50)
 ```
@@ -301,15 +320,21 @@ Shipped:
 - `@ci.inference` — sync and async, per-request ContextVar isolation, OpenAI / HF LLM detectors with TTFT and throughput marks
 - `ci.env` / `ci.secret`, the `Cirron` config class, and YAML loader
 - `cirron traces view` CLI (terminal flamegraph)
-- `ci.load()` — local-first dispatcher, explicit `source="platform"`, scheme routing for `s3://` / `gs://` / `azure://` / `file://` / `postgres://` / `databricks://` / `snowflake://`, multi-source concat, all five `as_=` return types, `lazy=True`, and size-tier guardrails
+- `ci.load()` — local-first dispatcher, explicit `source="platform"`, scheme routing for `s3://` / `gs://` / `azure://` / `file://`, multi-source concat, all five `as_=` return types, `lazy=True`
+- Filesystem filtering: `match=` glob + regex and `ext=` shorthand via `MatchConfig`, with column pushdown to Parquet readers
+- SQL sources: `postgres://` / `mysql://` / `databricks://` / `snowflake://` with `where=` pushdown and a 4-tier credential resolver (URI-inline → platform integrations → `ci.secret` → driver env var)
+- `map=` row-wise transforms at load time, plus `@ci.map` for batch-wise
+- Size-tier guardrails: `<1 GB` silent, `<10 GB` logs a warning with narrowing hints, `≥10 GB` raises `CirronDataSizeError` unless `confirm_large=True` (thresholds configurable via `Cirron(load_warn_bytes=, load_max_bytes=)`)
+- Platform bucket resolver (SDK-side client for `GET /v1/datasets/resolve`)
 
 Coming:
 
-- Filesystem glob (`match=` / `ext=`) and the current S3 pagination / Azure `account_url` / GCS + Azure `validate()` bug fixes
-- Full SQL execution for `postgres://` / `databricks://` / `snowflake://` including `where=` pushdown
-- `map=` row-wise / batch-wise transform at load time
 - Platform-managed embeddings search (`search=` / `top_k=`)
 - `cirron traces export --format parquet|otel`
+
+Platform follow-up (not SDK work):
+
+- `GET /v1/datasets/resolve` and `GET /api/integrations/resolve` endpoints — the SDK clients are in place and fail with a clear fallback message until the backend ships
 
 ## Further reading
 
