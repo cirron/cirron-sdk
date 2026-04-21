@@ -12,7 +12,6 @@ from __future__ import annotations
 import importlib
 import json
 from typing import Any
-from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -243,9 +242,10 @@ def test_as_polars(tmp_path):
 
 
 def test_as_iter(tmp_path):
+    """Default ``batch_size`` (10k) yields a single batch containing all rows."""
     path = _write_parquet(tmp_path, [{"a": 1}, {"a": 2}, {"a": 3}])
-    rows = list(ci.load(str(path), as_="iter"))
-    assert rows == [{"a": 1}, {"a": 2}, {"a": 3}]
+    batches = list(ci.load(str(path), as_="iter"))
+    assert batches == [[{"a": 1}, {"a": 2}, {"a": 3}]]
 
 
 def test_as_tensor(tmp_path):
@@ -312,33 +312,25 @@ def test_size_error_tier_suppressed_with_confirm(monkeypatch):
 # -- dependency errors --------------------------------------------------------
 
 
-def test_missing_pandas_raises_dependency_error(monkeypatch, tmp_path):
+def test_missing_polars_raises_dependency_error(monkeypatch):
+    """as_='polars' on a non-polars source without polars installed →
+    CirronDependencyError (not a raw ImportError from deeper in the stack).
+    """
     import builtins
 
     real_import = builtins.__import__
-
-    def _fake(name, *args, **kwargs):
-        if name == "pandas":
-            raise ImportError("simulated")
-        return real_import(name, *args, **kwargs)
-
-    # The load itself reads the parquet via pandas in the source, so we
-    # test the conversion layer instead: load with as_="hf" after polars
-    # is patched to fail.
     frame = pd.DataFrame({"a": [1]})
     src = _FakeSource(frame)
     monkeypatch.setattr(load_mod, "_resolve_source", lambda req, cirron: src)
 
-    with patch.dict("sys.modules", {"polars": None}):
-        # Force import of polars to fail:
-        def _raise(name, *a, **kw):
-            if name == "polars":
-                raise ImportError("no polars")
-            return real_import(name, *a, **kw)
+    def _raise(name, *a, **kw):
+        if name == "polars":
+            raise ImportError("no polars")
+        return real_import(name, *a, **kw)
 
-        monkeypatch.setattr(builtins, "__import__", _raise)
-        with pytest.raises(CirronDependencyError, match="polars"):
-            ci.load("anything", as_="polars")
+    monkeypatch.setattr(builtins, "__import__", _raise)
+    with pytest.raises(CirronDependencyError, match="polars"):
+        ci.load("anything", as_="polars")
 
 
 # -- accept-and-raise for deferred params -------------------------------------
@@ -366,6 +358,73 @@ def test_search_raises_platform_feature(tmp_path):
     path = _write_parquet(tmp_path, [{"a": 1}])
     with pytest.raises(NotImplementedError, match="platform vector index"):
         ci.load(str(path), search="cats")
+
+
+# -- non-tabular sources ------------------------------------------------------
+
+
+def test_non_tabular_json_default_passes_through(tmp_path):
+    """``ci.load('file.json')`` with default as_='pandas' returns the raw
+    parsed JSON (dict/list) rather than raising — non-tabular payloads
+    are usable in the permissive default path."""
+    path = tmp_path / "cfg.json"
+    path.write_text(json.dumps({"threshold": 0.5, "labels": ["a", "b"]}))
+    result = ci.load(str(path))
+    assert result == {"threshold": 0.5, "labels": ["a", "b"]}
+
+
+def test_non_tabular_tensor_target_raises(tmp_path):
+    path = tmp_path / "cfg.json"
+    path.write_text(json.dumps({"x": 1}))
+    with pytest.raises(CirronDependencyError, match="tabular source"):
+        ci.load(str(path), as_="tensor")
+
+
+# -- iter batching ------------------------------------------------------------
+
+
+def test_as_iter_batches_when_batch_size_gt_one(tmp_path):
+    path = _write_parquet(tmp_path, [{"n": i} for i in range(25)], "batched.parquet")
+    batches = list(ci.load(str(path), as_="iter", batch_size=10))
+    assert len(batches) == 3
+    assert len(batches[0]) == 10 and len(batches[1]) == 10 and len(batches[2]) == 5
+    assert batches[0][0] == {"n": 0}
+    assert batches[-1][-1] == {"n": 24}
+
+
+def test_as_iter_unbatched_when_batch_size_one(tmp_path):
+    path = _write_parquet(tmp_path, [{"n": 0}, {"n": 1}], "unbatched.parquet")
+    rows = list(ci.load(str(path), as_="iter", batch_size=1))
+    assert rows == [{"n": 0}, {"n": 1}]
+
+
+# -- s3://bucket without trailing slash ---------------------------------------
+
+
+def test_s3_bare_bucket_uses_folder_path(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    class _FakeS3:
+        def __init__(self, config, request):
+            captured["config"] = config
+
+        def load(self):
+            return pd.DataFrame({"x": [1]})
+
+        def validate(self):
+            return True
+
+        def estimate_size(self):
+            return (0, 0)
+
+    monkeypatch.setattr("cirron.data.sources.s3.S3DataSource", _FakeS3)
+    ci.load("s3://bucket-only")
+    cfg = captured["config"]
+    # Bucket-root URIs should surface as a folder listing, not a single
+    # get_object(Key='') call.
+    assert cfg.bucket_name == "bucket-only"
+    assert cfg.folder_path == ""
+    assert cfg.path is None
 
 
 # -- NumpyAdapter 1D empty-selection bug fix (SDK-8 review item) --------------

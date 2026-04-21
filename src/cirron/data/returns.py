@@ -73,15 +73,66 @@ class DataAdapter(ABC):
     def get_categorical_columns(self) -> list[str]: ...
 
     def to_polars(self) -> Any:
-        pl = _require("polars")
-        return pl.from_pandas(self.to_pandas())
+        """Convert to ``polars.DataFrame``.
 
-    def to_iter(self, batch_size: int = 10_000) -> Iterator[dict[str, Any]]:
-        """Yield rows as dicts. Default implementation goes via pandas."""
-        df = self.to_pandas()
-        # itertuples is the fastest per-row path in pandas; skip index.
+        The base path goes via pandas, so it needs both libraries
+        installed — we surface that as ``CirronDependencyError``
+        instead of leaking a raw ``ImportError`` from deeper in the
+        stack. Subclasses that can convert natively (e.g. the
+        ``PolarsAdapter`` and ``ArrowAdapter`` overrides) override
+        this to skip the pandas hop.
+        """
+        pl = _require("polars")
+        try:
+            return pl.from_pandas(self._to_pandas_for_conversion())
+        except CirronDependencyError:
+            raise
+        except ImportError as e:
+            raise CirronDependencyError(
+                "ci.load(as_='polars') requires 'pandas' for this "
+                f"source type. Install with: {_INSTALL_HINTS['pandas']}"
+            ) from e
+
+    def _to_pandas_for_conversion(self) -> Any:
+        """Wrap ``to_pandas`` so a missing pandas install becomes
+        ``CirronDependencyError`` at the conversion boundary."""
+        try:
+            return self.to_pandas()
+        except ImportError as e:
+            raise CirronDependencyError(
+                f"ci.load() conversion requires 'pandas'. Install with: {_INSTALL_HINTS['pandas']}"
+            ) from e
+
+    def to_iter(
+        self, batch_size: int = 10_000
+    ) -> Iterator[dict[str, Any]] | Iterator[list[dict[str, Any]]]:
+        """Yield rows as dicts.
+
+        ``batch_size == 1`` (default when ``as_='iter'`` and no batch
+        size requested by the caller is not the case — the dispatcher
+        passes the user's ``batch_size`` through) yields a stream of
+        single-row dicts. Any other value yields a stream of batches,
+        each a ``list[dict]`` of up to ``batch_size`` rows.
+
+        Batching lets downstream code cap memory for large sources
+        without materializing the whole frame into Python objects.
+        The default ``10_000`` matches the public signature in
+        ``ci.load()``.
+        """
+        df = self._to_pandas_for_conversion()
+        columns = list(df.columns)
+        if batch_size <= 1:
+            for row in df.itertuples(index=False, name=None):
+                yield dict(zip(columns, row, strict=False))
+            return
+        batch: list[dict[str, Any]] = []
         for row in df.itertuples(index=False, name=None):
-            yield dict(zip(df.columns, row, strict=False))
+            batch.append(dict(zip(columns, row, strict=False)))
+            if len(batch) >= batch_size:
+                yield batch
+                batch = []
+        if batch:
+            yield batch
 
     def to_tensor(self) -> Any:
         """Return a framework tensor. Prefers torch, falls back to tensorflow."""
@@ -104,7 +155,7 @@ class DataAdapter(ABC):
 
     def to_hf(self) -> Any:
         datasets = _require("datasets")
-        return datasets.Dataset.from_pandas(self.to_pandas())
+        return datasets.Dataset.from_pandas(self._to_pandas_for_conversion())
 
     def get_original_data(self) -> Any:
         return self.data
@@ -196,6 +247,13 @@ class NumpyAdapter(DataAdapter):
         if self.data.ndim == 1:
             return pd.DataFrame({self.column_names[0]: self.data})
         return pd.DataFrame(self.data, columns=self.column_names)
+
+    def to_polars(self) -> Any:
+        """Native NumPy → polars conversion (skips the pandas hop)."""
+        pl = _require("polars")
+        if self.data.ndim == 1:
+            return pl.DataFrame({self.column_names[0]: self.data})
+        return pl.DataFrame({name: self.data[:, i] for i, name in enumerate(self.column_names)})
 
     def to_numpy(self) -> Any:
         return self.data

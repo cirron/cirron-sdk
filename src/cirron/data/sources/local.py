@@ -22,7 +22,12 @@ from cirron.data.sources import DataSource
 
 logger = logging.getLogger(__name__)
 
-_PARSE_EXTS = {".csv", ".json", ".parquet"}
+# Extensions the directory loader concatenates into a single DataFrame.
+# ``.json`` is deliberately excluded: _load_file returns a Python dict/list
+# for JSON, which pd.concat can't stitch together. JSONL/record-arrays
+# would need their own parsing path; until that lands, JSON directories
+# fall through to the "list of whatever each file loaded to" behavior.
+_CONCAT_EXTS = {".csv", ".parquet"}
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png"}
 
 
@@ -90,7 +95,7 @@ class LocalDataSource(DataSource):
         if not files:
             raise FileNotFoundError(f"no files found under {path}")
         suffixes = {p.suffix.lower() for p in files}
-        if len(suffixes) == 1 and next(iter(suffixes)) in _PARSE_EXTS:
+        if len(suffixes) == 1 and next(iter(suffixes)) in _CONCAT_EXTS:
             inferred = fmt or self._infer_format(files[0])
             import pandas as pd
 
