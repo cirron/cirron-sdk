@@ -18,7 +18,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from cirron.data.match import apply_match
+from cirron.data.match import MatchConfig, apply_match
 from cirron.data.sources import DataSource
 
 logger = logging.getLogger(__name__)
@@ -71,7 +71,7 @@ class LocalDataSource(DataSource):
 
         return self._load_file(path, fmt)
 
-    def _load_filtered(self, root: Path, match_cfg: Any) -> Any:
+    def _load_filtered(self, root: Path, match_cfg: MatchConfig) -> Any:
         """Walk ``root`` recursively and concat files that satisfy
         ``match_cfg``. Uses POSIX-style relative paths for matching so
         the user-facing glob is the same on every OS.
