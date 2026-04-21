@@ -327,9 +327,35 @@ class PlatformBucketSource(DataSource):
 
         local = LocalDataSource(
             SourceConfig(source_type="local", path=str(tempdir)),
-            self.request,
+            self._request_for_local(),
         )
         return local.load()
+
+    def _request_for_local(self) -> LoadRequest | None:
+        """Derive a LoadRequest for the downstream LocalDataSource.
+
+        The platform route already applied the push-able parts of the
+        match config (``path``, ``filename_glob``, ``extension``) when
+        listing, and we post-filtered for any regex ``filename`` before
+        downloading. Running those filters a second time against the
+        tempdir would drop every object (the tempdir is flat, so e.g.
+        a ``path='year=2025/*'`` glob won't match). Hand LocalDataSource
+        a match with only ``columns`` preserved — that's still needed
+        for parquet column pushdown."""
+        if self.request is None:
+            return None
+        if self.request.match is None or self.request.match.columns is None:
+            from dataclasses import replace
+
+            return replace(self.request, match=None)
+        from dataclasses import replace
+
+        from cirron.data.match import MatchConfig
+
+        return replace(
+            self.request,
+            match=MatchConfig(columns=self.request.match.columns),
+        )
 
     def cleanup(self) -> None:
         """Best-effort removal of the download tempdir.
