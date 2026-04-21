@@ -118,6 +118,24 @@ def test_from_any_rejects_unexpected_type():
         MatchConfig.from_any(123, None, None)  # type: ignore[arg-type]
 
 
+def test_from_any_rejects_bare_string_columns():
+    """Bare-string columns would iterate character-by-character; reject
+    it explicitly rather than silently producing per-character columns."""
+    with pytest.raises(TypeError, match="list of column names"):
+        MatchConfig.from_any({"columns": "abc"}, None, None)
+    with pytest.raises(TypeError, match="list of column names"):
+        MatchConfig.from_any(None, None, "abc")  # type: ignore[arg-type]
+
+
+def test_normalize_extensions_drops_whitespace_only():
+    """Whitespace-only extensions must not survive as empty strings —
+    otherwise ``_match_extension`` would check ``endswith('.')`` and
+    match every filename with a trailing dot."""
+    cfg = MatchConfig.from_any(None, ["  ", "\t", "parquet"], None)
+    assert cfg is not None
+    assert cfg.extension == ("parquet",)
+
+
 def test_apply_match_normalizes_windows_paths():
     paths = [r"year=2025\month=01\a.parquet"]
     cfg = MatchConfig(path="year=2025/*")
