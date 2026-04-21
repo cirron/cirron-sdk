@@ -19,7 +19,7 @@ parameter         executed?     notes
 ``batch_size``    yes           only applied when ``as_='iter'``
 ``confirm_large`` yes           size-tier override
 ``where``              raises   SDK-30 SQL pushdown
-``map``           yes           row-wise; batch-wise with ``@ci.batch_map``
+``map``           yes           row-wise; batch-wise via ``@ci.map``
 ``search``/``top_k``   raises   platform embeddings feature
 ================  ============  ==========================================
 
