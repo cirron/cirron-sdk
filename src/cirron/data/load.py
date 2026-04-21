@@ -19,7 +19,7 @@ parameter         executed?     notes
 ``batch_size``    yes           only applied when ``as_='iter'``
 ``confirm_large`` yes           size-tier override
 ``where``              raises   SDK-30 SQL pushdown
-``map``                raises   SDK-31 row/batch transform
+``map``           yes           row-wise; batch-wise with ``@ci.batch_map``
 ``search``/``top_k``   raises   platform embeddings feature
 ================  ============  ==========================================
 
@@ -218,11 +218,6 @@ def _reject_unsupported(req: LoadRequest) -> None:
     Kept centralised so every source inherits the same deferred-field
     contract; no source needs its own ``if request.match: raise`` block.
     """
-    if req.map is not None:
-        raise NotImplementedError(
-            "map= row/batch transform lands in SDK-31; the parameter is "
-            "accepted today so call sites remain stable."
-        )
     if req.where is not None and req.scheme not in _SQL_SCHEMES:
         raise NotImplementedError(
             "where= filter pushdown is only implemented for SQL sources "
@@ -394,6 +389,10 @@ def _run_and_convert(sources: list[DataSource], requests: list[LoadRequest]) -> 
         raw = _concat(loaded)
 
     req = requests[0]
+    if req.map is not None:
+        from cirron.data.transform import apply_map
+
+        raw = apply_map(raw, req.map)
     return _convert(raw, req)
 
 
