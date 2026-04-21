@@ -93,7 +93,10 @@ class LocalDataSource(DataSource):
         return [self._load_file(f, self._infer_format(f)) for f in files]
 
     def _load_file(self, path: Path, fmt: str | None) -> Any:
-        columns = (self.request.columns if self.request else None) or None
+        # ``None`` means "all columns"; an explicit ``[]`` is passed
+        # through so local behavior matches S3/GCS/Azure (pandas returns
+        # a 0-column frame) rather than silently loading everything.
+        columns = self.request.columns if self.request else None
         if fmt == "csv":
             import pandas as pd
 
@@ -163,13 +166,29 @@ class LocalDataSource(DataSource):
                 return (path.stat().st_size, 1)
             except OSError:
                 return (None, None)
+
+        match_cfg = self.request.match if self.request else None
         total = 0
         count = 0
         try:
-            for p in path.iterdir():
-                if p.is_file():
-                    total += p.stat().st_size
+            if match_cfg is not None:
+                # Mirror _load_filtered: walk recursively and size only
+                # files that survive the same apply_match that load() will
+                # use. Otherwise partitioned layouts (year=/month=/...)
+                # report 0 bytes and the size-tier policy is bypassed.
+                all_files = [p for p in path.rglob("*") if p.is_file()]
+                rel_map = {str(p.relative_to(path).as_posix()): p for p in all_files}
+                selected = apply_match(rel_map.keys(), match_cfg)
+                for rel in selected:
+                    total += rel_map[rel].stat().st_size
                     count += 1
+            else:
+                # No match filter — sum every file under the directory so
+                # nested layouts are still accounted for.
+                for p in path.rglob("*"):
+                    if p.is_file():
+                        total += p.stat().st_size
+                        count += 1
         except OSError:
             return (None, None)
         return (total, count)
