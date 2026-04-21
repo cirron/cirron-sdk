@@ -8,3 +8,15 @@ class CirronSecretNotFound(CirronError):
 
 class CirronDependencyError(CirronError):
     """Raised when an optional dependency (pandas, polars, torch, ...) is required but not installed."""
+
+
+class CirronDatasetNotFound(CirronError):
+    """Raised when ``ci.load(name, source='platform')`` cannot resolve ``name`` on the platform."""
+
+
+class CirronPlatformRequired(CirronError):
+    """Raised when a platform-only operation is attempted without platform credentials or connectivity."""
+
+
+class CirronDataSizeError(CirronError):
+    """Raised when a ``ci.load()`` query would pull more than ``load_max_bytes`` without ``confirm_large=True``."""
