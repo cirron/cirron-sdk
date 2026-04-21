@@ -146,6 +146,11 @@ def _build_source(payload: dict[str, Any], request: LoadRequest | None) -> DataS
 
         return GCSDataSource(config, request)
     if source_type == "azure":
+        # TODO(SDK-29): AzureDataSource builds account_url from
+        # container_name instead of account_name, so platform-resolved
+        # Azure datasets will hit the wrong endpoint even though this
+        # resolver correctly forwards account_name on SourceConfig.
+        # Tracked as an SDK-29 bug-fix item in docs/refactor-stories.md.
         from cirron.data.sources.azure import AzureDataSource
 
         return AzureDataSource(config, request)
