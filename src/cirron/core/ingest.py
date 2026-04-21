@@ -25,15 +25,20 @@ from requests.adapters import HTTPAdapter
 log = logging.getLogger("cirron.ingest")
 
 DEFAULT_INGEST_PATH = "/api/traces"
+DEFAULT_BLOB_SUBPATH = "/blobs"
 GZIP_MIN_BYTES = 1024
 MAX_BACKOFF_SEC = 30.0
 # Cap Retry-After so a misbehaving server can't stall the flush thread for
 # hours. We'd rather re-hit the server than leave scopes/marks undrained.
 MAX_RETRY_AFTER_SEC = 60.0
-AUTH_HEADER = "X-Cluster-Api-Key"
+AUTH_HEADER = "Authorization"
 SDK_VERSION_HEADER = "X-Cirron-SDK-Version"
 BATCH_ID_HEADER = "X-Cirron-Batch-Id"
 BLOB_KEY_HEADER = "X-Cirron-Blob-Key"
+
+
+def _bearer(api_key: str) -> str:
+    return f"Bearer {api_key}"
 
 
 def _sdk_version() -> str:
@@ -120,7 +125,7 @@ class IngestClient:
         # Derive blob_path from path when not explicitly set so self-hosted
         # users who override only `ingest_path` get a matching blob route.
         if blob_path is None:
-            blob_path = path.rstrip("/") + "/blob"
+            blob_path = path.rstrip("/") + DEFAULT_BLOB_SUBPATH
         if not blob_path.startswith("/"):
             blob_path = "/" + blob_path
         self._endpoint = api_endpoint.rstrip("/")
@@ -156,7 +161,7 @@ class IngestClient:
         compressed = len(body) >= GZIP_MIN_BYTES
         payload = gzip.compress(body, mtime=0) if compressed else body
         headers = {
-            AUTH_HEADER: self._api_key,
+            AUTH_HEADER: _bearer(self._api_key),
             "Content-Type": "application/json",
             SDK_VERSION_HEADER: self._sdk_version,
             BATCH_ID_HEADER: str(batch.get("batch_id", "")),
@@ -242,7 +247,7 @@ class IngestClient:
 
         url = f"{self._blob_base_url.rstrip('/')}/{remote_key.lstrip('/')}"
         headers = {
-            AUTH_HEADER: self._api_key,
+            AUTH_HEADER: _bearer(self._api_key),
             "Content-Type": "application/octet-stream",
             "Content-Length": str(size),
             SDK_VERSION_HEADER: self._sdk_version,
