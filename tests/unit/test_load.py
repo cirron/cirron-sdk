@@ -733,10 +733,91 @@ def test_where_rejected_for_non_sql_sources(tmp_path):
         ci.load(str(path), where="a > 0")
 
 
-def test_map_raises_sdk31(tmp_path):
+# -- map= transform (SDK-31) -------------------------------------------------
+
+
+def test_map_rowwise_transforms_each_row(tmp_path):
+    path = _write_parquet(tmp_path, [{"raw": "HELLO"}, {"raw": "World"}])
+    df = ci.load(str(path), map=lambda row: {"text": row["raw"].lower()})
+    assert list(df.columns) == ["text"]
+    assert df["text"].tolist() == ["hello", "world"]
+
+
+def test_map_none_is_noop(tmp_path):
+    path = _write_parquet(tmp_path, [{"a": 1}, {"a": 2}])
+    df = ci.load(str(path), map=None)
+    assert df["a"].tolist() == [1, 2]
+
+
+def test_batch_map_receives_full_dataframe(tmp_path):
+    path = _write_parquet(tmp_path, [{"a": 1}, {"a": 2}, {"a": 3}])
+    seen: dict[str, Any] = {}
+
+    @ci.map
+    def double(frame: pd.DataFrame) -> pd.DataFrame:
+        seen["type"] = type(frame)
+        seen["rows"] = len(frame)
+        return frame.assign(a=frame["a"] * 2)
+
+    df = ci.load(str(path), map=double)
+    assert seen["type"] is pd.DataFrame
+    assert seen["rows"] == 3
+    assert df["a"].tolist() == [2, 4, 6]
+
+
+def test_map_decorator_sets_batch_marker():
+    @ci.map
+    def fn(frame):
+        return frame
+
+    assert getattr(fn, "_cirron_batch_map", False) is True
+
+
+def test_map_error_names_offending_row(tmp_path):
+    path = _write_parquet(tmp_path, [{"a": 1}, {"a": 2}, {"a": 0}])
+
+    def bad(row):
+        return {"inv": 1 / row["a"]}
+
+    with pytest.raises(Exception, match="row 2"):
+        ci.load(str(path), map=bad)
+
+
+def test_map_is_lazy(tmp_path):
     path = _write_parquet(tmp_path, [{"a": 1}])
-    with pytest.raises(NotImplementedError, match="SDK-31"):
-        ci.load(str(path), map=lambda r: r)
+    calls = {"n": 0}
+
+    def fn(row):
+        calls["n"] += 1
+        return row
+
+    handle = ci.load(str(path), map=fn, lazy=True)
+    assert isinstance(handle, LazyHandle)
+    assert calls["n"] == 0
+    handle.collect()
+    assert calls["n"] == 1
+
+
+def test_map_applies_before_iter(tmp_path):
+    path = _write_parquet(tmp_path, [{"n": i} for i in range(3)])
+    batches = list(ci.load(str(path), as_="iter", map=lambda r: {"n2": r["n"] * 10}))
+    flat = [row for batch in batches for row in batch]
+    assert flat == [{"n2": 0}, {"n2": 10}, {"n2": 20}]
+
+
+def test_map_runs_once_over_concatenated_frame(tmp_path):
+    p1 = _write_parquet(tmp_path, [{"a": 1}, {"a": 2}], "a.parquet")
+    p2 = _write_parquet(tmp_path, [{"a": 3}], "b.parquet")
+    calls: list[Any] = []
+
+    @ci.map
+    def track(frame: pd.DataFrame) -> pd.DataFrame:
+        calls.append(len(frame))
+        return frame
+
+    df = ci.load([str(p1), str(p2)], map=track)
+    assert calls == [3]
+    assert df["a"].tolist() == [1, 2, 3]
 
 
 def test_search_raises_platform_feature(tmp_path):
