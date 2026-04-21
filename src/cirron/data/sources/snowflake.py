@@ -85,7 +85,5 @@ class SnowflakeDataSource(DataSource):
             conn.close()
 
 
-def build_source(
-    uri_str: str, cirron: Cirron, request: LoadRequest | None
-) -> SnowflakeDataSource:
+def build_source(uri_str: str, cirron: Cirron, request: LoadRequest | None) -> SnowflakeDataSource:
     return SnowflakeDataSource(parse_sql_uri(uri_str), cirron, request)
