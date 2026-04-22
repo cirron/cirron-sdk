@@ -1,8 +1,7 @@
 """AWS S3 source backend.
 
-- paginated listing via ``list_objects_v2`` paginator (fixes the
-  1000-key truncation bug from the SDK-8 review — a bucket folder with
-  >1000 objects was silently returning partial results),
+- paginated listing via ``list_objects_v2`` paginator so buckets with
+  >1000 objects don't silently return partial results,
 - client-side ``match=`` / ``ext=`` filtering via
   :func:`cirron.data.match.apply_match`,
 - ``validate()`` returns the actual ``head_bucket`` outcome.

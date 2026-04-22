@@ -1,4 +1,4 @@
-"""MySQL source backend (spec §4.7, SDK-30).
+"""MySQL source backend (spec §4.7).
 
 Thin shim over :mod:`cirron.data.sql`: parse the ``mysql://`` URI,
 resolve credentials, connect via ``PyMySQL``, run the composed

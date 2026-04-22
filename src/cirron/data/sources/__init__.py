@@ -3,10 +3,10 @@
 Per spec §4.7, each call to ``ci.load()`` resolves to one of the
 scheme-specific backends here (``s3``, ``gcs``, ``azure``, ``local``,
 ``postgres``, ``databricks``, ``snowflake``) or to the platform resolver
-(``registered``). SDK-28 ships the dispatcher plumbing and local +
-platform-registered resolution and glob ``match``/``ext`` filtering (the
-filesystem backends and the platform listing route both honour the
-``MatchConfig`` produced by the dispatcher); SDK-30 wires in SQL ``where``.
+(``registered``). The dispatcher handles local + platform-registered
+resolution and glob ``match`` / ``ext`` filtering (the filesystem
+backends and the platform listing route both honour the ``MatchConfig``
+produced by the dispatcher); the SQL sources handle ``where=`` pushdown.
 
 Every backend implements :meth:`DataSource.load` (execute the load and
 return a DataFrame/dict/bytes) and may implement

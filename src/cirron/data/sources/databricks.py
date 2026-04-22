@@ -1,4 +1,4 @@
-"""Databricks source backend (spec §4.7, SDK-30).
+"""Databricks source backend (spec §4.7).
 
 Uses ``databricks-sql-connector`` against a SQL Warehouse. The URI is
 ``databricks://<workspace-host>/<catalog>.<schema>.<table>``; auth is

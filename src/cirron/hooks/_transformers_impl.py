@@ -1,4 +1,4 @@
-"""HuggingFace transformers hook implementation (SDK-22, spec §4.8).
+"""HuggingFace transformers hook implementation (spec §4.8).
 
 Kept out of ``transformers.py`` so self-registration at package import
 stays cheap — ``install()`` defers ``import transformers`` until called
@@ -9,7 +9,7 @@ Auto-attaches a ``TrainerCallback`` to every ``Trainer`` instance via a
 scopes plus ``loss`` / ``learning_rate`` marks with zero user code. The
 ``step`` scope opens in ``on_step_begin`` and closes in ``on_step_end``
 so the underlying torch ``forward`` / ``backward`` / ``optimizer_step``
-spans (SDK-20) nest cleanly inside it. Every callback entry point is
+spans nest cleanly inside it. Every callback entry point is
 wrapped in :func:`_catch` — a bad ``logs`` payload or a scope push
 failure must never crash training (spec §6.3).
 """
@@ -96,8 +96,8 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
             # through to the unwind below.
             #
             # Unwind: HF Trainer fires ``on_epoch_begin`` *before* the
-            # first ``iter(dataloader)``, so the torch hook (SDK-20)
-            # ends up pushing its own ``epoch`` scope on top of ours.
+            # first ``iter(dataloader)``, so the torch hook ends up
+            # pushing its own ``epoch`` scope on top of ours.
             # When ``on_epoch_end`` fires our scope is buried; pop the
             # intervening scopes (closing them as siblings) until we
             # find ours, the same pattern torch's own
@@ -266,9 +266,9 @@ def install(
     """Install the TrainerCallback auto-attach via ``Trainer.__init__`` monkey-patch.
 
     Claims ``"epoch"`` in ``context.owned_scopes`` so a co-installed
-    torch hook (SDK-20) yields its ``DataLoader.__iter__`` epoch
-    rotation — otherwise HF ``Trainer`` would drive both callbacks and
-    produce duplicate ``epoch`` spans.
+    torch hook yields its ``DataLoader.__iter__`` epoch rotation —
+    otherwise HF ``Trainer`` would drive both callbacks and produce
+    duplicate ``epoch`` spans.
     """
     from transformers import Trainer  # type: ignore[import-not-found]
 

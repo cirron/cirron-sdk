@@ -1,4 +1,4 @@
-"""``map=`` transform for ``ci.load()`` (SDK-31, spec §4.7).
+"""``map=`` transform for ``ci.load()`` (spec §4.7).
 
 By default, a callable passed to ``ci.load(..., map=fn)`` runs row-wise:
 ``fn(row: dict) -> dict``. Decorating the callable with :func:`map`

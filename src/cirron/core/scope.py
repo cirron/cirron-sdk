@@ -1,9 +1,9 @@
-"""Thread-local scope stack (spec §3.2, §4.4) — SDK-9.
+"""Thread-local scope stack (spec §3.2, §4.4).
 
 ``ci.scope("name", index=..., **attrs)`` opens a span, pushes it onto the
 current thread's scope stack, and closes it on exit. The innermost open
-scope is the target for ``ci.mark()`` (SDK-10); closed scopes accumulate
-in a per-thread buffer that the flush thread (SDK-11) drains and ships.
+scope is the target for ``ci.mark()``; closed scopes accumulate in a
+per-thread buffer that the flush thread drains and ships.
 
 The hot path is lock-free: each thread gets its own ``_ScopeState`` object
 cached in a ``threading.local`` slot, so ``push``/``pop`` never contend.
@@ -37,7 +37,7 @@ class Scope:
     """A single span in the scope tree. Shape mirrors the platform
     ``TraceSpan`` model (spec §5.4); fields the SDK hasn't populated yet
     (``gpu_ns``, ``memory_peak_bytes``) stay ``None`` until framework hooks
-    fill them in (SDK-20 et al.).
+    fill them in.
     """
 
     id: str
@@ -82,7 +82,7 @@ class _ScopeState:
 
 
 # Per-asyncio-task / explicit-context override of the active scope state.
-# Set by ``ScopeStack.isolated_state`` (used by ``@ci.inference``, SDK-26) so
+# Set by ``ScopeStack.isolated_state`` (used by ``@ci.inference``) so
 # concurrent async requests each see their own scope tree instead of sharing
 # one thread-local stack on the event-loop thread. When unset, ``_get_state``
 # falls back to the existing ``threading.local`` path unchanged.
@@ -103,7 +103,7 @@ class ScopeStack:
     A single ``ScopeStack`` instance is shared across threads. Each thread
     gets its own ``_ScopeState`` via a ``threading.local`` cache; the same
     state objects are also tracked in ``_states`` so the flush thread
-    (SDK-11) can enumerate every producer's closed-scope deque via
+    can enumerate every producer's closed-scope deque via
     ``drain_closed_all()``.
     """
 
@@ -118,13 +118,13 @@ class ScopeStack:
         # holds one small ``_ScopeState`` per thread that ever existed.
         self._local = threading.local()
         self._states_lock = threading.Lock()
-        # Keys are normally thread ids (``int``); ``isolated_state`` (SDK-26)
+        # Keys are normally thread ids (``int``); ``isolated_state``
         # registers per-request states under synthetic ``str`` keys so the
         # flush thread can still drain them via ``drain_closed_all``.
         self._states: dict[Any, _ScopeState] = {}
 
     def _get_state(self) -> _ScopeState:
-        # ContextVar overlay (SDK-26): an ``isolated_state`` context set by
+        # ContextVar overlay: an ``isolated_state`` context set by
         # ``@ci.inference`` wins over the thread-local default so concurrent
         # asyncio tasks on one event-loop thread don't share a stack.
         ctx = _ctx_state.get()
@@ -273,7 +273,7 @@ class ScopeStack:
     def close_scope(self, scope_obj: Scope) -> None:
         """Close a specific scope regardless of stack position.
 
-        Used by ``Profiler.shutdown()`` (SDK-13) to close the root scope
+        Used by ``Profiler.shutdown()`` to close the root scope
         from a thread that may differ from the one that opened it.
 
         Thread safety: we set ``end_ns`` (an atomic attribute assignment under
@@ -334,7 +334,7 @@ class ScopeStack:
     @contextmanager
     def isolated_state(self, key: str) -> Iterator[_ScopeState]:
         """Enter a fresh per-context ``_ScopeState`` for the duration of the
-        ``with`` block (SDK-26).
+        ``with`` block.
 
         The new state is bound to a ``ContextVar`` so ``asyncio`` tasks (and
         threads that inherit the context) see it instead of their thread-local
@@ -366,14 +366,14 @@ _default_stack = ScopeStack()
 def get_current_scope() -> Scope | None:
     """Return the innermost open scope on the current thread, or ``None``.
 
-    Used by ``ci.mark()`` (SDK-10) to find the span a value should attach
+    Used by ``ci.mark()`` to find the span a value should attach
     to, and by framework hooks that want to annotate the active scope.
     """
     return _default_stack.current()
 
 
 def get_default_stack() -> ScopeStack:
-    """Accessor for the process-wide default stack. Mostly here so SDK-11's
+    """Accessor for the process-wide default stack. Mostly here so the
     flush thread has a stable entry point; tests can also import this to
     drain closed scopes without going through the module-level API.
     """

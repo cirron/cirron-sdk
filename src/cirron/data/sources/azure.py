@@ -1,10 +1,8 @@
 """Azure Blob Storage source backend.
 
-Fix three SDK-8 review bugs:
-- ``account_url`` is now built from ``config.account_name``, not
+- ``account_url`` is built from ``config.account_name``, not
   ``container_name``. Azure blob account URLs are based on the storage
-  *account*; the container is a sub-path. The old code never connected
-  to a real deployment.
+  *account*; the container is a sub-path.
 - ``validate()`` returns the actual ``container.exists()`` boolean.
 - Client-side ``match=`` / ``ext=`` filtering via
   :func:`cirron.data.match.apply_match`.

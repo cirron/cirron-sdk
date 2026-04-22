@@ -1,4 +1,4 @@
-"""Trace transports (spec §3.1) — SDK-12.
+"""Trace transports (spec §3.1).
 
 Three concrete transports selected automatically by ``select_transport``:
 

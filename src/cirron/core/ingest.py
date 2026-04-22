@@ -1,4 +1,4 @@
-"""HTTP client for trace ingestion (spec §3.1, §5.2) — SDK-12.
+"""HTTP client for trace ingestion (spec §3.1, §5.2).
 
 ``IngestClient`` is the network layer behind ``HttpTransport``. It owns
 serialization, gzip, auth headers, retry policy, and idempotency. The flush

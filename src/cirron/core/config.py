@@ -1,7 +1,7 @@
 """YAML + layered config loader and ``Cirron`` entry-point class.
 
 Merges the YAML loader previously at ``cirron/config/loader.py`` with the
-``Cirron`` class described in spec §4.10. The SDK-16 layered resolver
+``Cirron`` class described in spec §4.10. The layered resolver
 (defaults → ``~/.cirron/config.toml`` → ``CIRRON_*`` env vars → explicit
 constructor kwargs) drives ``__init__``; instance methods mirror the
 module-level functions in ``cirron/__init__.py``, most as pure delegators
@@ -167,8 +167,8 @@ _ENV_MAP: dict[str, str] = {
 }
 
 # Size tiers for ``ci.load()``: warn above warn_bytes, raise above max_bytes
-# unless ``confirm_large=True``. See spec §4.7 and the SDK-28 plan for the
-# rationale — users on laptops should not accidentally pull a 500 GB bucket.
+# unless ``confirm_large=True``. See spec §4.7 for the rationale —
+# users on laptops should not accidentally pull a 500 GB bucket.
 DEFAULT_LOAD_WARN_BYTES = 1_000_000_000  # 1 GB
 DEFAULT_LOAD_MAX_BYTES = 10_000_000_000  # 10 GB
 
@@ -243,7 +243,7 @@ _TOML_COERCERS: dict[str, Callable[[Any], Any]] = {
 def _read_home_config_toml(path: Path | None = None) -> dict[str, Any]:
     """Read ``~/.cirron/config.toml`` ``[default]`` table, tolerantly.
 
-    Extracts all nine SDK-16 fields with per-field type coercion. Any I/O
+    Extracts all nine supported fields with per-field type coercion. Any I/O
     or parse failure silently returns ``{}``; the SDK must never crash
     because a user's home TOML is malformed. Values that don't coerce
     cleanly (e.g. a string for ``sample_rate``, an unknown value for
@@ -275,7 +275,7 @@ def _read_home_config_toml(path: Path | None = None) -> dict[str, Any]:
 
 
 def _read_env_overrides() -> dict[str, Any]:
-    """Read ``CIRRON_*`` env vars for each SDK-16 field, with coercion.
+    """Read ``CIRRON_*`` env vars for each supported field, with coercion.
 
     Same coercion rules as TOML — malformed values are dropped, not
     raised. ``.env`` loading runs eagerly at ``cirron.core.env`` import

@@ -1,4 +1,4 @@
-"""PyTorch hook implementation (SDK-20, spec §4.8).
+"""PyTorch hook implementation (spec §4.8).
 
 Kept out of ``torch.py`` so self-registration at package import stays
 cheap — ``import torch`` only happens when :func:`install` is called by

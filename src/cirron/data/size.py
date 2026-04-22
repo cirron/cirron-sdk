@@ -1,4 +1,4 @@
-"""Size-tier enforcement for ``ci.load()`` (SDK-28 plan).
+"""Size-tier enforcement for ``ci.load()``.
 
 Sources that can cheaply pre-compute the total byte count of a query (local
 filesystem, object listings, …) expose it via ``DataSource.estimate_size``.

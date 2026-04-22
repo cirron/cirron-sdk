@@ -1,4 +1,4 @@
-"""``ci.epochs()`` / ``ci.batches()`` — Tier-2 loop wrappers (spec §4.3, SDK-14).
+"""``ci.epochs()`` / ``ci.batches()`` — Tier-2 loop wrappers (spec §4.3).
 
 Transparent generator iterators that open an indexed ``epoch`` or ``batch``
 scope per iteration and close it on the next iteration (or on exhaustion /
