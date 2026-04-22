@@ -1,4 +1,4 @@
-"""TensorFlow / Keras hook implementation (SDK-21, spec §4.8).
+"""TensorFlow / Keras hook implementation (spec §4.8).
 
 Kept out of ``tensorflow.py`` so self-registration at package import
 stays cheap — ``install()`` defers ``import keras`` until called by
@@ -134,8 +134,8 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
         def on_train_begin(self, logs: Any = None) -> None:
             def _do() -> None:
                 # Claim ownership now that a fit() run is actually
-                # starting so a co-installed torch hook (SDK-20) stops
-                # opening its own epoch spans.
+                # starting so a co-installed torch hook stops opening its
+                # own epoch spans.
                 if "epoch" not in context.owned_scopes:
                     context.owned_scopes["epoch"] = "tensorflow"
                     self._claimed_epoch = True

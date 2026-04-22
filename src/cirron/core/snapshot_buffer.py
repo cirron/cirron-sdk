@@ -1,4 +1,4 @@
-"""Process-wide buffer for ``TraceSnapshot`` records (SDK-24).
+"""Process-wide buffer for ``TraceSnapshot`` records.
 
 Snapshots fire at most once per epoch from a framework callback — not
 from the per-scope hot path — so a simple ``threading.Lock`` around a

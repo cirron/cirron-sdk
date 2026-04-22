@@ -1,9 +1,9 @@
-"""Background flush thread and spool writer (spec §3.3, §3.1) — SDK-11.
+"""Background flush thread and spool writer (spec §3.3, §3.1).
 
-The flush thread periodically drains closed scopes (SDK-9) and marks (SDK-10)
-and writes them to ``./.cirron/spool/`` as versioned JSON batches. When a
-transport (SDK-12) is supplied it also forwards each batch. The spool format
-is public API — see ``docs/spool-format.md``.
+The flush thread periodically drains closed scopes and marks and writes
+them to ``./.cirron/spool/`` as versioned JSON batches. When a transport
+is supplied it also forwards each batch. The spool format is public API
+— see ``docs/spool-format.md``.
 
 Design notes:
 
@@ -72,12 +72,12 @@ def _sdk_version() -> str:
 class Transport(Protocol):
     """Minimal transport interface the flush thread hands batches to.
 
-    SDK-12 will implement this against the kernel event stream / HTTP
+    Implementations wire this against the kernel event stream / HTTP
     ingest route. Returning ``False`` or raising causes the batch to stay
-    in the spool (spool is the source of truth). ``upload_blob`` (added
-    for SDK-25) uploads a safetensors file and returns its remote URI,
-    or ``None`` on failure; the flush thread uses this to drain the blob
-    queue before the JSON batch that references the blobs.
+    in the spool (spool is the source of truth). ``upload_blob`` uploads
+    a safetensors file and returns its remote URI, or ``None`` on
+    failure; the flush thread uses this to drain the blob queue before
+    the JSON batch that references the blobs.
     """
 
     def send(self, batch: dict[str, Any]) -> bool: ...
@@ -159,7 +159,7 @@ class SpoolWriter:
 
     Filenames are lexicographically ordered by creation time, so oldest-first
     eviction is a sorted ``glob``. The total-byte cap is enforced on every
-    write; dropped files bump ``drop_count`` so ``Profiler.health()`` (SDK-13)
+    write; dropped files bump ``drop_count`` so ``Profiler.health()``
     can surface it.
     """
 
@@ -385,8 +385,8 @@ class FlushThread(threading.Thread):
         """Test helper: drain without uploading blobs or rewriting URIs.
 
         Production flows go through :meth:`_tick`. This method preserves
-        the pre-SDK-25 shape for the unit tests that manually drive a
-        flush — they only care about the scope/mark/snapshot plumbing.
+        the pre-blob-upload shape for the unit tests that manually drive
+        a flush — they only care about the scope/mark/snapshot plumbing.
         """
         scopes = self._scope_stack.drain_closed_all()
         marks = self._mark_buffer.drain_all()
@@ -515,7 +515,7 @@ class _Supervisor:
 
 
 # Module-level singleton management. ``start_flush_thread`` is idempotent so
-# it is safe to call from both ``Profiler`` startup (SDK-13) and ad-hoc
+# it is safe to call from both ``Profiler`` startup and ad-hoc
 # bootstrapping paths.
 
 _state_lock = threading.Lock()

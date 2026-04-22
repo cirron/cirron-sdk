@@ -7,14 +7,11 @@ explicitly gives you a separate instance — methods on that instance use
 its config, without disturbing the default. This is the path for
 self-hosted endpoints, multi-workspace scenarios, and test harnesses.
 
-Runtime behavior lands story-by-story — scope in SDK-9, mark in SDK-10,
-flush in SDK-11, transport in SDK-12, ``profile()`` orchestration in
-SDK-13, wrappers in SDK-14, ``Cirron`` config class in SDK-16, secrets
-in SDK-17, CLI in SDK-18, hooks in SDK-19–23, snapshots in SDK-24/25,
-inference in SDK-26/27, data loading in SDK-28–31. Until those land,
-some names resolve to stubs that warn when invoked
-(``epochs`` / ``batches`` / ``inference`` / ``wrap``) or raise
-``NotImplementedError`` (``load``).
+The full surface — ``profile`` / ``scope`` / ``mark`` / ``epochs`` /
+``batches`` / hooks / snapshots / ``inference`` / ``load`` / ``env`` /
+``secret`` / ``Cirron`` — is live. A handful of ``load()`` parameters
+(``search=`` / ``top_k=``) accept input but raise ``NotImplementedError``
+until the platform vector index ships.
 """
 
 from __future__ import annotations
@@ -44,6 +41,7 @@ from cirron.core.errors import (
 )
 from cirron.core.profiler import Profiler, flush, health, shutdown, watch
 from cirron.core.yaml_types import CirronYaml, ProfilingConfig, ServingConfig
+from cirron.data.transform import map  # noqa: A004 — public ci.map decorator
 
 try:
     __version__ = _pkg_version("cirron-sdk")
@@ -132,6 +130,7 @@ __all__ = [
     "inference",
     "load",
     "load_cirron_yaml",
+    "map",
     "mark",
     "profile",
     "scope",
