@@ -1,8 +1,7 @@
 """Google Cloud Storage source backend.
 
 - ``validate()`` returns the real ``bucket.exists()`` boolean instead of
-  silently returning ``True`` whenever the RPC doesn't throw (SDK-8
-  review bug).
+  silently returning ``True`` whenever the RPC doesn't throw.
 - Client-side ``match=`` / ``ext=`` filtering via
   :func:`cirron.data.match.apply_match`.
 """

@@ -1,4 +1,4 @@
-"""Pending blob uploads (SDK-25).
+"""Pending blob uploads.
 
 Serialization runs on the main thread inside the snapshot capture path;
 the resulting safetensors file sits on the local filesystem under

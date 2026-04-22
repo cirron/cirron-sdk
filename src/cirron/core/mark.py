@@ -1,9 +1,9 @@
-"""Per-thread mark ring buffer (spec §4.5) — SDK-10.
+"""Per-thread mark ring buffer (spec §4.5).
 
 ``ci.mark(name, value, **attrs)`` attaches a coerced scalar (float, int,
 string, or bool) to the innermost open scope on the current thread and
-writes it to a lock-free per-thread ring buffer. The flush thread
-(SDK-11) drains the buffer and ships marks alongside their owning spans.
+writes it to a lock-free per-thread ring buffer. The flush thread drains
+the buffer and ships marks alongside their owning spans.
 
 Marks must be cheaper than a scope open/close — the hot path avoids
 locks and keeps attribute lookups local. Budget: 1M marks in < 3s.
@@ -92,7 +92,7 @@ class MarkBuffer:
     shared across threads; each thread gets its own ``_MarkState`` via a
     ``threading.local`` cache. ``deque(maxlen=capacity)`` gives lock-free
     drop-oldest when full. A shadow dict of every thread's state lets a
-    consumer (the SDK-11 flush thread) enumerate all producers via
+    consumer (the flush thread) enumerate all producers via
     ``drain_all()``.
     """
 
@@ -206,7 +206,7 @@ _time_ns = time.time_ns
 
 
 def get_default_mark_buffer() -> MarkBuffer:
-    """Accessor for the process-wide default mark buffer. SDK-11's flush
+    """Accessor for the process-wide default mark buffer. The flush
     thread uses this to drain marks; tests use it to inspect state
     without going through the module-level ``mark()`` API.
     """

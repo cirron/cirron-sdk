@@ -5,9 +5,8 @@ normalize access patterns (columns, shape, dtypes, conversion) across pandas,
 polars, Arrow, and NumPy, so the ``as_=`` parameter in ``ci.load()`` can swap
 return types without rewriting downstream code.
 
-SDK-28 wires these into the real ``load()`` dispatcher and adds the
-cross-format conversion methods (``to_polars``, ``to_tensor``, ``to_hf``)
-used by the ``as_=`` dispatch.
+The adapters expose cross-format conversion methods (``to_polars``,
+``to_tensor``, ``to_hf``) used by the ``as_=`` dispatch.
 """
 
 from __future__ import annotations
@@ -225,7 +224,7 @@ class NumpyAdapter(DataAdapter):
                 return NumpyAdapter(self.data, [self.column_names[0]])
             # Empty selection on 1D: reshape to (n,0) so the adapter reports
             # a zero-column result instead of the old one-column ``column_0``
-            # fallback. Fixes the SDK-8 PR-review bug called out in SDK-28.
+            # fallback.
             import numpy as np
 
             empty = np.empty((self.data.shape[0], 0), dtype=self.data.dtype)

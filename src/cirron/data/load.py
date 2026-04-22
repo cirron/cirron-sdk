@@ -1,4 +1,4 @@
-"""``ci.load()`` — unified data-access dispatcher (spec §4.7, SDK-28).
+"""``ci.load()`` — unified data-access dispatcher (spec §4.7).
 
 The dispatcher parses a flat keyword signature into a :class:`LoadRequest`,
 resolves each input to a concrete ``DataSource``, enforces the
@@ -6,27 +6,10 @@ resolves each input to a concrete ``DataSource``, enforces the
 there are multiple, concatenates, and converts to the requested return
 type via :mod:`cirron.data.returns`.
 
-What SDK-28 executes vs accepts-and-raises:
-
-================  ============  ==========================================
-parameter         executed?     notes
-================  ============  ==========================================
-``source``        yes           "local" | "platform" | scheme-in-string
-``columns``       yes           pushed to parquet reader; slice otherwise
-``match`` /``ext``  yes         filesystem glob + regex filter
-``as_``           yes           pandas | polars | iter | tensor | hf
-``lazy``          yes           returns :class:`LazyHandle`
-``batch_size``    yes           only applied when ``as_='iter'``
-``confirm_large`` yes           size-tier override
-``where``              raises   SDK-30 SQL pushdown
-``map``           yes           row-wise; batch-wise via ``@ci.map``
-``search``/``top_k``   raises   platform embeddings feature
-================  ============  ==========================================
-
-The "accepts-and-raises" pattern keeps the signature stable now so
-downstream code can be written against the final shape; calls that use
-those params today get a clear ``NotImplementedError`` naming the story
-that will deliver them rather than a cryptic ``TypeError``.
+All documented parameters execute end-to-end except ``search`` /
+``top_k``, which accept input but raise ``NotImplementedError`` until the
+platform vector index ships. Keeping them in the signature lets
+downstream code be written against the final shape.
 """
 
 from __future__ import annotations

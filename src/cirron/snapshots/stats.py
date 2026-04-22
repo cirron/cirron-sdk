@@ -1,4 +1,4 @@
-"""Per-tensor statistics snapshot mode (SDK-24, spec §4.2).
+"""Per-tensor statistics snapshot mode (spec §4.2).
 
 Default snapshot mode. Fires at epoch boundaries from framework hooks
 (torch ``_rotate_epoch``, Keras ``on_epoch_end``, HF ``on_epoch_end``)
@@ -308,8 +308,8 @@ def capture_gradient_stats(model: Any, span_id: str) -> list[TraceSnapshot]:
 
     Keras ``Variable`` objects don't carry a ``.grad`` attribute; this
     function is effectively PyTorch-only today. Keras gradient snapshots
-    would need the optimizer's ``tape``, which is a SDK-25+ design
-    problem.
+    would need the optimizer's ``tape``, which is a sampled/full-mode
+    design problem.
     """
     ts_ns = time.time_ns()
     out: list[TraceSnapshot] = []

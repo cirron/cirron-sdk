@@ -1,6 +1,6 @@
-"""Safetensors serialization for sampled/full snapshot modes (SDK-25, spec §4.2).
+"""Safetensors serialization for sampled/full snapshot modes (spec §4.2).
 
-The stats path (SDK-24) emits inline per-tensor summaries; sampled/full
+The stats path emits inline per-tensor summaries; sampled/full
 additionally persist the raw tensor values. One safetensors file is
 written per (span, kind) — ``weights.safetensors`` and
 ``gradients.safetensors`` under ``./.cirron/snapshots/<span_id>/`` — so
