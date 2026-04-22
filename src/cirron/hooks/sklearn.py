@@ -1,4 +1,4 @@
-"""``ci.wrap()`` — sklearn opt-in estimator wrapper (SDK-23, spec §4.8).
+"""``ci.wrap()`` — sklearn opt-in estimator wrapper (spec §4.8).
 
 sklearn has no callback API, so users opt in by wrapping an estimator:
 
