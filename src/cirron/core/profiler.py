@@ -1,4 +1,4 @@
-"""Module-level ``profile()`` and ``Profiler`` handle (spec §4.2) — SDK-13.
+"""Module-level ``profile()`` and ``Profiler`` handle (spec §4.2).
 
 ``ci.profile()`` is the main SDK entry point. It resolves config, selects a
 transport, detects installed frameworks, opens a root scope, and starts the
@@ -51,7 +51,7 @@ _atexit_registered = False
 # ``None`` once the model is gone. Normally a ``weakref.ref``; falls back
 # to a ``lambda`` holding a strong reference for objects that don't
 # support weakref (C-extension types, bare ``object()``). Snapshot
-# capture (SDK-24) calls it at epoch boundaries.
+# capture calls it at epoch boundaries.
 _watched_model_ref: Callable[[], Any] | None = None
 _watched_warning_emitted = False
 
@@ -487,7 +487,7 @@ def flush() -> None:
 
 
 def watch(model: Any | None) -> Any | None:
-    """Register ``model`` for snapshot capture (SDK-24, spec §4.2).
+    """Register ``model`` for snapshot capture (spec §4.2).
 
     Required for bare PyTorch loops — the torch hook sees optimizers and
     DataLoaders but never receives a direct model reference, so it can't

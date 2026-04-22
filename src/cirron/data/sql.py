@@ -1,4 +1,4 @@
-"""Shared SQL plumbing for ``ci.load()`` SQL-backed sources (SDK-30).
+"""Shared SQL plumbing for ``ci.load()`` SQL-backed sources.
 
 The per-driver modules (``postgres``, ``mysql``, ``databricks``,
 ``snowflake``) are thin shims: import the driver lazily, hand the
@@ -12,14 +12,14 @@ Credential resolution (:class:`CredentialResolver`) is two-stage:
 1. Ask the platform (``GET /api/integrations/resolve?scheme=&host=&database=``)
    for scoped short-lived credentials. 404 / 5xx / connection failure
    are treated as "no registered integration" rather than fatal — the
-   platform endpoint is planned work; SDK-30 must ship before it lands.
+   platform endpoint is planned work and the SDK path must tolerate its
+   absence.
 2. Fall back to credentials already present in the URI, then to
    ``ci.secret()`` keyed on ``<scheme>-<host>``.
 
 If neither resolves, raise :class:`CirronPlatformRequired` with an
-actionable message. ``where=`` is passed through unescaped per the
-SDK-30 ticket ("SQL injection is the user's problem — they're querying
-their own data").
+actionable message. ``where=`` is passed through unescaped ("SQL
+injection is the user's problem — they're querying their own data").
 """
 
 from __future__ import annotations
@@ -239,9 +239,9 @@ class CredentialResolver:
        lived credentials. 404 / connection failure means "fall back".
     3. **``ci.secret()`` / env fallback** — ``ci.secret(f"{scheme}-{host}")``
        for the password, standard driver env vars (``PGPASSWORD``,
-       ``MYSQL_PWD``, ``SNOWFLAKE_PASSWORD``) as last-resort. Lets
-       SDK-30 ship standalone before the platform integrations table
-       lands.
+       ``MYSQL_PWD``, ``SNOWFLAKE_PASSWORD``) as last-resort. Lets the
+       SQL backends work standalone before the platform integrations
+       table lands.
     """
 
     def __init__(self, cirron: Cirron, uri: SqlUri) -> None:
@@ -540,7 +540,7 @@ def execute_to_pandas(cursor: Any, query: str) -> Any:
     fetchmany_arrow``) and routes them through a new
     ``execute_to_iter`` / streaming ``DataSource`` path. The per-driver
     surface diverges enough to be worth its own ticket. Raised in PR #35
-    review; tracked as "SDK-30 follow-up: streaming SQL cursor".
+    review; tracked as a SQL-streaming follow-up.
     """
     try:
         import pandas as pd

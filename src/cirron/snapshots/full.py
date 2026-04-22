@@ -1,4 +1,4 @@
-"""Full weight/gradient snapshot mode (SDK-25, spec §4.2).
+"""Full weight/gradient snapshot mode (spec §4.2).
 
 ``snapshots="full"`` is ``sampled`` with the sample-rate roll always
 succeeding: every epoch boundary serializes every weight + gradient

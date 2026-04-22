@@ -1,4 +1,4 @@
-"""LLM-specific inference instrumentation (SDK-27).
+"""LLM-specific inference instrumentation.
 
 Best-effort detectors invoked by ``@ci.inference`` (``decorator.py``):
 
