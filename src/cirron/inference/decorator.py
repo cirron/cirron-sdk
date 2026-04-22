@@ -1,4 +1,4 @@
-"""``@ci.inference`` — serving instrumentation decorator (SDK-26, SDK-27).
+"""``@ci.inference`` — serving instrumentation decorator.
 
 Per spec §4.6, wraps a serving function with profiling: opens a ``request``
 scope tagged with an auto-generated ``request_id``, invokes the function,
@@ -13,7 +13,7 @@ copies ContextVars per task, so each request sees its own stack while
 ``ci.scope()`` / ``ci.mark()`` used inside the function still attach to the
 request scope.
 
-SDK-27: after ``func`` returns, the result is piped through LLM detectors
+After ``func`` returns, the result is piped through LLM detectors
 (:mod:`cirron.inference.llm`) — OpenAI-style ``usage`` marks, HuggingFace
 ``generate`` patching, and streaming TTFT / throughput. When the result is
 a generator, scope ownership is transferred to the stream wrapper so marks
@@ -100,7 +100,7 @@ def inference(
     """
     cfg: dict[str, Any] = dict(config) if config else {}
 
-    # SDK-27: best-effort patch so token counts land even if the user's
+    # Best-effort patch so token counts land even if the user's
     # predict() calls ``generate()`` without any additional
     # instrumentation. Silent if transformers is not installed.
     try:

@@ -96,7 +96,7 @@ def test_http_transport_end_to_end(server: Any) -> None:
     assert len(server.received) == 1
     req = server.received[0]
     assert req["path"] == "/api/traces"
-    assert req["headers"][AUTH_HEADER] == "itest-key"
+    assert req["headers"][AUTH_HEADER] == "Bearer itest-key"
     assert req["headers"][BATCH_ID_HEADER] == "e2e-1"
     assert SDK_VERSION_HEADER in req["headers"]
 

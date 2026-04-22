@@ -1,7 +1,7 @@
 """YAML + layered config loader and ``Cirron`` entry-point class.
 
 Merges the YAML loader previously at ``cirron/config/loader.py`` with the
-``Cirron`` class described in spec §4.10. The SDK-16 layered resolver
+``Cirron`` class described in spec §4.10. The layered resolver
 (defaults → ``~/.cirron/config.toml`` → ``CIRRON_*`` env vars → explicit
 constructor kwargs) drives ``__init__``; instance methods mirror the
 module-level functions in ``cirron/__init__.py``, most as pure delegators
@@ -162,7 +162,15 @@ _ENV_MAP: dict[str, str] = {
     "flush_interval": "CIRRON_FLUSH_INTERVAL",
     "spool_max_bytes": "CIRRON_SPOOL_MAX_BYTES",
     "ingest_path": "CIRRON_INGEST_PATH",
+    "load_warn_bytes": "CIRRON_LOAD_WARN_BYTES",
+    "load_max_bytes": "CIRRON_LOAD_MAX_BYTES",
 }
+
+# Size tiers for ``ci.load()``: warn above warn_bytes, raise above max_bytes
+# unless ``confirm_large=True``. See spec §4.7 for the rationale —
+# users on laptops should not accidentally pull a 500 GB bucket.
+DEFAULT_LOAD_WARN_BYTES = 1_000_000_000  # 1 GB
+DEFAULT_LOAD_MAX_BYTES = 10_000_000_000  # 10 GB
 
 _DEFAULTS: dict[str, Any] = {
     "api_key": None,
@@ -174,6 +182,8 @@ _DEFAULTS: dict[str, Any] = {
     "flush_interval": 1.0,
     "spool_max_bytes": DEFAULT_SPOOL_MAX_BYTES,
     "ingest_path": DEFAULT_INGEST_PATH,
+    "load_warn_bytes": DEFAULT_LOAD_WARN_BYTES,
+    "load_max_bytes": DEFAULT_LOAD_MAX_BYTES,
 }
 
 
@@ -225,13 +235,15 @@ _TOML_COERCERS: dict[str, Callable[[Any], Any]] = {
     "flush_interval": _coerce_float,
     "spool_max_bytes": _coerce_int,
     "ingest_path": _coerce_str,
+    "load_warn_bytes": _coerce_int,
+    "load_max_bytes": _coerce_int,
 }
 
 
 def _read_home_config_toml(path: Path | None = None) -> dict[str, Any]:
     """Read ``~/.cirron/config.toml`` ``[default]`` table, tolerantly.
 
-    Extracts all nine SDK-16 fields with per-field type coercion. Any I/O
+    Extracts all nine supported fields with per-field type coercion. Any I/O
     or parse failure silently returns ``{}``; the SDK must never crash
     because a user's home TOML is malformed. Values that don't coerce
     cleanly (e.g. a string for ``sample_rate``, an unknown value for
@@ -263,7 +275,7 @@ def _read_home_config_toml(path: Path | None = None) -> dict[str, Any]:
 
 
 def _read_env_overrides() -> dict[str, Any]:
-    """Read ``CIRRON_*`` env vars for each SDK-16 field, with coercion.
+    """Read ``CIRRON_*`` env vars for each supported field, with coercion.
 
     Same coercion rules as TOML — malformed values are dropped, not
     raised. ``.env`` loading runs eagerly at ``cirron.core.env`` import
@@ -331,6 +343,8 @@ class Cirron:
         flush_interval: float | None = None,
         spool_max_bytes: int | None = None,
         ingest_path: str | None = None,
+        load_warn_bytes: int | None = None,
+        load_max_bytes: int | None = None,
     ) -> None:
         merged = _resolve_config(
             {
@@ -343,6 +357,8 @@ class Cirron:
                 "flush_interval": flush_interval,
                 "spool_max_bytes": spool_max_bytes,
                 "ingest_path": ingest_path,
+                "load_warn_bytes": load_warn_bytes,
+                "load_max_bytes": load_max_bytes,
             }
         )
         self.api_key: str | None = merged["api_key"]
@@ -354,6 +370,8 @@ class Cirron:
         self.flush_interval: float = merged["flush_interval"]
         self.spool_max_bytes: int = merged["spool_max_bytes"]
         self.ingest_path: str = merged["ingest_path"]
+        self.load_warn_bytes: int = merged["load_warn_bytes"]
+        self.load_max_bytes: int = merged["load_max_bytes"]
         self._profile_config: dict[str, Any] = {}
 
     # -- profile orchestration ----------------------------------------------
@@ -483,6 +501,7 @@ class Cirron:
     def load(self, *args: Any, **kwargs: Any) -> Any:
         from cirron.data.load import load as _load
 
+        kwargs.setdefault("cirron", self)
         return _load(*args, **kwargs)
 
     def inference(

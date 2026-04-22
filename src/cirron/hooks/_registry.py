@@ -5,11 +5,10 @@ Each framework module (``hooks/torch.py``, etc.) exposes an
 ``register_installer``. ``ci.profile()`` calls :func:`detect_frameworks` to
 find what's importable and then :func:`install_hooks` to attach them.
 
-Real per-framework hook bodies (PyTorch module hooks, Keras callback,
-HuggingFace ``TrainerCallback``) land in SDK-20–22. SDK-19 ships the
-contract plus no-op installers so the wiring is exercised end-to-end.
-sklearn is intentionally not auto-registered — it is opt-in via
-``ci.wrap()`` (SDK-23).
+Per-framework hook bodies (PyTorch module hooks, Keras callback,
+HuggingFace ``TrainerCallback``) live in the per-framework modules
+alongside this registry. sklearn is intentionally not auto-registered —
+it is opt-in via ``ci.wrap()``.
 """
 
 from __future__ import annotations
@@ -70,9 +69,9 @@ class HookHandle(Protocol):
 
 
 class NoopHookHandle:
-    """Trivial handle used by SDK-19 stub installers and tests.
+    """Trivial handle used by stub installers and tests.
 
-    Real handles (SDK-20+) hold references to monkey-patched callables /
+    Real handles hold references to monkey-patched callables /
     registered callbacks and undo them in ``uninstall``.
     """
 
@@ -150,7 +149,7 @@ def install_hooks(
     # Importing the package executes ``hooks/__init__.py``, which pulls in
     # the per-framework submodules. Use importlib to avoid shadowing the
     # local ``cirron`` parameter with the top-level package name. A broken
-    # framework submodule (e.g. SDK-20+ accidentally importing ``torch`` at
+    # framework submodule (e.g. one accidentally importing ``torch`` at
     # module top) must not propagate — log and continue with whatever was
     # already registered.
     try:
