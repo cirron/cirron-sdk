@@ -323,6 +323,74 @@ def test_unconvertible_tensor_keeps_mode_stats(require_safetensors, tmp_path, mo
     assert bad_rec.blob_uri is None
 
 
+# -------- SDK-46: never-crash under injected failures ----------------------
+
+
+def test_sampled_serialize_failure_preserves_stats(
+    require_safetensors, tmp_path, monkeypatch, caplog
+):
+    """If the safetensors write raises, the span's stats records are still
+    returned and the exception does not escape ``capture()``."""
+    from cirron.snapshots import sampled as sampled_mod
+
+    def boom(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("injected serialize failure")
+
+    monkeypatch.setattr(sampled_mod, "serialize_and_enqueue", boom)
+
+    model = _FakeModel([("w", _FakeTensor(np.ones((3,), dtype=np.float32)))])
+    cirron = _fake_cirron(snapshots="sampled", sample_rate=1.0, output_dir=str(tmp_path))
+
+    caplog.set_level(logging.WARNING, logger="cirron.snapshots")
+    records = capture(cirron, model, "span-sampled-boom", include_grads=False)
+
+    assert len(records) == 1
+    assert records[0].mode == "stats"
+    assert records[0].blob_uri is None
+    assert any("blob serialization raised" in r.message for r in caplog.records)
+
+
+def test_full_mode_serialize_failure_does_not_crash(
+    require_safetensors, tmp_path, monkeypatch, caplog
+):
+    """Full mode takes the same serialization path; an injected failure
+    there must also be swallowed and leave a stats-only record behind."""
+    from cirron.snapshots import sampled as sampled_mod
+
+    def boom(*args: Any, **kwargs: Any) -> Any:
+        raise OSError("injected disk failure")
+
+    monkeypatch.setattr(sampled_mod, "serialize_and_enqueue", boom)
+
+    model = _FakeModel([("w", _FakeTensor(np.ones((3,), dtype=np.float32)))])
+    cirron = _fake_cirron(snapshots="full", output_dir=str(tmp_path))
+
+    caplog.set_level(logging.WARNING, logger="cirron.snapshots")
+    records = capture(cirron, model, "span-full-boom", include_grads=False)
+
+    assert len(records) == 1
+    assert records[0].mode == "stats"
+    assert records[0].blob_uri is None
+
+
+def test_sampled_named_parameters_exception(require_safetensors, tmp_path, caplog):
+    """A model whose ``named_parameters()`` raises must not crash the
+    capture path — ``capture()`` returns whatever partial records it
+    already collected (zero here) with a WARNING logged."""
+
+    class _AngryModel:
+        def named_parameters(self) -> Any:
+            raise RuntimeError("injected named_parameters failure")
+
+    cirron = _fake_cirron(snapshots="sampled", sample_rate=1.0, output_dir=str(tmp_path))
+
+    caplog.set_level(logging.WARNING, logger="cirron.snapshots")
+    records = capture(cirron, _AngryModel(), "span-angry", include_grads=False)
+
+    assert records == []
+    assert any("named_parameters() raised" in r.message for r in caplog.records)
+
+
 # -------- key preservation (no sanitization) --------------------------------
 
 
