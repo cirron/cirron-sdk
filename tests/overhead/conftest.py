@@ -2,9 +2,9 @@
 
 The suite is gated behind ``CIRRON_RUN_OVERHEAD_TESTS=1`` so that the
 default ``uv run pytest`` stays fast; CI sets the env var for the
-dedicated overhead job. Each test records its measurement via
-:func:`record_result`, which this conftest aggregates into a JSON
-document at session end. CI uploads that document as an artifact (see
+dedicated overhead job. Each test records its measurement via the
+``record_result`` fixture, aggregated into a JSON document at session
+end. CI uploads that document as an artifact (see
 ``.github/workflows/ci.yml`` — the ``overhead`` job).
 """
 
@@ -44,7 +44,7 @@ def _skip_unless_opted_in() -> None:
 
 
 @pytest.fixture(autouse=True)
-def reset_profiler() -> None:
+def reset_profiler():
     """Tear down any lingering profiler state before and after each test.
 
     Critical for ``test_overhead.py``, which calls ``ci.profile()`` three
@@ -57,16 +57,9 @@ def reset_profiler() -> None:
     _profiler._reset_for_tests()
 
 
-def record_result(
-    name: str,
-    value: float,
-    unit: str,
-    *,
-    budget: float | None = None,
-    baseline: float | None = None,
-    extra: dict[str, Any] | None = None,
-) -> None:
-    """Append a measurement to the session results list.
+@pytest.fixture
+def record_result() -> Callable[..., None]:
+    """Return a helper that appends a measurement to the session results.
 
     ``name`` is a stable key (used for trend comparison across runs);
     ``value`` is the measured number; ``unit`` is free-form ("us",
@@ -75,41 +68,57 @@ def record_result(
     threshold is computed from; ``extra`` carries test-specific
     context.
     """
-    _results.append(
-        {
-            "name": name,
-            "value": value,
-            "unit": unit,
-            "budget": budget,
-            "baseline": baseline,
-            "extra": extra or {},
-            "recorded_at": time.time(),
-        }
-    )
+
+    def _record(
+        name: str,
+        value: float,
+        unit: str,
+        *,
+        budget: float | None = None,
+        baseline: float | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        _results.append(
+            {
+                "name": name,
+                "value": value,
+                "unit": unit,
+                "budget": budget,
+                "baseline": baseline,
+                "extra": extra or {},
+                "recorded_at": time.time(),
+            }
+        )
+
+    return _record
 
 
-def measure(
-    fn: Callable[[], Any],
-    *,
-    warmup: int = 1,
-    repeats: int = 3,
-) -> float:
-    """Run ``fn`` ``warmup`` times untimed, then ``repeats`` times timed.
+@pytest.fixture
+def measure() -> Callable[..., float]:
+    """Return a helper that times a nullary callable.
 
-    Returns the median wall-clock time in seconds across the timed
-    repeats. ``time.perf_counter`` is monotonic and high-resolution on
-    every platform we care about. Median (not min/mean) gives a stable
-    central estimate without being pulled by a single slow outlier from
+    Runs ``warmup`` iterations untimed, then ``repeats`` timed iterations
+    with ``time.perf_counter`` and returns the median wall-clock time.
+    Median (not min/mean) is stable against a single slow outlier from
     GC or a noisy CI runner.
     """
-    for _ in range(warmup):
-        fn()
-    samples: list[float] = []
-    for _ in range(repeats):
-        t0 = time.perf_counter()
-        fn()
-        samples.append(time.perf_counter() - t0)
-    return statistics.median(samples)
+
+    def _measure(
+        fn: Callable[[], Any],
+        *,
+        warmup: int = 1,
+        repeats: int = 3,
+    ) -> float:
+        for _ in range(warmup):
+            fn()
+        samples: list[float] = []
+        for _ in range(repeats):
+            t0 = time.perf_counter()
+            fn()
+            samples.append(time.perf_counter() - t0)
+        return statistics.median(samples)
+
+    return _measure
 
 
 def _results_path() -> Path:
