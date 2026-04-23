@@ -47,6 +47,101 @@ jobs:
       - run: uv sync --all-extras
       - run: uv run pytest tests/unit tests/integration -v
 
+  framework-torch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - torch-version: '2.0.1'
+            python-version: '3.11'
+          - torch-version: '2.1.2'
+            python-version: '3.11'
+          - torch-version: '2.2.2'
+            python-version: '3.11'
+          - torch-version: '2.3.1'
+            python-version: '3.11'
+          - torch-version: '2.4.1'
+            python-version: '3.12'
+          - torch-version: '2.5.1'
+            python-version: '3.12'
+          - torch-version: '2.6.0'
+            python-version: '3.12'
+    env:
+      TORCH_VERSION: ${{ matrix.torch-version }}
+      UV_PYTHON: ${{ matrix.python-version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --extra pandas
+      - run: uv pip install "torch==${TORCH_VERSION}" --index-url https://download.pytorch.org/whl/cpu
+      - run: uv run pytest tests/unit/test_hooks_torch.py tests/unit/test_profiler.py tests/integration/test_torch_training_loop.py -v
+
+  framework-tensorflow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - tf-version: '2.14.1'
+            python-version: '3.11'
+          - tf-version: '2.15.1'
+            python-version: '3.11'
+          - tf-version: '2.16.2'
+            python-version: '3.11'
+          - tf-version: '2.17.0'
+            python-version: '3.12'
+    env:
+      TF_VERSION: ${{ matrix.tf-version }}
+      UV_PYTHON: ${{ matrix.python-version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --extra pandas
+      - run: uv pip install "tensorflow==${TF_VERSION}"
+      - run: uv run pytest tests/unit/test_hooks_tensorflow.py tests/unit/test_profiler.py -v
+
+  framework-transformers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - transformers-version: '4.41.2'
+            python-version: '3.11'
+          - transformers-version: '4.45.2'
+            python-version: '3.11'
+          - transformers-version: 'latest'
+            python-version: '3.12'
+    env:
+      TRANSFORMERS_VERSION: ${{ matrix.transformers-version }}
+      UV_PYTHON: ${{ matrix.python-version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --extra pandas
+      - run: uv pip install "torch==2.4.1" --index-url https://download.pytorch.org/whl/cpu
+      - name: Install transformers
+        run: |
+          if [ "${TRANSFORMERS_VERSION}" = "latest" ]; then
+            uv pip install --upgrade transformers "accelerate>=1.1.0"
+          else
+            uv pip install "transformers==${TRANSFORMERS_VERSION}" "accelerate>=1.1.0"
+          fi
+      - run: uv run pytest tests/unit/test_hooks_transformers.py tests/unit/test_profiler.py -v
+
   overhead:
     runs-on: ubuntu-latest
     timeout-minutes: 15
