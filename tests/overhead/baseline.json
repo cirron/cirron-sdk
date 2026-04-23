@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-04-23T00:00:00Z",
+  "host": "bootstrap-placeholder",
+  "platform": "linux-ubuntu-latest",
+  "python": "3.13",
+  "note": "These are bootstrap placeholders. Replace with values observed on GitHub Actions `overhead` job (ubuntu-latest, Python 3.13, CPU-only) in the same PR that ships SDK-44. Procedure in tests/overhead/README.md.",
+  "metrics": {
+    "profile_no_hooks_ratio": 2.0,
+    "profile_torch_hooks_ratio": 4.0
+  }
+}
