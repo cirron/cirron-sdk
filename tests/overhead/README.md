@@ -19,25 +19,26 @@ a named artifact `overhead-<sha>` with 90-day retention.
 
 ## What gets measured
 
-- `test_overhead.py` — reference loop: ResNet18, synthetic CPU data,
-  10 epochs × 50 steps. Measures three configurations (baseline,
-  `ci.profile(frameworks=[])`, `ci.profile(frameworks=["torch"])`)
-  and asserts their ratios against `baseline.json`.
+- `test_overhead.py` — reference loop: tiny two-layer MLP on
+  synthetic CPU data (2 epochs × 10 steps × batch 8). The model
+  exists to exercise the torch hook surface
+  (forward/backward/optimizer/data_load); overhead is measured as the
+  ratio between configs (baseline, `ci.profile(frameworks=[])`,
+  `ci.profile(frameworks=["torch"])`) and asserted against
+  `baseline.json` with a +20% regression tolerance.
 - `test_scope_overhead.py`, `test_mark_overhead.py`,
   `test_wrappers_overhead.py`, `test_snapshots_overhead.py` —
   per-primitive micro-budgets from SDK-9/10/14/24. Kept as
   informational tripwires alongside the reference loop.
 
-## Why the spec §6.1 budget is `xfail`
+## Why the spec §6.1 budget is not asserted
 
 Spec §6.1 targets <1% scaffold overhead and <2% with torch hooks.
 `CLAUDE.md` "Known caveats" documents that today's hot path costs
-~23μs/scope — 4–5× over the 5μs per-scope budget. The
-`test_spec_budget_wall_clock` test asserts the aspirational numbers
-under `xfail(strict=False)` so the gap stays visible in CI output
-without blocking merges. The gating regression test
-(`test_resnet18_reference_loop_overhead`) ratchets from the current
-baseline instead.
+~23μs/scope — 4–5× over the 5μs per-scope budget. The gating
+regression test ratchets from the current baseline instead, and the
+artifact JSON carries the raw ratios so anyone can compare against
+the spec targets without re-running the loop.
 
 ## Regenerating the baseline
 
