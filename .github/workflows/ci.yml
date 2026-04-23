@@ -70,6 +70,7 @@ jobs:
             python-version: '3.12'
     env:
       TORCH_VERSION: ${{ matrix.torch-version }}
+      UV_PYTHON: ${{ matrix.python-version }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -97,6 +98,7 @@ jobs:
             python-version: '3.12'
     env:
       TF_VERSION: ${{ matrix.tf-version }}
+      UV_PYTHON: ${{ matrix.python-version }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -122,6 +124,7 @@ jobs:
             python-version: '3.12'
     env:
       TRANSFORMERS_VERSION: ${{ matrix.transformers-version }}
+      UV_PYTHON: ${{ matrix.python-version }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
