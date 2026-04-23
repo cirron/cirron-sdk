@@ -483,7 +483,6 @@ all = [
     { name = "snowflake-connector-python" },
     { name = "tensorflow" },
     { name = "torch" },
-    { name = "torchvision" },
     { name = "transformers" },
 ]
 arrow = [
@@ -509,6 +508,9 @@ image = [
 ]
 mysql = [
     { name = "pymysql" },
+]
+overhead = [
+    { name = "torchvision" },
 ]
 pandas = [
     { name = "pandas" },
@@ -542,7 +544,6 @@ tensorflow = [
 ]
 torch = [
     { name = "torch" },
-    { name = "torchvision" },
 ]
 transformers = [
     { name = "accelerate" },
@@ -584,10 +585,10 @@ requires-dist = [
     { name = "snowflake-connector-python", marker = "extra == 'snowflake'", specifier = ">=3.0" },
     { name = "tensorflow", marker = "extra == 'tensorflow'", specifier = ">=2.14" },
     { name = "torch", marker = "extra == 'torch'", specifier = ">=2.0" },
-    { name = "torchvision", marker = "extra == 'torch'", specifier = ">=0.15" },
+    { name = "torchvision", marker = "extra == 'overhead'", specifier = ">=0.15" },
     { name = "transformers", marker = "extra == 'transformers'", specifier = ">=4.41" },
 ]
-provides-extras = ["pandas", "polars", "arrow", "torch", "tensorflow", "transformers", "sklearn", "hf", "image", "s3", "gcs", "azure", "postgres", "mysql", "databricks", "snowflake", "sql", "dotenv", "safetensors", "all"]
+provides-extras = ["pandas", "polars", "arrow", "torch", "overhead", "tensorflow", "transformers", "sklearn", "hf", "image", "s3", "gcs", "azure", "postgres", "mysql", "databricks", "snowflake", "sql", "dotenv", "safetensors", "all"]
 
 [package.metadata.requires-dev]
 dev = [
