@@ -17,7 +17,7 @@ dependencies = [
 pandas = ["pandas>=2.0"]
 polars = ["polars>=0.20"]
 arrow = ["pyarrow>=14.0"]
-torch = ["torch>=2.0"]
+torch = ["torch>=2.0", "torchvision>=0.15"]
 tensorflow = ["tensorflow>=2.14"]
 transformers = ["transformers>=4.41", "accelerate>=1.1.0"]
 sklearn = ["scikit-learn>=1.3"]
