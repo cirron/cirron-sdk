@@ -70,6 +70,11 @@ class _WrappedEstimator:
 
 
 def _wrap_method(estimator: Any, method_name: str, method: Any) -> Any:
+    # User-code exception contract (spec §6.2 / SDK-46): exceptions raised
+    # inside the underlying sklearn ``fit``/``predict``/etc. propagate to
+    # the caller. Swallowing them would hide real bugs in the user's
+    # pipeline. The ``ci.scope`` context manager still pops cleanly on
+    # exception so the scope tree stays consistent.
     est_class = type(estimator).__name__
 
     def _wrapped(*args: Any, **kwargs: Any) -> Any:

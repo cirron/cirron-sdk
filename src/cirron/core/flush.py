@@ -265,6 +265,16 @@ class FlushThread(threading.Thread):
             self._tick()
 
     def _tick(self) -> None:
+        # SDK-46 safety net: any bug inside the tick path becomes a logged
+        # WARNING instead of a thread death. The supervisor still catches
+        # truly fatal failures (OOM, abort) — this just prevents a bad
+        # tick from burning one of the three supervisor lives.
+        try:
+            self._tick_body()
+        except Exception as exc:
+            log.warning("cirron flush tick failed: %s", exc, exc_info=True)
+
+    def _tick_body(self) -> None:
         # Drain snapshots into a local list first so we can rewrite their
         # ``blob_uri`` with the remote URI returned by ``upload_blob``
         # before the batch reaches the transport. Uploading *first* also
