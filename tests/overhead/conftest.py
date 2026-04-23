@@ -38,19 +38,21 @@ def _overhead_enabled() -> bool:
 @pytest.fixture(autouse=True)
 def _skip_unless_opted_in() -> None:
     if not _overhead_enabled():
-        pytest.skip(
-            f"set {_OVERHEAD_ENV}=1 (or run `pytest tests/overhead`) to execute overhead tests"
-        )
+        pytest.skip(f"set {_OVERHEAD_ENV}=1 to execute overhead tests")
 
 
 @pytest.fixture(autouse=True)
 def reset_profiler():
-    """Tear down any lingering profiler state before and after each test.
+    """Isolate every overhead test from residual global profiler state.
 
-    Critical for ``test_overhead.py``, which calls ``ci.profile()`` three
-    times in sequence — without a full reset the second call no-ops and
-    the "with hooks" measurement silently reuses the "no hooks"
-    configuration.
+    ``Profiler.shutdown()`` clears the module singleton on its own, so a
+    second ``ci.profile()`` call is *not* a no-op by itself. But the
+    overhead suite runs multiple profile/shutdown cycles per test and
+    touches broader state — flush thread, watched-model weakref, blob
+    queue, snapshot buffer, default ``Cirron`` — that shutdown doesn't
+    have to reset. ``_reset_for_tests`` does reset all of it, so we wrap
+    each test in a clean boundary rather than depending on any specific
+    shutdown path.
     """
     _profiler._reset_for_tests()
     yield

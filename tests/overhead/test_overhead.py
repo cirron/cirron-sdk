@@ -7,11 +7,12 @@ Measures wall-clock overhead of three configurations:
 
 Asserts each measured overhead ratio stays within a regression
 tolerance of the committed baseline (``baseline.json``). The spec §6.1
-targets (<1% / <2%) are not asserted — the current hot path is known
-to exceed them (see ``CLAUDE.md`` "Known caveats") and this suite's
-job is to catch *regressions* from today's behavior, not the known
-gap. The recorded JSON artifact carries the raw ratios so a reader
-can compare against the spec targets without re-running the loop.
+targets (<1% scaffold, <2% torch hooks) are not asserted — the
+current CPU torch-hook path exceeds those goals in this reference
+loop, so this suite's job is to catch *regressions* from today's
+committed behavior rather than fail on the known gap. The recorded
+JSON artifact carries the raw ratios so a reader can compare against
+the spec targets without re-running the loop.
 
 The model is a two-layer MLP — we're exercising the hook surface
 (forward / backward / optimizer_step / data_load), not training
