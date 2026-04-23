@@ -43,7 +43,7 @@ the spec targets without re-running the loop.
 ## Regenerating the baseline
 
 `tests/overhead/baseline.json` pins the expected overhead ratios.
-Regression tolerance is +20% before `test_resnet18_reference_loop_overhead`
+Regression tolerance is +20% before `test_reference_loop_overhead`
 fails. When an intentional change moves the baseline (e.g. an
 optimization that lowers overhead, or a correctness fix that raises
 it), update `baseline.json` in the same PR:
