@@ -163,3 +163,6 @@ cirron/.DS_Store
 cirron/model/.DS_Store
 temp/
 .cirron
+
+# overhead benchmark results (per-run, uploaded by CI as an artifact)
+tests/overhead/results/
