@@ -16,8 +16,10 @@ torch/tf installed.
 from __future__ import annotations
 
 import logging
+import os
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
 from cirron.snapshots.types import TraceSnapshot
@@ -29,6 +31,37 @@ log = logging.getLogger("cirron.snapshots.stats")
 
 HISTOGRAM_BINS = 16
 _ACTIVE_MODES = ("stats", "sampled", "full")
+
+# Parallelism threshold: only pay thread-pool setup cost for models with
+# enough tensors to amortize it. ResNet50 has ~161 tensors; small models
+# (a single linear layer, a test fixture) stay on the serial path.
+_PARALLEL_MIN_TENSORS = 32
+# Small worker count — torch reductions release the GIL during ``.item()``
+# / ``.tolist()`` but the CPU-bound math between syncs doesn't, so more
+# than ~4 workers quickly hits diminishing returns. Capped at the host's
+# reported CPU count so we don't oversubscribe tiny containers.
+_PARALLEL_MAX_WORKERS = max(1, min(4, (os.cpu_count() or 1)))
+# Persistent pool keeps worker threads warm across epochs — spinning up a
+# new ``ThreadPoolExecutor`` per snapshot measurably inflates variance and
+# occasionally pushes a single epoch past the 50 ms budget. Lazily created
+# on first call so the SDK stays importable without any thread handles and
+# cleanly releases them at interpreter shutdown via ``atexit``.
+_stats_pool: ThreadPoolExecutor | None = None
+
+
+def _get_stats_pool() -> ThreadPoolExecutor:
+    global _stats_pool
+    pool = _stats_pool
+    if pool is None:
+        import atexit
+
+        pool = ThreadPoolExecutor(
+            max_workers=_PARALLEL_MAX_WORKERS,
+            thread_name_prefix="cirron-stats",
+        )
+        _stats_pool = pool
+        atexit.register(pool.shutdown, wait=False)
+    return pool
 
 
 def _is_torch_tensor(tensor: Any) -> bool:
@@ -106,8 +139,15 @@ def _empty_stats() -> dict[str, Any]:
 def _tensor_stats_torch(tensor: Any) -> dict[str, Any]:
     """Fast path for ``torch.Tensor`` — uses native reductions and
     ``torch.histc`` to skip the host-side copy that dominates the numpy
-    path. Measured 4× faster on a 1M-param float32 tensor, which is what
-    keeps ``capture_weight_stats`` under the 50ms/epoch budget."""
+    path.
+
+    Reductions are batched: ``aminmax`` computes min/max in one pass, and
+    mean/std/min/max/norm are materialized through a *single*
+    ``torch.stack(...).tolist()`` round-trip. The previous implementation
+    called ``.item()`` five times per tensor; on a ResNet50-sized model
+    (~161 tensors) that was ~800 CPU syncs and dominated the snapshot
+    budget.
+    """
     import torch
 
     t = tensor.detach()
@@ -119,28 +159,48 @@ def _tensor_stats_torch(tensor: Any) -> dict[str, Any]:
     flat = t.reshape(-1)
     if flat.numel() == 0:
         return _empty_stats()
-    mean = float(flat.mean().item())
-    std = float(flat.std(unbiased=False).item())
-    lo = float(flat.min().item())
-    hi = float(flat.max().item())
-    norm = float(torch.linalg.vector_norm(flat).item())
+
+    # Single-pass min/max + fused scalar materialization. Stacking five
+    # 0-d tensors and calling ``.tolist()`` once collapses the host sync
+    # into a single round-trip instead of five.
+    lo_t, hi_t = torch.aminmax(flat)
+    mean_t = flat.mean()
+    std_t = flat.std(unbiased=False)
+    norm_t = torch.linalg.vector_norm(flat)
+    target_dtype = mean_t.dtype
+    mean, std, lo, hi, norm = torch.stack(
+        [
+            mean_t,
+            std_t,
+            lo_t.to(target_dtype),
+            hi_t.to(target_dtype),
+            norm_t,
+        ],
+        dim=0,
+    ).tolist()
+
     # ``torch.histc`` requires a range; reuse the min/max we already
     # computed. When ``lo == hi`` (constant tensor) widen by a tiny
-    # epsilon so torch doesn't return an all-zero histogram.
+    # epsilon so torch doesn't return an all-zero histogram, but keep the
+    # reported ``max`` equal to ``min`` in that degenerate case.
     if lo == hi:
-        hi = lo + 1.0
-    counts_t = torch.histc(flat, bins=HISTOGRAM_BINS, min=lo, max=hi)
-    step = (hi - lo) / HISTOGRAM_BINS
+        hist_hi = lo + 1.0
+        reported_max: float = lo
+    else:
+        hist_hi = hi
+        reported_max = hi
+    counts_t = torch.histc(flat, bins=HISTOGRAM_BINS, min=lo, max=hist_hi)
+    step = (hist_hi - lo) / HISTOGRAM_BINS
     bins = [lo + step * i for i in range(HISTOGRAM_BINS + 1)]
     return {
         "mean": mean,
         "std": std,
         "min": lo,
-        "max": hi if hi != lo + 1.0 else lo,
+        "max": reported_max,
         "norm": norm,
         "histogram": {
             "bins": bins,
-            "counts": [int(c) for c in counts_t.tolist()],
+            "counts": counts_t.to(torch.int64).tolist(),
         },
     }
 
@@ -258,6 +318,27 @@ def _make_record(
     )
 
 
+def _make_records_parallel(
+    items: list[tuple[str, Any]],
+    span_id: str,
+    ts_ns: int,
+    name_fmt: str = "{name}",
+) -> list[TraceSnapshot]:
+    """Compute records across ``items`` in parallel for models large enough
+    to amortize the thread-pool setup cost. Torch reductions release the
+    GIL inside ``.item()`` / ``.tolist()``, so overlapping the per-tensor
+    work halves wall time on ResNet50-scale models."""
+    results: list[TraceSnapshot | None] = [None] * len(items)
+    pool = _get_stats_pool()
+    futs = [
+        pool.submit(_make_record, span_id, name_fmt.format(name=name), tensor, ts_ns)
+        for name, tensor in items
+    ]
+    for i, fut in enumerate(futs):
+        results[i] = fut.result()
+    return [r for r in results if r is not None]
+
+
 def capture_weight_stats(model: Any, span_id: str) -> list[TraceSnapshot]:
     """Compute stats for every parameter tensor on ``model``.
 
@@ -268,8 +349,11 @@ def capture_weight_stats(model: Any, span_id: str) -> list[TraceSnapshot]:
     readable tensor.
     """
     ts_ns = time.time_ns()
+    items = _iter_named_params(model)
+    if len(items) >= _PARALLEL_MIN_TENSORS:
+        return _make_records_parallel(items, span_id, ts_ns)
     out: list[TraceSnapshot] = []
-    for name, tensor in _iter_named_params(model):
+    for name, tensor in items:
         rec = _make_record(span_id, name, tensor, ts_ns)
         if rec is not None:
             out.append(rec)
