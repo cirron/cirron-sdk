@@ -48,7 +48,7 @@ stay stable within a major SDK version.
   "index": 0,
   "start_ns": 0,
   "end_ns": 0,
-  "cpu_ns": 0,
+  "cpu_ns": null,
   "gpu_ns": null,
   "memory_peak_bytes": null,
   "thread_id": 140000000,
@@ -59,10 +59,13 @@ stay stable within a major SDK version.
 }
 ```
 
-Fields mirror the `TraceSpan` model in platform spec §5.4 with
-`mark_ids` holding the IDs of every mark attached to this span. `gpu_ns`
-and `memory_peak_bytes` are `null` until framework hooks (SDK-20 et al.)
-populate them.
+Fields mirror the `TraceSpan` model in platform spec §5.4. `mark_ids`
+holds the IDs of every mark attached to this span. `cpu_ns`, `gpu_ns`,
+and `memory_peak_bytes` are `null` until hooks or opt-in flags populate
+them — `cpu_ns` capture is off by default (saves ~400 ns per push/pop
+on Linux; flip on via `cirron.core.scope.set_capture_cpu_time(True)`
+if you need wall-vs-CPU deltas locally), `gpu_ns` is set by torch CUDA
+event pairs in forward/backward, and `memory_peak_bytes` is reserved.
 
 ### `marks[]`
 
@@ -78,6 +81,12 @@ populate them.
   "kind": "point | summary"
 }
 ```
+
+Mark ids are 32-char hex strings generated via `os.urandom(16).hex()`
+— globally unique (2⁻¹²⁸ collision), matching the span-id format.
+`TraceMark.id` is the primary key on the platform's MySQL table and
+the worker's idempotency gate relies on the SDK supplying a stable
+unique value, so per-process counters are not safe here.
 
 A mark attaches to the innermost open scope on the producing thread. When
 no scope is open, it attaches to the `cirron.session` scope opened by
