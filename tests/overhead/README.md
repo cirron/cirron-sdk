@@ -31,26 +31,28 @@ a named artifact `overhead-<sha>` with 90-day retention.
   per-primitive micro-budgets from SDK-9/10/14/24. Kept as
   informational tripwires alongside the reference loop.
 
-## Spec §6.1 budgets
+## Budgets and latest numbers
 
-Spec §6.1 budgets (`docs/spec.md`):
+Each micro-benchmark asserts a fixed budget in its test file; the
+reference-loop test ratchets against `baseline.json` with a +20%
+regression tolerance.
 
-| Metric                                 | Budget       | Current (CI, ubuntu-x86_64) |
-|----------------------------------------|--------------|-----------------------------|
-| `ci.scope()` / `ci.mark()` per call    | ≤ 5 μs       | scope ≈ 3.75 μs, mark ≈ 2.63 μs |
-| `ci.epochs()` / `ci.batches()` per iter| ≤ 10 μs      | ≈ 4.07 μs                   |
-| Stats snapshot per epoch boundary      | ≤ 50 ms      | ≈ 215 ms on CPU; see below  |
-| `profile()` defaults (full loop)       | ≤ 1% wall    | ratio 0.24 on CI; `baseline.json` pins 0.2949 |
-| `profile()` + torch hooks              | ≤ 2% wall    | ratio 0.61 on CI; `baseline.json` pins 0.8440 |
+| Test                                    | Budget        | Latest observed (x86_64) |
+|-----------------------------------------|---------------|---------------------------------|
+| `test_scope_overhead.py`                | ≤ 5 μs/cycle  | ~4.4 μs                         |
+| `test_mark_overhead.py`                 | ≤ 5 μs/call   | ~3.7 μs                         |
+| `test_wrappers_overhead.py`             | ≤ 10 μs/iter  | ~4.8 μs                         |
+| `test_snapshots_overhead.py` (CUDA)     | ≤ 50 ms       | — (no CUDA runner today)        |
+| `test_snapshots_overhead.py` (CPU)      | ≤ 250 ms      | ~215 ms                         |
+| `test_overhead.py` (profile no hooks)   | baseline×1.2  | ratio 0.296                     |
+| `test_overhead.py` (profile + torch)    | baseline×1.2  | ratio 0.613                     |
 
-**Snapshot budget is hardware-dependent.** The 50 ms figure is
-calibrated against spec §6.1's "single A100, tensors on-device"
-reference. GitHub Actions ubuntu-latest is 2 shared x86_64 vCPUs, CPU
-only — the same ResNet50 traversal is memory-bandwidth-bound per
-tensor and structurally can't hit 50 ms even with fully fused
-reductions. `test_snapshots_overhead.py` applies the strict 50 ms
-budget when `torch.cuda.is_available()` and 250 ms otherwise (~30%
-headroom over the current ~215 ms best case). See the test docstring.
+**Snapshot budget is hardware-dependent.** Stats capture on CUDA
+tensors uses device-side kernels and completes in milliseconds; on
+CPU the same ResNet50 traversal is memory-bandwidth-bound across
+every parameter tensor and runs an order of magnitude slower.
+`test_snapshots_overhead.py` applies the strict 50 ms budget when
+`torch.cuda.is_available()` and a relaxed 250 ms otherwise.
 
 ## Regenerating the baseline
 
