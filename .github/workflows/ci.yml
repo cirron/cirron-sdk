@@ -156,7 +156,11 @@ jobs:
         with:
           python-version: '3.13'
       - uses: astral-sh/setup-uv@v5
-      - run: uv sync --all-extras
+      # Overhead suite only exercises torch + torchvision. Syncing
+      # --all-extras pulls in tensorflow, transformers, SQL drivers,
+      # cloud-storage SDKs — tens of minutes of wheel downloads for
+      # deps this job doesn't use.
+      - run: uv sync --extra torch --extra overhead
       - run: uv run pytest tests/overhead -v --tb=short
       - uses: actions/upload-artifact@v4
         if: always()
