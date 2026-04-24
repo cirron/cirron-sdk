@@ -94,7 +94,7 @@ class Scope:
         attrs: dict[str, Any],
         parent_id: str | None,
         start_ns: int,
-        cpu_start_ns: int,
+        cpu_start_ns: int | None,
         thread_id: int,
         pid: int,
         rank: int,
@@ -105,6 +105,13 @@ class Scope:
         self.attrs = attrs
         self.parent_id = parent_id
         self.start_ns = start_ns
+        # ``None`` when ``_CAPTURE_CPU_TIME`` was ``False`` at push time.
+        # Stored per-scope (not re-read from the global flag at pop) so
+        # toggling ``set_capture_cpu_time`` while a scope is open can't
+        # produce a ``process_time_ns() - 0`` bogus ``cpu_ns``. Matching
+        # ``None`` check at pop is the sole gate for populating
+        # ``cpu_ns`` — if the flag changes mid-scope, the scope's
+        # original decision stands.
         self.cpu_start_ns = cpu_start_ns
         self.thread_id = thread_id
         self.pid = pid
@@ -247,7 +254,7 @@ class ScopeStack:
             attrs,
             parent_id,
             _time_ns(),
-            _process_time_ns() if _CAPTURE_CPU_TIME else 0,
+            _process_time_ns() if _CAPTURE_CPU_TIME else None,
             state.thread_id,
             self._pid,
             self._rank,
@@ -278,7 +285,10 @@ class ScopeStack:
         if scope_obj.end_ns is not None:
             return scope_obj
         scope_obj.end_ns = _time_ns()
-        if _CAPTURE_CPU_TIME:
+        # Decision was made at push time (stored on the scope itself).
+        # ``_CAPTURE_CPU_TIME`` toggling mid-scope doesn't change the
+        # outcome here.
+        if scope_obj.cpu_start_ns is not None:
             scope_obj.cpu_ns = _process_time_ns() - scope_obj.cpu_start_ns
         state.closed.append(scope_obj)
         return scope_obj
@@ -374,7 +384,7 @@ class ScopeStack:
         """
         if scope_obj.end_ns is not None:
             return
-        if _CAPTURE_CPU_TIME:
+        if scope_obj.cpu_start_ns is not None:
             scope_obj.cpu_ns = _process_time_ns() - scope_obj.cpu_start_ns
         # end_ns is written last so readers see a consistent snapshot: any
         # thread observing ``end_ns is not None`` will also see the final
@@ -416,7 +426,7 @@ class ScopeStack:
             return
         if scope_obj.end_ns is not None:
             return
-        if _CAPTURE_CPU_TIME:
+        if scope_obj.cpu_start_ns is not None:
             scope_obj.cpu_ns = _process_time_ns() - scope_obj.cpu_start_ns
         scope_obj.end_ns = _time_ns()
         state.closed.append(scope_obj)
