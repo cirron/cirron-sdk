@@ -458,11 +458,9 @@ name = "cirron-sdk"
 version = "0.0.1"
 source = { editable = "." }
 dependencies = [
-    { name = "keras" },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "requests" },
-    { name = "tf-keras" },
 ]
 
 [package.optional-dependencies]
@@ -473,6 +471,7 @@ all = [
     { name = "databricks-sql-connector" },
     { name = "datasets" },
     { name = "google-cloud-storage" },
+    { name = "keras" },
     { name = "pandas" },
     { name = "pillow" },
     { name = "polars" },
@@ -484,6 +483,7 @@ all = [
     { name = "scikit-learn" },
     { name = "snowflake-connector-python" },
     { name = "tensorflow" },
+    { name = "tf-keras" },
     { name = "torch" },
     { name = "transformers" },
 ]
@@ -542,7 +542,9 @@ sql = [
     { name = "snowflake-connector-python" },
 ]
 tensorflow = [
+    { name = "keras" },
     { name = "tensorflow" },
+    { name = "tf-keras" },
 ]
 torch = [
     { name = "torch" },
@@ -572,7 +574,7 @@ requires-dist = [
     { name = "databricks-sql-connector", marker = "extra == 'databricks'", specifier = ">=3.0" },
     { name = "datasets", marker = "extra == 'hf'", specifier = ">=2.14" },
     { name = "google-cloud-storage", marker = "extra == 'gcs'", specifier = ">=2.10" },
-    { name = "keras", specifier = ">=3" },
+    { name = "keras", marker = "extra == 'tensorflow'", specifier = ">=3" },
     { name = "pandas", marker = "extra == 'pandas'", specifier = ">=2.0" },
     { name = "pillow", marker = "extra == 'image'", specifier = ">=10.0" },
     { name = "polars", marker = "extra == 'polars'", specifier = ">=0.20" },
@@ -587,7 +589,7 @@ requires-dist = [
     { name = "scikit-learn", marker = "extra == 'sklearn'", specifier = ">=1.3" },
     { name = "snowflake-connector-python", marker = "extra == 'snowflake'", specifier = ">=3.0" },
     { name = "tensorflow", marker = "extra == 'tensorflow'", specifier = ">=2.14" },
-    { name = "tf-keras", specifier = ">=2.21.0" },
+    { name = "tf-keras", marker = "extra == 'tensorflow'", specifier = ">=2.21.0" },
     { name = "torch", marker = "extra == 'torch'", specifier = ">=2.0" },
     { name = "torchvision", marker = "extra == 'overhead'", specifier = ">=0.15" },
     { name = "transformers", marker = "extra == 'transformers'", specifier = ">=4.41" },
