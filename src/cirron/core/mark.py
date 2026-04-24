@@ -16,7 +16,6 @@ import threading
 import time
 import warnings
 from collections import deque
-from dataclasses import dataclass, field
 from typing import Any
 
 from cirron.core.scope import get_current_scope
@@ -51,9 +50,12 @@ def get_fallback_span_id() -> str | None:
 
 MARK_KIND_POINT = "point"
 MARK_KIND_SUMMARY = "summary"
+# ``frozenset`` membership is O(1) vs tuple's O(n). The hot-path cost of
+# the kind check is tiny but the call count is high — 1M marks/s under
+# the regression test — and frozenset vs tuple is a free swap.
+_VALID_KINDS = frozenset({MARK_KIND_POINT, MARK_KIND_SUMMARY})
 
 
-@dataclass(slots=True)
 class Mark:
     """A single scalar value attached to a span. Shape mirrors the
     platform ``TraceMark`` model (spec §5.4).
@@ -62,16 +64,38 @@ class Mark:
     value for the span: per-step losses use ``"point"``; end-of-epoch
     values use ``"summary"``. Consumers can render one as a line plot
     and the other as a single value on the span.
+
+    Hand-rolled (not a ``@dataclass``) for the same reason as
+    ``Scope``: a positional ``__init__`` + ``__slots__`` shaves a few
+    hundred ns per call off of ``ci.mark()``, which matters against the
+    3 μs budget on slow CI cores.
     """
 
-    id: str
-    span_id: str
-    name: str
-    value_type: str  # "float" | "int" | "string" | "bool"
-    value: float | int | str | bool
-    attrs: dict[str, Any] = field(default_factory=dict)
-    ts_ns: int = 0
-    kind: str = MARK_KIND_POINT
+    __slots__ = ("id", "span_id", "name", "value_type", "value", "attrs", "ts_ns", "kind")
+
+    def __init__(
+        self,
+        id: str,
+        span_id: str,
+        name: str,
+        value_type: str,
+        value: float | int | str | bool,
+        attrs: dict[str, Any] | None = None,
+        ts_ns: int = 0,
+        kind: str = MARK_KIND_POINT,
+    ) -> None:
+        self.id = id
+        self.span_id = span_id
+        self.name = name
+        self.value_type = value_type
+        self.value = value
+        # Defensive: the dataclass version defaulted ``attrs`` via
+        # ``default_factory=dict`` so callers could omit it. Keep the
+        # same ergonomics — tests construct ``Mark`` directly with
+        # kwargs and rely on this default.
+        self.attrs = attrs if attrs is not None else {}
+        self.ts_ns = ts_ns
+        self.kind = kind
 
 
 class _MarkState:
@@ -196,13 +220,33 @@ _default_buffer = MarkBuffer()
 
 # Cache hot attribute lookups as module-level names. The 3μs/call budget
 # is tight enough that removing per-call attribute resolution matters.
-# Use ``os.urandom(16).hex()`` instead of ``uuid.uuid4().hex``: uuid4
-# internally calls urandom(16) and wraps the result in a UUID object
-# whose ``.hex`` formats the bytes — the wrapper is the slow part, and
-# for mark ids a 32-char hex string is just as unique.
-_append_default = _default_buffer.append
-_urandom = os.urandom
+# We also bind the *buffer's* ``threading.local`` and ``_states`` dict so
+# ``mark()`` can do a cached state lookup without walking through the
+# ``MarkBuffer.append`` method (which hits the ``_state`` property +
+# ``_get_state()`` try/except on every call — a measurable chunk of the
+# 3 μs/call budget on the ubuntu CI runner).
 _time_ns = time.time_ns
+_default_buffer_local = _default_buffer._local
+_default_buffer_capacity = _default_buffer._capacity
+
+
+def _get_default_mark_state() -> _MarkState:
+    """Cold path for the inlined ``mark()`` append — called once per
+    producer thread to create and register a ``_MarkState``. Kept out
+    of ``mark()`` so the hot path stays small."""
+    return _default_buffer._get_state()
+
+
+# Mark ids must be globally unique — ``TraceMark.id`` is the primary key
+# on the platform's MySQL table and the worker's idempotency gate
+# (``createMany({ skipDuplicates: true })``) treats duplicate ids as
+# retries and silently drops them. A per-process counter would collide
+# across concurrent runs and silently lose data. ``os.urandom(16).hex()``
+# matches span ids (same format, same 2⁻¹²⁸ collision guarantee); idem-
+# potency of retried batches still holds because the SDK buffers the
+# generated id and re-sends the exact same bytes on retry. This is
+# unchanged from pre-round-3.
+_urandom = os.urandom
 
 
 def get_default_mark_buffer() -> MarkBuffer:
@@ -234,7 +278,7 @@ def mark(
     (tests, pre-profile imports) it falls back to the legacy ``"root"``
     sentinel.
     """
-    if kind not in (MARK_KIND_POINT, MARK_KIND_SUMMARY):
+    if kind not in _VALID_KINDS:
         raise ValueError(
             f"ci.mark() kind must be {MARK_KIND_POINT!r} or {MARK_KIND_SUMMARY!r}; got {kind!r}"
         )
@@ -282,17 +326,28 @@ def mark(
         # legacy ``"root"`` sentinel only when no session is open.
         span_id = _fallback_span_id or ROOT_SPAN_ID
     mark_id = _urandom(16).hex()
-    _append_default(
-        Mark(
-            id=mark_id,
-            span_id=span_id,
-            name=name,
-            value_type=value_type,
-            value=value,
-            attrs=attrs,
-            ts_ns=_time_ns(),
-            kind=kind,
-        )
-    )
+    mark_obj = Mark(mark_id, span_id, name, value_type, value, attrs, _time_ns(), kind)
+    # Inline buffer append: bypass ``MarkBuffer.append`` → ``_state``
+    # property → ``_get_state()`` on every call. Fast path is the
+    # thread-local attribute read; fall back to the cold-path helper
+    # on the first call per thread.
+    try:
+        mstate = _default_buffer_local.state
+    except AttributeError:
+        mstate = _get_default_mark_state()
+    mbuf = mstate.buffer
+    if len(mbuf) == _default_buffer_capacity:
+        mstate.drop_count += 1
+        if not mstate.warned_overflow:
+            warnings.warn(
+                f"cirron.mark buffer full (capacity={_default_buffer_capacity}); "
+                "oldest marks on this thread will be dropped silently.",
+                stacklevel=2,
+            )
+            mstate.warned_overflow = True
+        wake = _default_buffer._wake_event
+        if wake is not None:
+            wake.set()
+    mbuf.append(mark_obj)
     if scope is not None:
         scope.marks.append(mark_id)
