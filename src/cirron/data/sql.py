@@ -545,9 +545,11 @@ def execute_to_pandas(cursor: Any, query: str) -> Any:
     try:
         import pandas as pd
     except ImportError as e:
+        from cirron.core.deps import install_hint
+
         raise CirronDependencyError(
             "SQL sources need pandas to materialize results. "
-            "Install with: pip install 'cirron-sdk[pandas]'"
+            f"Install with: {install_hint(['pandas'])}"
         ) from e
 
     cursor.execute(query)
@@ -575,7 +577,9 @@ def require_driver(module_name: str, extra_name: str) -> Any:
     try:
         return importlib.import_module(module_name)
     except ImportError as e:
+        from cirron.core.deps import install_hint
+
         raise CirronDependencyError(
             f"the {extra_name!r} source backend requires the {module_name!r} "
-            f"driver. Install with: pip install 'cirron-sdk[{extra_name}]'"
+            f"driver. Install with: {install_hint([extra_name])}"
         ) from e
