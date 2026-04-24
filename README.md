@@ -259,6 +259,37 @@ api_key = ci.secret("openai-api-key")    # mounted by the platform at runtime
 
 Secrets are scoped on the platform (workspace, pipeline, deployment), are never logged, never included in traces, and never flushed to disk. Raises `CirronSecretNotFound` with a clear message if the secret isn't mounted.
 
+## `deps()` — fail fast on missing extras
+
+Optional extras (`torch`, `tensorflow`, `pandas`, `datasets`, SQL drivers, ...) are pip-install-gated so the core package stays small. `ci.deps()` reports what's present and, when called with required names, raises immediately with a combined `pip install` command — useful at the top of a long training script, or in library code that wraps the SDK:
+
+```python
+import cirron as ci
+
+# No args — full report, keyed by import name. Uses find_spec so
+# heavy frameworks (torch, tensorflow, transformers) are never
+# actually imported; cheap to call at script startup.
+deps = ci.deps()
+# {'pandas': '2.3.3', 'polars': None, 'torch': '2.6.0', 'datasets': None, ...}
+
+if deps["polars"]:
+    df = ci.load("./data.parquet", as_="polars")
+else:
+    df = ci.load("./data.parquet")  # pandas fallback
+
+# Fail fast at script startup — raises CirronDependencyError listing
+# every missing dep at once with a combined install command, rather
+# than ImportError 40 minutes into training.
+ci.deps("torch", "pandas", "transformers")
+# CirronDependencyError: Missing required dependencies:
+#   - transformers: pip install 'cirron-sdk[transformers]'
+# Or install all together: pip install 'cirron-sdk[transformers]'
+```
+
+Accepts either the import name (`"datasets"`, `"sklearn"`) or the pyproject extras name (`"hf"`, `"sklearn"`). Unknown names raise `ValueError` — that's a caller bug, not a missing dep.
+
+The in-process equivalent of the `cirron doctor` CLI (which ships in the sibling `cirron-cli` repo and inspects the installed `cirron-sdk` METADATA from outside Python). Both read from the same `pyproject.toml` extras list.
+
 ## Configuration
 
 For the 90% case, use the module-level functions. For custom endpoints, output paths, or multi-workspace setups, instantiate the class directly.
@@ -326,6 +357,7 @@ Shipped:
 - `map=` row-wise transforms at load time, plus `@ci.map` for batch-wise
 - Size-tier guardrails: `<1 GB` silent, `<10 GB` logs a warning with narrowing hints, `≥10 GB` raises `CirronDataSizeError` unless `confirm_large=True` (thresholds configurable via `Cirron(load_warn_bytes=, load_max_bytes=)`)
 - Platform bucket resolver (SDK-side client for `GET /v1/datasets/resolve`)
+- `ci.deps()` — in-process extras check; reports installed versions, or raises `CirronDependencyError` listing every missing dep with a combined `pip install` command
 
 Coming:
 
