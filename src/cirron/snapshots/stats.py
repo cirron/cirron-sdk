@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -45,22 +46,32 @@ _PARALLEL_MAX_WORKERS = max(1, min(4, (os.cpu_count() or 1)))
 # new ``ThreadPoolExecutor`` per snapshot measurably inflates variance and
 # occasionally pushes a single epoch past the 50 ms budget. Lazily created
 # on first call so the SDK stays importable without any thread handles and
-# cleanly releases them at interpreter shutdown via ``atexit``.
+# cleanly releases them at interpreter shutdown via ``atexit``. A lock
+# guards first-time construction so two concurrent callers can't each
+# build a pool and leak threads / duplicate the atexit handler.
 _stats_pool: ThreadPoolExecutor | None = None
+_stats_pool_lock = threading.Lock()
 
 
 def _get_stats_pool() -> ThreadPoolExecutor:
     global _stats_pool
     pool = _stats_pool
-    if pool is None:
-        import atexit
+    if pool is not None:
+        return pool
+    with _stats_pool_lock:
+        # Double-checked: another thread may have initialized the pool
+        # while we were waiting on the lock. Reuse it instead of
+        # constructing another.
+        pool = _stats_pool
+        if pool is None:
+            import atexit
 
-        pool = ThreadPoolExecutor(
-            max_workers=_PARALLEL_MAX_WORKERS,
-            thread_name_prefix="cirron-stats",
-        )
-        _stats_pool = pool
-        atexit.register(pool.shutdown, wait=False)
+            pool = ThreadPoolExecutor(
+                max_workers=_PARALLEL_MAX_WORKERS,
+                thread_name_prefix="cirron-stats",
+            )
+            atexit.register(pool.shutdown, wait=False)
+            _stats_pool = pool
     return pool
 
 
