@@ -220,17 +220,30 @@ _default_buffer = MarkBuffer()
 
 # Cache hot attribute lookups as module-level names. The 3μs/call budget
 # is tight enough that removing per-call attribute resolution matters.
-_append_default = _default_buffer.append
+# We also bind the *buffer's* ``threading.local`` and ``_states`` dict so
+# ``mark()`` can do a cached state lookup without walking through the
+# ``MarkBuffer.append`` method (which hits the ``_state`` property +
+# ``_get_state()`` try/except on every call — a measurable chunk of the
+# 3 μs/call budget on the ubuntu CI runner).
 _time_ns = time.time_ns
+_default_buffer_local = _default_buffer._local
+_default_buffer_capacity = _default_buffer._capacity
+
+
+def _get_default_mark_state() -> _MarkState:
+    """Cold path for the inlined ``mark()`` append — called once per
+    producer thread to create and register a ``_MarkState``. Kept out
+    of ``mark()`` so the hot path stays small."""
+    return _default_buffer._get_state()
+
 
 # Mark ids only need to be unique within this process (the flush thread
 # writes them into the spool JSON; the platform namespaces per-run).
 # An ``itertools.count`` is atomic under the GIL (a single C-level
-# ``__next__`` call), which is ~3–5× faster than ``os.urandom(16).hex()``
-# — enough to close the last few hundred nanoseconds against the 3 μs/
-# call budget on the ubuntu CI runner. The ``m-`` prefix keeps the id a
-# string (schema-stable with the old 32-char hex values) so downstream
-# consumers don't need to special-case the format change.
+# ``__next__`` call), which is ~3–5× faster than ``os.urandom(16).hex()``.
+# Ids are stringified via ``str(n)`` rather than ``f"m-{n}"`` to save a
+# format_spec dispatch on the hot path; the schema stays ``str`` so
+# downstream consumers that treat the field opaquely don't change.
 _mark_id_counter = itertools.count()
 _next_mark_id = _mark_id_counter.__next__
 
@@ -311,7 +324,29 @@ def mark(
         # thread marks attach to the session span; fall back to the
         # legacy ``"root"`` sentinel only when no session is open.
         span_id = _fallback_span_id or ROOT_SPAN_ID
-    mark_id = f"m-{_next_mark_id()}"
-    _append_default(Mark(mark_id, span_id, name, value_type, value, attrs, _time_ns(), kind))
+    mark_id = str(_next_mark_id())
+    mark_obj = Mark(mark_id, span_id, name, value_type, value, attrs, _time_ns(), kind)
+    # Inline buffer append: bypass ``MarkBuffer.append`` → ``_state``
+    # property → ``_get_state()`` on every call. Fast path is the
+    # thread-local attribute read; fall back to the cold-path helper
+    # on the first call per thread.
+    try:
+        mstate = _default_buffer_local.state
+    except AttributeError:
+        mstate = _get_default_mark_state()
+    mbuf = mstate.buffer
+    if len(mbuf) == _default_buffer_capacity:
+        mstate.drop_count += 1
+        if not mstate.warned_overflow:
+            warnings.warn(
+                f"cirron.mark buffer full (capacity={_default_buffer_capacity}); "
+                "oldest marks on this thread will be dropped silently.",
+                stacklevel=2,
+            )
+            mstate.warned_overflow = True
+        wake = _default_buffer._wake_event
+        if wake is not None:
+            wake.set()
+    mbuf.append(mark_obj)
     if scope is not None:
         scope.marks.append(mark_id)
