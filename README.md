@@ -288,9 +288,9 @@ ci.deps("torch", "pandas", "transformers")
 # Or install all together: pip install 'cirron-sdk[pandas,torch,transformers]'
 ```
 
-Accepts either the import name (`"datasets"`, `"sklearn"`) or the pyproject extras name (`"hf"`, `"sklearn"`). Unknown names raise `ValueError` — that's a caller bug, not a missing dep.
+Accepts either the import name (`"datasets"`, `"sklearn"`) or the extras/install name (`"hf"`, `"sklearn"`). Unknown names raise `ValueError` — that's a caller bug, not a missing dep.
 
-The in-process equivalent of the `cirron doctor` CLI (which ships in the sibling `cirron-cli` repo and inspects the installed `cirron-sdk` METADATA from outside Python). Both read from the same `pyproject.toml` extras list.
+The in-process equivalent of the `cirron doctor` CLI (which ships in the sibling `cirron-cli` repo and inspects the installed `cirron-sdk` METADATA from outside Python). Both use the same dependency names and install extras, but `ci.deps()` resolves them inside the SDK from a hard-coded `EXTRAS` registry, while `cirron doctor` inspects the installed package from outside Python.
 
 ## Configuration
 
