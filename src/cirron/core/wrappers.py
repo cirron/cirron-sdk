@@ -16,7 +16,7 @@ import time
 from collections.abc import Iterable, Iterator
 from typing import Any, TypeVar
 
-from cirron.core.scope import scope
+from cirron.core.scope import get_default_stack
 
 T = TypeVar("T")
 
@@ -47,9 +47,20 @@ def _get_dataloader_cls() -> Any:
 
 
 def epochs(iterable: Iterable[T]) -> Iterator[T]:
+    # Bind ``push``/``pop`` to locals so the inner loop is a pair of
+    # C-level calls with no attribute lookup per iteration. Bypassing the
+    # public ``scope()`` context manager also skips the ``_ScopeCM``
+    # allocation.
+    stack = get_default_stack()
+    push = stack.push
+    pop = stack.pop
     for i, val in enumerate(iterable):
-        with scope("epoch", index=i):
+        opened = push("epoch", index=i)
+        try:
             yield val
+        finally:
+            if opened is not None:
+                pop()
 
 
 def batches(iterable: Iterable[T]) -> Iterator[T]:
@@ -57,15 +68,25 @@ def batches(iterable: Iterable[T]) -> Iterator[T]:
     if dataloader_cls is not None and isinstance(iterable, dataloader_cls):
         yield from _batches_with_stall(iterable)
         return
+    stack = get_default_stack()
+    push = stack.push
+    pop = stack.pop
     for i, val in enumerate(iterable):
-        with scope("batch", index=i):
+        opened = push("batch", index=i)
+        try:
             yield val
+        finally:
+            if opened is not None:
+                pop()
 
 
 def _batches_with_stall(loader: Iterable[T]) -> Iterator[T]:
     """Drive a DataLoader manually so we can time ``__next__`` as the data-load
     phase and record it on the batch span."""
     it = iter(loader)
+    stack = get_default_stack()
+    push = stack.push
+    pop = stack.pop
     i = 0
     while True:
         t0 = time.perf_counter_ns()
@@ -74,8 +95,12 @@ def _batches_with_stall(loader: Iterable[T]) -> Iterator[T]:
         except StopIteration:
             return
         data_load_ns = time.perf_counter_ns() - t0
-        with scope("batch", index=i) as s:
-            if s is not None:
-                s.attrs["data_load_ns"] = data_load_ns
+        opened = push("batch", index=i)
+        try:
+            if opened is not None:
+                opened.attrs["data_load_ns"] = data_load_ns
             yield val
+        finally:
+            if opened is not None:
+                pop()
         i += 1
