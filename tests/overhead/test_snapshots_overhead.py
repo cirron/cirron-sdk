@@ -31,7 +31,6 @@ from __future__ import annotations
 import time
 
 import pytest
-import torch
 
 from cirron.snapshots.stats import capture_weight_stats
 
@@ -40,6 +39,9 @@ _CPU_BUDGET_NS = 250_000_000  # 250 ms — CI CPU (~30% headroom over 175 ms)
 
 
 def test_resnet50_stats_under_budget(record_result) -> None:
+    # ``importorskip`` for both so an opted-in local run without the
+    # extra installed skips cleanly instead of failing at collect time.
+    torch = pytest.importorskip("torch")
     torchvision = pytest.importorskip("torchvision")
     # ResNet50 is ~25M params — representative of the "typical model"
     # the spec budgets against. No pretrained weights download — random
