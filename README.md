@@ -127,7 +127,7 @@ for epoch in ci.epochs(range(20)):
         ci.mark("loss", loss.item())
 ```
 
-`ci.epochs()` and `ci.batches()` are transparent iterators — `ci.epochs(range(20))` yields `0..19` exactly, opening and closing `epoch` / `batch` scopes indexed automatically around each iteration. Overhead is < 10μs per iteration.
+`ci.epochs()` and `ci.batches()` are transparent iterators — `ci.epochs(range(20))` yields `0..19` exactly, opening and closing `epoch` / `batch` scopes indexed automatically around each iteration. Per-iteration overhead is a few microseconds (~4.8 μs on x86_64, ~2.8 μs on arm64).
 
 ## `scope` and `mark` — power-user attribution
 
@@ -142,7 +142,7 @@ with ci.scope("postprocess", variant="beam-search"):
     ci.mark("beam_entropy", compute_entropy(output))
 ```
 
-Scopes nest arbitrarily (max depth 64) and attach as children of whatever scope is already open — so the hooks' `epoch` / `batch` / `forward` tree stays intact and your custom scope slots in at the right level. Marks attach to the innermost open scope. Both are cheap: < 5μs per scope open/close, and the overhead is itself tracked and reported as a mark so you can see the instrumentation tax.
+Scopes nest arbitrarily (max depth 64) and attach as children of whatever scope is already open — so the hooks' `epoch` / `batch` / `forward` tree stays intact and your custom scope slots in at the right level. Marks attach to the innermost open scope. Both are cheap: scope open/close runs a few microseconds (~4.4 μs on x86_64, ~2.7 μs on arm64), and the overhead is itself tracked and reported as a mark so you can see the instrumentation tax.
 
 ## `@inference` — instrumenting served models
 
