@@ -54,9 +54,11 @@ def _require_safetensors() -> Any:
 
         return safetensors
     except ImportError as e:
+        from cirron.core.deps import install_hint
+
         raise CirronDependencyError(
             "snapshots mode 'sampled'/'full' requires the safetensors package. "
-            "Install with: pip install 'cirron-sdk[safetensors]'"
+            f"Install with: {install_hint(['safetensors'])}"
         ) from e
 
 

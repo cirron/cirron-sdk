@@ -16,17 +16,10 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from typing import Any
 
+from cirron.core.deps import install_hint
 from cirron.core.errors import CirronDependencyError
 
 logger = logging.getLogger(__name__)
-
-_INSTALL_HINTS = {
-    "pandas": "pip install 'cirron-sdk[pandas]'",
-    "polars": "pip install 'cirron-sdk[polars]'",
-    "torch": "pip install 'cirron-sdk[torch]'",
-    "tensorflow": "pip install 'cirron-sdk[tensorflow]'",
-    "datasets": "pip install 'cirron-sdk[hf]'",
-}
 
 
 def _require(package: str) -> Any:
@@ -34,9 +27,9 @@ def _require(package: str) -> Any:
     try:
         return __import__(package)
     except ImportError as e:
-        hint = _INSTALL_HINTS.get(package, f"pip install {package}")
         raise CirronDependencyError(
-            f"ci.load() requires '{package}' for this return type. Install with: {hint}"
+            f"ci.load() requires '{package}' for this return type. "
+            f"Install with: {install_hint([package])}"
         ) from e
 
 
