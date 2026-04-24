@@ -519,6 +519,11 @@ class Cirron:
 
         return _wrap(estimator)
 
+    def deps(self, *required: str) -> dict[str, str | None]:
+        from cirron.core.deps import deps as _deps
+
+        return _deps(*required)
+
 
 # Module-level default singleton (spec §4.10).
 
