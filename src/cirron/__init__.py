@@ -34,6 +34,7 @@ from cirron.core.config import (
     get_default,
     load_cirron_yaml,
 )
+from cirron.core.deps import deps
 from cirron.core.errors import (
     CirronDependencyError,
     CirronError,
@@ -121,6 +122,7 @@ __all__ = [
     "Profiler",
     "ServingConfig",
     "batches",
+    "deps",
     "env",
     "epochs",
     "find_cirron_yaml",
