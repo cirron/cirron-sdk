@@ -46,9 +46,6 @@ dev = [
     "types-requests>=2.31",
 ]
 
-[project.scripts]
-cirron = "cirron.cli:main"
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
