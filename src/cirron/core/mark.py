@@ -16,7 +16,6 @@ import threading
 import time
 import warnings
 from collections import deque
-from dataclasses import dataclass, field
 from typing import Any
 
 from cirron.core.scope import get_current_scope
@@ -57,7 +56,6 @@ MARK_KIND_SUMMARY = "summary"
 _VALID_KINDS = frozenset({MARK_KIND_POINT, MARK_KIND_SUMMARY})
 
 
-@dataclass(slots=True)
 class Mark:
     """A single scalar value attached to a span. Shape mirrors the
     platform ``TraceMark`` model (spec §5.4).
@@ -66,16 +64,38 @@ class Mark:
     value for the span: per-step losses use ``"point"``; end-of-epoch
     values use ``"summary"``. Consumers can render one as a line plot
     and the other as a single value on the span.
+
+    Hand-rolled (not a ``@dataclass``) for the same reason as
+    ``Scope``: a positional ``__init__`` + ``__slots__`` shaves a few
+    hundred ns per call off of ``ci.mark()``, which matters against the
+    3 μs budget on slow CI cores.
     """
 
-    id: str
-    span_id: str
-    name: str
-    value_type: str  # "float" | "int" | "string" | "bool"
-    value: float | int | str | bool
-    attrs: dict[str, Any] = field(default_factory=dict)
-    ts_ns: int = 0
-    kind: str = MARK_KIND_POINT
+    __slots__ = ("id", "span_id", "name", "value_type", "value", "attrs", "ts_ns", "kind")
+
+    def __init__(
+        self,
+        id: str,
+        span_id: str,
+        name: str,
+        value_type: str,
+        value: float | int | str | bool,
+        attrs: dict[str, Any] | None = None,
+        ts_ns: int = 0,
+        kind: str = MARK_KIND_POINT,
+    ) -> None:
+        self.id = id
+        self.span_id = span_id
+        self.name = name
+        self.value_type = value_type
+        self.value = value
+        # Defensive: the dataclass version defaulted ``attrs`` via
+        # ``default_factory=dict`` so callers could omit it. Keep the
+        # same ergonomics — tests construct ``Mark`` directly with
+        # kwargs and rely on this default.
+        self.attrs = attrs if attrs is not None else {}
+        self.ts_ns = ts_ns
+        self.kind = kind
 
 
 class _MarkState:
@@ -286,17 +306,6 @@ def mark(
         # legacy ``"root"`` sentinel only when no session is open.
         span_id = _fallback_span_id or ROOT_SPAN_ID
     mark_id = _urandom(16).hex()
-    _append_default(
-        Mark(
-            id=mark_id,
-            span_id=span_id,
-            name=name,
-            value_type=value_type,
-            value=value,
-            attrs=attrs,
-            ts_ns=_time_ns(),
-            kind=kind,
-        )
-    )
+    _append_default(Mark(mark_id, span_id, name, value_type, value, attrs, _time_ns(), kind))
     if scope is not None:
         scope.marks.append(mark_id)
