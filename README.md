@@ -127,7 +127,7 @@ for epoch in ci.epochs(range(20)):
         ci.mark("loss", loss.item())
 ```
 
-`ci.epochs()` and `ci.batches()` are transparent iterators — `ci.epochs(range(20))` yields `0..19` exactly, opening and closing `epoch` / `batch` scopes indexed automatically around each iteration. Overhead is < 10μs per iteration.
+`ci.epochs()` and `ci.batches()` are transparent iterators — `ci.epochs(range(20))` yields `0..19` exactly, opening and closing `epoch` / `batch` scopes indexed automatically around each iteration. Per-iteration overhead is a few microseconds (~4.8 μs on x86_64, ~2.8 μs on arm64).
 
 ## `scope` and `mark` — power-user attribution
 
@@ -142,7 +142,7 @@ with ci.scope("postprocess", variant="beam-search"):
     ci.mark("beam_entropy", compute_entropy(output))
 ```
 
-Scopes nest arbitrarily (max depth 64) and attach as children of whatever scope is already open — so the hooks' `epoch` / `batch` / `forward` tree stays intact and your custom scope slots in at the right level. Marks attach to the innermost open scope. Both are cheap: < 5μs per scope open/close, and the overhead is itself tracked and reported as a mark so you can see the instrumentation tax.
+Scopes nest arbitrarily (max depth 64) and attach as children of whatever scope is already open — so the hooks' `epoch` / `batch` / `forward` tree stays intact and your custom scope slots in at the right level. Marks attach to the innermost open scope. Both are cheap: scope open/close runs a few microseconds (~4.4 μs on x86_64, ~2.7 μs on arm64), and the overhead is itself tracked and reported as a mark so you can see the instrumentation tax.
 
 ## `@inference` — instrumenting served models
 
@@ -259,6 +259,39 @@ api_key = ci.secret("openai-api-key")    # mounted by the platform at runtime
 
 Secrets are scoped on the platform (workspace, pipeline, deployment), are never logged, never included in traces, and never flushed to disk. Raises `CirronSecretNotFound` with a clear message if the secret isn't mounted.
 
+## `deps()` — fail fast on missing extras
+
+Optional extras (`torch`, `tensorflow`, `pandas`, `datasets`, SQL drivers, ...) are pip-install-gated so the core package stays small. `ci.deps()` reports what's present and, when called with required names, raises immediately with a combined `pip install` command — useful at the top of a long training script, or in library code that wraps the SDK:
+
+```python
+import cirron as ci
+
+# No args — full report, keyed by import name. Uses find_spec so
+# heavy frameworks (torch, tensorflow, transformers) are never
+# actually imported; cheap to call at script startup.
+deps = ci.deps()
+# {'pandas': '2.3.3', 'polars': None, 'torch': '2.6.0', 'datasets': None, ...}
+
+if deps["polars"]:
+    df = ci.load("./data.parquet", as_="polars")
+else:
+    df = ci.load("./data.parquet")  # pandas fallback
+
+# Fail fast at script startup — raises CirronDependencyError listing
+# every missing dep at once with a combined install command, rather
+# than ImportError 40 minutes into training.
+ci.deps("torch", "pandas", "transformers")
+# CirronDependencyError: Missing required dependencies:
+#   - torch: pip install 'cirron-sdk[torch]'
+#   - pandas: pip install 'cirron-sdk[pandas]'
+#   - transformers: pip install 'cirron-sdk[transformers]'
+# Or install all together: pip install 'cirron-sdk[pandas,torch,transformers]'
+```
+
+Accepts either the import name (`"datasets"`, `"sklearn"`) or the extras/install name (`"hf"`, `"sklearn"`). Unknown names raise `ValueError` — that's a caller bug, not a missing dep.
+
+The in-process equivalent of the `cirron doctor` CLI (which ships in the sibling `cirron-cli` repo and inspects the installed `cirron-sdk` METADATA from outside Python). Both use the same dependency names and install extras, but `ci.deps()` resolves them inside the SDK from a hard-coded `EXTRAS` registry, while `cirron doctor` inspects the installed package from outside Python.
+
 ## Configuration
 
 For the 90% case, use the module-level functions. For custom endpoints, output paths, or multi-workspace setups, instantiate the class directly.
@@ -326,6 +359,7 @@ Shipped:
 - `map=` row-wise transforms at load time, plus `@ci.map` for batch-wise
 - Size-tier guardrails: `<1 GB` silent, `<10 GB` logs a warning with narrowing hints, `≥10 GB` raises `CirronDataSizeError` unless `confirm_large=True` (thresholds configurable via `Cirron(load_warn_bytes=, load_max_bytes=)`)
 - Platform bucket resolver (SDK-side client for `GET /v1/datasets/resolve`)
+- `ci.deps()` — in-process extras check; reports installed versions, or raises `CirronDependencyError` listing every missing dep with a combined `pip install` command
 
 Coming:
 

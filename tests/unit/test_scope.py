@@ -22,7 +22,22 @@ from cirron.core.scope import (
     ScopeStack,
     get_current_scope,
     get_default_stack,
+    set_capture_cpu_time,
 )
+
+
+def test_cpu_ns_is_populated_when_capture_enabled():
+    """``cpu_ns`` is opt-in (default off for overhead budget); the
+    ``set_capture_cpu_time`` switch flips it on at runtime."""
+    set_capture_cpu_time(True)
+    try:
+        with ci.scope("cpu-on"):
+            pass
+        closed = get_default_stack().drain_closed()
+    finally:
+        set_capture_cpu_time(False)
+    assert closed and closed[0].cpu_ns is not None
+    assert closed[0].cpu_ns >= 0
 
 
 @pytest.fixture(autouse=True)
@@ -49,8 +64,11 @@ def test_parent_child_linkage():
     for s in closed:
         assert s.end_ns is not None
         assert s.end_ns >= s.start_ns
-        assert s.cpu_ns is not None
-        assert s.cpu_ns >= 0
+        # ``cpu_ns`` is opt-in (see ``set_capture_cpu_time``); default-off
+        # for the overhead budget. We just want to make sure scopes close
+        # cleanly here — a dedicated opt-in test below exercises cpu_ns.
+        if s.cpu_ns is not None:
+            assert s.cpu_ns >= 0
 
 
 def test_attrs_and_index_attach():

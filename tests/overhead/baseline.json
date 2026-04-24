@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-04-23T17:44:22Z",
+  "host": "github-actions-ubuntu-latest",
+  "platform": "Linux-6.17.0-1010-azure-x86_64-with-glibc2.39",
+  "python": "3.13.13",
+  "note": "Captured from the GitHub Actions `overhead` job (ubuntu-latest, Python 3.13, CPU-only). Values are the max of two consecutive CI runs on main to absorb runner jitter; +20% regression tolerance is applied at test time. Regenerate procedure: tests/overhead/README.md.",
+  "metrics": {
+    "profile_no_hooks_ratio": 0.2949,
+    "profile_torch_hooks_ratio": 0.8440
+  }
+}

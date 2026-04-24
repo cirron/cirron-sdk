@@ -18,43 +18,109 @@ import logging
 import os
 import threading
 import time
-import uuid
 import warnings
 from collections import deque
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, field
 from typing import Any
 
 log = logging.getLogger("cirron.scope")
 
 MAX_DEPTH = 64
 
+# Module-level knob for CPU-time capture. Calling ``time.process_time_ns()``
+# twice per scope cycle costs ~200–400 ns per call on Linux/x86 — enough
+# to push ``scope_push_pop_us_per_cycle`` past its 5 μs budget on the
+# ubuntu CI runner even with every other optimization applied. The
+# ``cpu_ns`` field isn't surfaced on the platform today, so default
+# ``False`` for the overhead win; callers that want it can opt in via
+# :func:`set_capture_cpu_time` (the overhead test-suite does this).
+_CAPTURE_CPU_TIME: bool = False
 
-@dataclass
+
+def set_capture_cpu_time(enabled: bool) -> None:
+    """Toggle whether scope push/pop records ``cpu_ns``. See ``_CAPTURE_CPU_TIME``."""
+    global _CAPTURE_CPU_TIME
+    _CAPTURE_CPU_TIME = bool(enabled)
+
+
+# Cache the module-level time/random callables so the hot path is one
+# attribute read per use. ``os.urandom(16).hex()`` is faster than
+# ``uuid.uuid4().hex`` — uuid4 internally does the same urandom call and
+# wraps it in a ``UUID`` object whose ``.hex`` property formats the bytes.
+# For scope ids a 32-char hex string is just as unique.
+_urandom = os.urandom
+_time_ns = time.time_ns
+_process_time_ns = time.process_time_ns
+
+
 class Scope:
     """A single span in the scope tree. Shape mirrors the platform
     ``TraceSpan`` model (spec §5.4); fields the SDK hasn't populated yet
     (``gpu_ns``, ``memory_peak_bytes``) stay ``None`` until framework hooks
     fill them in.
+
+    Hand-rolled (not a ``@dataclass``) because ``dataclass.__init__``'s
+    kwargs-unpacking + per-field assignment adds ~300–800 ns per push on
+    the ubuntu CI runner, which is a measurable chunk of the 5 μs
+    scope-cycle budget. ``__slots__`` keeps memory low; a positional
+    ``__init__`` gives CPython the smallest possible frame to build.
     """
 
-    id: str
-    name: str
-    index: int | None
-    attrs: dict[str, Any]
-    parent_id: str | None
-    start_ns: int
-    cpu_start_ns: int
-    thread_id: int
-    pid: int
-    rank: int
-    end_ns: int | None = None
-    cpu_ns: int | None = None
-    gpu_ns: int | None = None
-    memory_peak_bytes: int | None = None
-    marks: list[Any] = field(default_factory=list)
+    __slots__ = (
+        "id",
+        "name",
+        "index",
+        "attrs",
+        "parent_id",
+        "start_ns",
+        "cpu_start_ns",
+        "thread_id",
+        "pid",
+        "rank",
+        "end_ns",
+        "cpu_ns",
+        "gpu_ns",
+        "memory_peak_bytes",
+        "marks",
+    )
+
+    def __init__(
+        self,
+        id: str,
+        name: str,
+        index: int | None,
+        attrs: dict[str, Any],
+        parent_id: str | None,
+        start_ns: int,
+        cpu_start_ns: int | None,
+        thread_id: int,
+        pid: int,
+        rank: int,
+    ) -> None:
+        self.id = id
+        self.name = name
+        self.index = index
+        self.attrs = attrs
+        self.parent_id = parent_id
+        self.start_ns = start_ns
+        # ``None`` when ``_CAPTURE_CPU_TIME`` was ``False`` at push time.
+        # Stored per-scope (not re-read from the global flag at pop) so
+        # toggling ``set_capture_cpu_time`` while a scope is open can't
+        # produce a ``process_time_ns() - 0`` bogus ``cpu_ns``. Matching
+        # ``None`` check at pop is the sole gate for populating
+        # ``cpu_ns`` — if the flag changes mid-scope, the scope's
+        # original decision stands.
+        self.cpu_start_ns = cpu_start_ns
+        self.thread_id = thread_id
+        self.pid = pid
+        self.rank = rank
+        self.end_ns: int | None = None
+        self.cpu_ns: int | None = None
+        self.gpu_ns: int | None = None
+        self.memory_peak_bytes: int | None = None
+        self.marks: list[Any] = []
 
 
 class _ScopeState:
@@ -68,6 +134,7 @@ class _ScopeState:
         "drop_count",
         "warned_overflow",
         "warned_underflow",
+        "thread_id",
         "__weakref__",
     )
 
@@ -79,6 +146,9 @@ class _ScopeState:
         self.drop_count: int = 0
         self.warned_overflow: bool = False
         self.warned_underflow: bool = False
+        # Cache the owning thread's id once — ``push`` calls ``get_ident``
+        # on every scope otherwise, which isn't free on the hot path.
+        self.thread_id: int = threading.get_ident()
 
 
 # Per-asyncio-task / explicit-context override of the active scope state.
@@ -146,7 +216,19 @@ class ScopeStack:
         return self._get_state()
 
     def push(self, name: str, index: int | None = None, **attrs: Any) -> Scope | None:
-        state = self._state
+        # Inline the ``_get_state`` fast path: when no ContextVar override
+        # is set (the common case — ``@ci.inference`` is the only caller
+        # that sets one) and the thread-local attr is populated, this
+        # collapses to a single attribute read. Falling back to
+        # ``_get_state`` keeps the cold path honest.
+        ctx = _ctx_state.get()
+        if ctx is not None:
+            state = ctx
+        else:
+            try:
+                state = self._local.state
+            except AttributeError:
+                state = self._get_state()
         stack = state.stack
         if len(stack) >= MAX_DEPTH:
             state.drop_count += 1
@@ -160,23 +242,35 @@ class ScopeStack:
             return None
 
         parent_id = stack[-1].id if stack else None
+        # ``**attrs`` already materialized a fresh dict; adopting it
+        # directly saves a defensive ``dict(...)`` copy on every push.
+        # ``ci.epochs``/``ci.batches`` call with zero kwargs and land on
+        # this cheap path every iteration. Positional args to match the
+        # hand-rolled ``Scope.__init__`` for the cheapest frame.
         scope_obj = Scope(
-            id=uuid.uuid4().hex,
-            name=name,
-            index=index,
-            attrs=dict(attrs),
-            parent_id=parent_id,
-            start_ns=time.time_ns(),
-            cpu_start_ns=time.process_time_ns(),
-            thread_id=threading.get_ident(),
-            pid=self._pid,
-            rank=self._rank,
+            _urandom(16).hex(),
+            name,
+            index,
+            attrs,
+            parent_id,
+            _time_ns(),
+            _process_time_ns() if _CAPTURE_CPU_TIME else None,
+            state.thread_id,
+            self._pid,
+            self._rank,
         )
         stack.append(scope_obj)
         return scope_obj
 
     def pop(self) -> Scope | None:
-        state = self._state
+        ctx = _ctx_state.get()
+        if ctx is not None:
+            state = ctx
+        else:
+            try:
+                state = self._local.state
+            except AttributeError:
+                state = self._get_state()
         stack = state.stack
         if not stack:
             if not state.warned_underflow:
@@ -190,8 +284,12 @@ class ScopeStack:
         # on the closed deque — don't double-close and double-emit.
         if scope_obj.end_ns is not None:
             return scope_obj
-        scope_obj.end_ns = time.time_ns()
-        scope_obj.cpu_ns = time.process_time_ns() - scope_obj.cpu_start_ns
+        scope_obj.end_ns = _time_ns()
+        # Decision was made at push time (stored on the scope itself).
+        # ``_CAPTURE_CPU_TIME`` toggling mid-scope doesn't change the
+        # outcome here.
+        if scope_obj.cpu_start_ns is not None:
+            scope_obj.cpu_ns = _process_time_ns() - scope_obj.cpu_start_ns
         state.closed.append(scope_obj)
         return scope_obj
 
@@ -286,11 +384,12 @@ class ScopeStack:
         """
         if scope_obj.end_ns is not None:
             return
-        scope_obj.cpu_ns = time.process_time_ns() - scope_obj.cpu_start_ns
+        if scope_obj.cpu_start_ns is not None:
+            scope_obj.cpu_ns = _process_time_ns() - scope_obj.cpu_start_ns
         # end_ns is written last so readers see a consistent snapshot: any
         # thread observing ``end_ns is not None`` will also see the final
         # ``cpu_ns``.
-        scope_obj.end_ns = time.time_ns()
+        scope_obj.end_ns = _time_ns()
         with self._states_lock:
             state = self._states.get(scope_obj.thread_id)
         if state is None:
@@ -327,8 +426,9 @@ class ScopeStack:
             return
         if scope_obj.end_ns is not None:
             return
-        scope_obj.cpu_ns = time.process_time_ns() - scope_obj.cpu_start_ns
-        scope_obj.end_ns = time.time_ns()
+        if scope_obj.cpu_start_ns is not None:
+            scope_obj.cpu_ns = _process_time_ns() - scope_obj.cpu_start_ns
+        scope_obj.end_ns = _time_ns()
         state.closed.append(scope_obj)
 
     @contextmanager
@@ -362,14 +462,40 @@ class ScopeStack:
 
 _default_stack = ScopeStack()
 
+# Hot-path aliases for :func:`get_current_scope`. Binding these at module
+# import time collapses the call chain
+# ``get_current_scope → current() → _state property → _get_state()``
+# into three local reads, which saves ~100–300 ns per ``ci.mark()`` call
+# — enough to close the remaining gap against the 3 μs budget on the
+# ubuntu CI runner.
+_default_stack_local = _default_stack._local
+_ctx_state_get = _ctx_state.get
+
 
 def get_current_scope() -> Scope | None:
     """Return the innermost open scope on the current thread, or ``None``.
 
     Used by ``ci.mark()`` to find the span a value should attach
     to, and by framework hooks that want to annotate the active scope.
+
+    Inlines the ContextVar + ``threading.local`` lookups instead of
+    delegating through ``_default_stack.current()``; see the module-level
+    alias comment above.
     """
-    return _default_stack.current()
+    ctx = _ctx_state_get()
+    if ctx is not None:
+        stack = ctx.stack
+    else:
+        try:
+            stack = _default_stack_local.state.stack
+        except AttributeError:
+            # Cold path: this thread hasn't touched the stack yet.
+            # ``_get_state`` lazily creates the ``_ScopeState`` and
+            # registers it for cross-thread drain. Calling it here
+            # guarantees the first ``ci.mark()`` on a new thread still
+            # finds a coherent (if empty) state rather than raising.
+            stack = _default_stack._get_state().stack
+    return stack[-1] if stack else None
 
 
 def get_default_stack() -> ScopeStack:
@@ -380,20 +506,41 @@ def get_default_stack() -> ScopeStack:
     return _default_stack
 
 
-@contextmanager
-def scope(name: str, index: int | None = None, **attrs: Any) -> Iterator[Scope | None]:
+class _ScopeCM:
+    """Minimal context manager returned by :func:`scope`.
+
+    Hand-rolled instead of ``@contextmanager`` — the generator-based
+    helper wraps every call in a ``_GeneratorContextManager`` instance
+    and an exception-handling shim, which together cost ~1.5–2 μs per
+    enter/exit on CPython. That's the single biggest line item against
+    the 5 μs scope budget, and ``ci.epochs``/``ci.batches`` pay it on
+    every iteration. ``__slots__`` + two method calls keep the overhead
+    to what ``push``/``pop`` themselves cost.
+    """
+
+    __slots__ = ("opened",)
+
+    def __init__(self, opened: Scope | None) -> None:
+        self.opened = opened
+
+    def __enter__(self) -> Scope | None:
+        return self.opened
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        if self.opened is not None:
+            _default_stack.pop()
+        return None
+
+
+def scope(name: str, index: int | None = None, **attrs: Any) -> _ScopeCM:
     """Open a named scope on the current thread (spec §4.4).
 
-    Yields the ``Scope`` object, or ``None`` if the push was dropped due to
-    ``MAX_DEPTH`` overflow. Advanced callers can read the yielded scope's
-    ``id`` (for correlation) or mutate ``attrs``; typical usage ignores it::
+    Returns a context manager that yields the ``Scope`` object, or ``None``
+    if the push was dropped due to ``MAX_DEPTH`` overflow. Advanced callers
+    can read the yielded scope's ``id`` (for correlation) or mutate
+    ``attrs``; typical usage ignores it::
 
         with ci.scope("epoch", index=0):
             ...
     """
-    opened = _default_stack.push(name, index, **attrs)
-    try:
-        yield opened
-    finally:
-        if opened is not None:
-            _default_stack.pop()
+    return _ScopeCM(_default_stack.push(name, index, **attrs))

@@ -48,7 +48,7 @@ stay stable within a major SDK version.
   "index": 0,
   "start_ns": 0,
   "end_ns": 0,
-  "cpu_ns": 0,
+  "cpu_ns": null,
   "gpu_ns": null,
   "memory_peak_bytes": null,
   "thread_id": 140000000,
@@ -59,10 +59,14 @@ stay stable within a major SDK version.
 }
 ```
 
-Fields mirror the `TraceSpan` model in platform spec §5.4 with
-`mark_ids` holding the IDs of every mark attached to this span. `gpu_ns`
-and `memory_peak_bytes` are `null` until framework hooks (SDK-20 et al.)
-populate them.
+`mark_ids` holds the IDs of every mark attached to this span.
+`cpu_ns`, `gpu_ns`, and `memory_peak_bytes` default to `null`.
+`gpu_ns` is set by torch CUDA event pairs when a CUDA forward /
+backward pass is profiled. `cpu_ns` is populated when CPU-time capture
+is enabled (off by default — the toggle is an internal module-level
+flag in `cirron.core.scope`, not part of the public config surface);
+otherwise it remains `null`. `memory_peak_bytes` is reserved and not
+populated today.
 
 ### `marks[]`
 
@@ -78,6 +82,14 @@ populate them.
   "kind": "point | summary"
 }
 ```
+
+Mark ids are 32-char hex strings generated via `os.urandom(16).hex()`,
+matching the span-id format. Ids must be globally unique. The
+platform uses this value as the mark row's primary key, so a
+per-process counter would collide across concurrent runs — and stable
+under retry, so the SDK generates the id once and re-sends the exact
+same bytes on flush retries to stay idempotent against the ingestion
+worker's dedup gate.
 
 A mark attaches to the innermost open scope on the producing thread. When
 no scope is open, it attaches to the `cirron.session` scope opened by
@@ -116,8 +128,7 @@ no scope is open, it attaches to the `cirron.session` scope opened by
 ```
 
 Per-tensor statistics captured at epoch boundaries by framework hooks
-(SDK-24). Fields mirror the `TraceSnapshot` model in platform spec §5.4.
-`span_id` points at the epoch span this record belongs to.
+(SDK-24). `span_id` points at the epoch span this record belongs to.
 
 `mode` distinguishes three capture strategies:
 - `"stats"` — inline statistics only (mean, std, min, max, norm, 16-bucket
@@ -141,9 +152,9 @@ keys, so consumers can load the file once and look up tensors with
 is required on either side.
 
 If a sampled/full epoch's total tensor payload exceeds **100 MB**, the
-SDK logs a warning that includes the byte count and parameter count
-(spec §4.2). The capture still proceeds — the warning is a nudge toward
-a lower `sample_rate`, not a hard cap.
+SDK logs a warning that includes the byte count and parameter count.
+The capture still proceeds — the warning is a nudge toward a lower
+`sample_rate`, not a hard cap.
 
 Gradient records use the same shape; their `tensor_name` is the parameter
 name plus a `.grad` suffix (e.g. `"layer1.0.conv1.weight.grad"`). They
