@@ -11,7 +11,7 @@ locks and keeps attribute lookups local. Budget: 1M marks in < 3s.
 
 from __future__ import annotations
 
-import itertools
+import os
 import threading
 import time
 import warnings
@@ -237,15 +237,16 @@ def _get_default_mark_state() -> _MarkState:
     return _default_buffer._get_state()
 
 
-# Mark ids only need to be unique within this process (the flush thread
-# writes them into the spool JSON; the platform namespaces per-run).
-# An ``itertools.count`` is atomic under the GIL (a single C-level
-# ``__next__`` call), which is ~3–5× faster than ``os.urandom(16).hex()``.
-# Ids are stringified via ``str(n)`` rather than ``f"m-{n}"`` to save a
-# format_spec dispatch on the hot path; the schema stays ``str`` so
-# downstream consumers that treat the field opaquely don't change.
-_mark_id_counter = itertools.count()
-_next_mark_id = _mark_id_counter.__next__
+# Mark ids must be globally unique — ``TraceMark.id`` is the primary key
+# on the platform's MySQL table and the worker's idempotency gate
+# (``createMany({ skipDuplicates: true })``) treats duplicate ids as
+# retries and silently drops them. A per-process counter would collide
+# across concurrent runs and silently lose data. ``os.urandom(16).hex()``
+# matches span ids (same format, same 2⁻¹²⁸ collision guarantee); idem-
+# potency of retried batches still holds because the SDK buffers the
+# generated id and re-sends the exact same bytes on retry. This is
+# unchanged from pre-round-3.
+_urandom = os.urandom
 
 
 def get_default_mark_buffer() -> MarkBuffer:
@@ -324,7 +325,7 @@ def mark(
         # thread marks attach to the session span; fall back to the
         # legacy ``"root"`` sentinel only when no session is open.
         span_id = _fallback_span_id or ROOT_SPAN_ID
-    mark_id = str(_next_mark_id())
+    mark_id = _urandom(16).hex()
     mark_obj = Mark(mark_id, span_id, name, value_type, value, attrs, _time_ns(), kind)
     # Inline buffer append: bypass ``MarkBuffer.append`` → ``_state``
     # property → ``_get_state()`` on every call. Fast path is the
