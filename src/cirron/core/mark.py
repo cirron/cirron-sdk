@@ -51,6 +51,10 @@ def get_fallback_span_id() -> str | None:
 
 MARK_KIND_POINT = "point"
 MARK_KIND_SUMMARY = "summary"
+# ``frozenset`` membership is O(1) vs tuple's O(n). The hot-path cost of
+# the kind check is tiny but the call count is high — 1M marks/s under
+# the regression test — and frozenset vs tuple is a free swap.
+_VALID_KINDS = frozenset({MARK_KIND_POINT, MARK_KIND_SUMMARY})
 
 
 @dataclass(slots=True)
@@ -234,7 +238,7 @@ def mark(
     (tests, pre-profile imports) it falls back to the legacy ``"root"``
     sentinel.
     """
-    if kind not in (MARK_KIND_POINT, MARK_KIND_SUMMARY):
+    if kind not in _VALID_KINDS:
         raise ValueError(
             f"ci.mark() kind must be {MARK_KIND_POINT!r} or {MARK_KIND_SUMMARY!r}; got {kind!r}"
         )
