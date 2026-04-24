@@ -282,8 +282,10 @@ else:
 # than ImportError 40 minutes into training.
 ci.deps("torch", "pandas", "transformers")
 # CirronDependencyError: Missing required dependencies:
+#   - torch: pip install 'cirron-sdk[torch]'
+#   - pandas: pip install 'cirron-sdk[pandas]'
 #   - transformers: pip install 'cirron-sdk[transformers]'
-# Or install all together: pip install 'cirron-sdk[transformers]'
+# Or install all together: pip install 'cirron-sdk[pandas,torch,transformers]'
 ```
 
 Accepts either the import name (`"datasets"`, `"sklearn"`) or the pyproject extras name (`"hf"`, `"sklearn"`). Unknown names raise `ValueError` — that's a caller bug, not a missing dep.
