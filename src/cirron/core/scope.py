@@ -452,14 +452,40 @@ class ScopeStack:
 
 _default_stack = ScopeStack()
 
+# Hot-path aliases for :func:`get_current_scope`. Binding these at module
+# import time collapses the call chain
+# ``get_current_scope → current() → _state property → _get_state()``
+# into three local reads, which saves ~100–300 ns per ``ci.mark()`` call
+# — enough to close the remaining gap against the 3 μs budget on the
+# ubuntu CI runner.
+_default_stack_local = _default_stack._local
+_ctx_state_get = _ctx_state.get
+
 
 def get_current_scope() -> Scope | None:
     """Return the innermost open scope on the current thread, or ``None``.
 
     Used by ``ci.mark()`` to find the span a value should attach
     to, and by framework hooks that want to annotate the active scope.
+
+    Inlines the ContextVar + ``threading.local`` lookups instead of
+    delegating through ``_default_stack.current()``; see the module-level
+    alias comment above.
     """
-    return _default_stack.current()
+    ctx = _ctx_state_get()
+    if ctx is not None:
+        stack = ctx.stack
+    else:
+        try:
+            stack = _default_stack_local.state.stack
+        except AttributeError:
+            # Cold path: this thread hasn't touched the stack yet.
+            # ``_get_state`` lazily creates the ``_ScopeState`` and
+            # registers it for cross-thread drain. Calling it here
+            # guarantees the first ``ci.mark()`` on a new thread still
+            # finds a coherent (if empty) state rather than raising.
+            stack = _default_stack._get_state().stack
+    return stack[-1] if stack else None
 
 
 def get_default_stack() -> ScopeStack:
