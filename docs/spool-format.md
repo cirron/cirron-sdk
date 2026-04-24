@@ -62,8 +62,11 @@ stay stable within a major SDK version.
 `mark_ids` holds the IDs of every mark attached to this span.
 `cpu_ns`, `gpu_ns`, and `memory_peak_bytes` default to `null`.
 `gpu_ns` is set by torch CUDA event pairs when a CUDA forward /
-backward pass is profiled. `cpu_ns` and `memory_peak_bytes` are
-reserved and not populated today.
+backward pass is profiled. `cpu_ns` is populated when CPU-time capture
+is enabled (off by default — the toggle is an internal module-level
+flag in `cirron.core.scope`, not part of the public config surface);
+otherwise it remains `null`. `memory_peak_bytes` is reserved and not
+populated today.
 
 ### `marks[]`
 
