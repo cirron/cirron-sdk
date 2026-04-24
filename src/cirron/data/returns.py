@@ -82,7 +82,7 @@ class DataAdapter(ABC):
         except ImportError as e:
             raise CirronDependencyError(
                 "ci.load(as_='polars') requires 'pandas' for this "
-                f"source type. Install with: {_INSTALL_HINTS['pandas']}"
+                f"source type. Install with: {install_hint(['pandas'])}"
             ) from e
 
     def _to_pandas_for_conversion(self) -> Any:
@@ -92,7 +92,7 @@ class DataAdapter(ABC):
             return self.to_pandas()
         except ImportError as e:
             raise CirronDependencyError(
-                f"ci.load() conversion requires 'pandas'. Install with: {_INSTALL_HINTS['pandas']}"
+                f"ci.load() conversion requires 'pandas'. Install with: {install_hint(['pandas'])}"
             ) from e
 
     def to_iter(
@@ -142,7 +142,7 @@ class DataAdapter(ABC):
         except ImportError as e:
             raise CirronDependencyError(
                 "ci.load(as_='tensor') requires torch or tensorflow. "
-                f"Install with: {_INSTALL_HINTS['torch']} (or [tensorflow])"
+                f"Install with: {install_hint(['torch'])} (or [tensorflow])"
             ) from e
 
     def to_hf(self) -> Any:
