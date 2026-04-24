@@ -23,7 +23,6 @@ from collections import deque
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, field
 from typing import Any
 
 log = logging.getLogger("cirron.scope")
@@ -31,12 +30,13 @@ log = logging.getLogger("cirron.scope")
 MAX_DEPTH = 64
 
 # Module-level knob for CPU-time capture. Calling ``time.process_time_ns()``
-# twice per scope cycle is a measurable chunk of the hot-path budget on
-# Linux/x86 (200–400 ns per call). The field isn't surfaced by the platform
-# today, but unit tests still assert it's populated, and users may rely on
-# it locally. Default ``True`` preserves behavior; callers chasing the
-# overhead budget can flip to ``False`` via :func:`set_capture_cpu_time`.
-_CAPTURE_CPU_TIME: bool = True
+# twice per scope cycle costs ~200–400 ns per call on Linux/x86 — enough
+# to push ``scope_push_pop_us_per_cycle`` past its 5 μs budget on the
+# ubuntu CI runner even with every other optimization applied. The
+# ``cpu_ns`` field isn't surfaced on the platform today, so default
+# ``False`` for the overhead win; callers that want it can opt in via
+# :func:`set_capture_cpu_time` (the overhead test-suite does this).
+_CAPTURE_CPU_TIME: bool = False
 
 
 def set_capture_cpu_time(enabled: bool) -> None:
@@ -55,29 +55,65 @@ _time_ns = time.time_ns
 _process_time_ns = time.process_time_ns
 
 
-@dataclass(slots=True)
 class Scope:
     """A single span in the scope tree. Shape mirrors the platform
     ``TraceSpan`` model (spec §5.4); fields the SDK hasn't populated yet
     (``gpu_ns``, ``memory_peak_bytes``) stay ``None`` until framework hooks
     fill them in.
+
+    Hand-rolled (not a ``@dataclass``) because ``dataclass.__init__``'s
+    kwargs-unpacking + per-field assignment adds ~300–800 ns per push on
+    the ubuntu CI runner, which is a measurable chunk of the 5 μs
+    scope-cycle budget. ``__slots__`` keeps memory low; a positional
+    ``__init__`` gives CPython the smallest possible frame to build.
     """
 
-    id: str
-    name: str
-    index: int | None
-    attrs: dict[str, Any]
-    parent_id: str | None
-    start_ns: int
-    cpu_start_ns: int
-    thread_id: int
-    pid: int
-    rank: int
-    end_ns: int | None = None
-    cpu_ns: int | None = None
-    gpu_ns: int | None = None
-    memory_peak_bytes: int | None = None
-    marks: list[Any] = field(default_factory=list)
+    __slots__ = (
+        "id",
+        "name",
+        "index",
+        "attrs",
+        "parent_id",
+        "start_ns",
+        "cpu_start_ns",
+        "thread_id",
+        "pid",
+        "rank",
+        "end_ns",
+        "cpu_ns",
+        "gpu_ns",
+        "memory_peak_bytes",
+        "marks",
+    )
+
+    def __init__(
+        self,
+        id: str,
+        name: str,
+        index: int | None,
+        attrs: dict[str, Any],
+        parent_id: str | None,
+        start_ns: int,
+        cpu_start_ns: int,
+        thread_id: int,
+        pid: int,
+        rank: int,
+    ) -> None:
+        self.id = id
+        self.name = name
+        self.index = index
+        self.attrs = attrs
+        self.parent_id = parent_id
+        self.start_ns = start_ns
+        self.cpu_start_ns = cpu_start_ns
+        self.thread_id = thread_id
+        self.pid = pid
+        self.rank = rank
+        self.end_ns: int | None = None
+        self.cpu_ns: int | None = None
+        self.gpu_ns: int | None = None
+        self.memory_peak_bytes: int | None = None
+        self.marks: list[Any] = []
 
 
 class _ScopeState:
@@ -173,7 +209,19 @@ class ScopeStack:
         return self._get_state()
 
     def push(self, name: str, index: int | None = None, **attrs: Any) -> Scope | None:
-        state = self._state
+        # Inline the ``_get_state`` fast path: when no ContextVar override
+        # is set (the common case — ``@ci.inference`` is the only caller
+        # that sets one) and the thread-local attr is populated, this
+        # collapses to a single attribute read. Falling back to
+        # ``_get_state`` keeps the cold path honest.
+        ctx = _ctx_state.get()
+        if ctx is not None:
+            state = ctx
+        else:
+            try:
+                state = self._local.state
+            except AttributeError:
+                state = self._get_state()
         stack = state.stack
         if len(stack) >= MAX_DEPTH:
             state.drop_count += 1
@@ -190,24 +238,32 @@ class ScopeStack:
         # ``**attrs`` already materialized a fresh dict; adopting it
         # directly saves a defensive ``dict(...)`` copy on every push.
         # ``ci.epochs``/``ci.batches`` call with zero kwargs and land on
-        # this cheap path every iteration.
+        # this cheap path every iteration. Positional args to match the
+        # hand-rolled ``Scope.__init__`` for the cheapest frame.
         scope_obj = Scope(
-            id=_urandom(16).hex(),
-            name=name,
-            index=index,
-            attrs=attrs,
-            parent_id=parent_id,
-            start_ns=_time_ns(),
-            cpu_start_ns=_process_time_ns() if _CAPTURE_CPU_TIME else 0,
-            thread_id=state.thread_id,
-            pid=self._pid,
-            rank=self._rank,
+            _urandom(16).hex(),
+            name,
+            index,
+            attrs,
+            parent_id,
+            _time_ns(),
+            _process_time_ns() if _CAPTURE_CPU_TIME else 0,
+            state.thread_id,
+            self._pid,
+            self._rank,
         )
         stack.append(scope_obj)
         return scope_obj
 
     def pop(self) -> Scope | None:
-        state = self._state
+        ctx = _ctx_state.get()
+        if ctx is not None:
+            state = ctx
+        else:
+            try:
+                state = self._local.state
+            except AttributeError:
+                state = self._get_state()
         stack = state.stack
         if not stack:
             if not state.warned_underflow:
