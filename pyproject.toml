@@ -11,6 +11,8 @@ dependencies = [
     "pyyaml>=6.0",
     "pydantic>=2.0",
     "requests>=2.31",
+    "keras>=3",
+    "tf-keras>=2.21.0",
 ]
 
 [project.optional-dependencies]
