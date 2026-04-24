@@ -142,7 +142,8 @@ class DataAdapter(ABC):
         except ImportError as e:
             raise CirronDependencyError(
                 "ci.load(as_='tensor') requires torch or tensorflow. "
-                f"Install with: {install_hint(['torch'])} (or [tensorflow])"
+                f"Install with: {install_hint(['torch'])} "
+                f"or {install_hint(['tensorflow'])}"
             ) from e
 
     def to_hf(self) -> Any:
