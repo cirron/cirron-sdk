@@ -151,10 +151,7 @@ def test_install_hint_sorts_and_dedupes() -> None:
         == "pip install 'cirron-sdk[pandas,torch]'"
     )
     # Accepts extras-name form too
-    assert (
-        deps_mod.install_hint(["datasets", "hf"])
-        == "pip install 'cirron-sdk[hf]'"
-    )
+    assert deps_mod.install_hint(["datasets", "hf"]) == "pip install 'cirron-sdk[hf]'"
 
 
 def test_install_hint_empty_fallback() -> None:
