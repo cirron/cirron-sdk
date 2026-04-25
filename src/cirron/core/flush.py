@@ -45,10 +45,12 @@ from cirron.core.blob_queue import (
 from cirron.core.mark import Mark, MarkBuffer, get_default_mark_buffer
 from cirron.core.scope import Scope, ScopeStack, get_default_stack
 from cirron.core.snapshot_buffer import SnapshotBuffer, get_default_snapshot_buffer
+from cirron.core.trace_buffer import _TraceBuffer, get_default_trace_buffer
 from cirron.snapshots.types import TraceSnapshot, snapshot_to_dict
 
 if TYPE_CHECKING:
     from cirron.core.config import Cirron
+    from cirron.core.sinks import OutputSink
 
 log = logging.getLogger("cirron.flush")
 
@@ -234,6 +236,8 @@ class FlushThread(threading.Thread):
         wake_event: threading.Event | None = None,
         snapshot_buffer: SnapshotBuffer | None = None,
         blob_queue: BlobUploadQueue | None = None,
+        sinks: list[OutputSink] | None = None,
+        trace_buffer: _TraceBuffer | None = None,
     ) -> None:
         super().__init__(daemon=True, name="cirron-flush")
         self._scope_stack = scope_stack
@@ -245,6 +249,18 @@ class FlushThread(threading.Thread):
         self._interval = interval
         self._wake_event = wake_event or threading.Event()
         self._stop_event = threading.Event()
+        # ``sinks`` carries the user's ``output=`` choice; an
+        # explicit ``None`` falls back to the spool-only default that
+        # matches old behavior so tests / older callers don't
+        # break. ``trace_buffer`` is the in-memory ring backing
+        # ``ci.trace()`` — separate from sinks so ``output="none"``
+        # still populates it.
+        if sinks is None:
+            from cirron.core.sinks import SpoolSink
+
+            sinks = [SpoolSink(writer)]
+        self._sinks: list[OutputSink] = list(sinks)
+        self._trace_buffer = trace_buffer
         # Test hook — called once at the top of each tick. Intended solely for
         # unit tests that want to inject a deterministic failure to exercise
         # supervisor respawning.
@@ -306,7 +322,22 @@ class FlushThread(threading.Thread):
             marks=[_mark_to_dict(m) for m in marks],
             snapshots=[snapshot_to_dict(s) for s in snapshots],
         )
-        self._writer.write(batch)
+        # Populate the in-memory read-back buffer first so a sink crash
+        # later in the loop can't make ``ci.trace()`` lose data.
+        if self._trace_buffer is not None:
+            try:
+                self._trace_buffer.add_batch(batch)
+            except Exception:
+                log.warning("cirron trace_buffer.add_batch failed", exc_info=True)
+        for sink in self._sinks:
+            try:
+                sink.emit(batch)
+            except Exception:
+                log.warning(
+                    "cirron output sink %r failed; continuing",
+                    getattr(sink, "name", type(sink).__name__),
+                    exc_info=True,
+                )
         if self._transport is not None:
             try:
                 self._transport.send(batch.to_json())
@@ -544,13 +575,22 @@ def start_flush_thread(
     spool_max_bytes: int | None = None,
     interval: float | None = None,
     transport: Transport | None = None,
+    output: list[str] | None = None,
+    trace_buffer: _TraceBuffer | None = None,
 ) -> _Supervisor:
     """Start the process-wide flush thread (idempotent).
 
     Values are resolved in order: explicit kwarg → ``cirron`` attribute →
     module default. The first call also registers ``atexit`` / signal
     handlers to flush on process exit.
+
+    ``output`` is the normalized list of sink names (see
+    ``cirron.core.sinks.normalize_output``). ``None`` means "spool only"
+    for backwards compatibility with callers that don't yet pass
+    ``output=`` (e.g. tests).
     """
+    from cirron.core.sinks import build_sinks
+
     global _supervisor, _writer, _wake_event
     with _state_lock:
         if _supervisor is not None:
@@ -569,6 +609,9 @@ def start_flush_thread(
         if interval is None:
             interval = getattr(cirron, "flush_interval", None) or DEFAULT_INTERVAL_SEC
 
+        # The spool writer is always constructed so ``flush_now()`` has a
+        # safe ad-hoc fallback target, even when ``output="none"`` opts
+        # the live tick out of writing to it.
         _writer = SpoolWriter(spool_dir, max_bytes=spool_max_bytes)
         _wake_event = threading.Event()
         stack = get_default_stack()
@@ -582,6 +625,9 @@ def start_flush_thread(
         resolved_interval = interval
         writer_ref = _writer
         wake_ref = _wake_event
+        resolved_output = output if output is not None else ["spool"]
+        sinks = build_sinks(resolved_output, writer_ref)
+        tb = trace_buffer if trace_buffer is not None else get_default_trace_buffer()
 
         def factory(t: Transport | None) -> FlushThread:
             return FlushThread(
@@ -593,6 +639,8 @@ def start_flush_thread(
                 wake_ref,
                 snapshot_buffer=snap_buf,
                 blob_queue=blob_q,
+                sinks=list(sinks),
+                trace_buffer=tb,
             )
 
         _supervisor = _Supervisor(factory, transport)
@@ -622,8 +670,16 @@ def flush_now() -> Path | None:
     Safe from any thread and from ``atexit``. If no flush thread is running
     an ad-hoc writer at ``./.cirron/spool/`` is used so data from short-lived
     scripts isn't lost.
+
+    Also feeds the in-memory trace buffer (so ``ci.trace()`` works
+    after a sync flush) and dispatches through the active worker's sinks
+    when one is running, so a mid-run flush produces the same log/stdout
+    lines a tick would have.
     """
-    writer = _writer if _writer is not None else SpoolWriter(Path("./.cirron/spool/"))
+    sup = _supervisor
+    worker = sup.worker if sup is not None else None
+    sinks: list[OutputSink] = list(worker._sinks) if worker is not None else []
+
     scopes = get_default_stack().drain_closed_all()
     marks = get_default_mark_buffer().drain_all()
     snapshots = get_default_snapshot_buffer().drain()
@@ -636,6 +692,29 @@ def flush_now() -> Path | None:
         marks=[_mark_to_dict(m) for m in marks],
         snapshots=[snapshot_to_dict(s) for s in snapshots],
     )
+    try:
+        get_default_trace_buffer().add_batch(batch)
+    except Exception:
+        log.warning("cirron trace_buffer.add_batch failed during flush_now", exc_info=True)
+    if sinks:
+        path: Path | None = None
+        for sink in sinks:
+            try:
+                result = sink.emit(batch)
+            except Exception:
+                log.warning(
+                    "cirron output sink %r failed during flush_now",
+                    getattr(sink, "name", type(sink).__name__),
+                    exc_info=True,
+                )
+                continue
+            if isinstance(result, Path) and path is None:
+                path = result
+        return path
+    # No active worker (atexit / short script) — fall back to the spool
+    # writer if one is present, or build an ad-hoc writer at ``.cirron/spool/``
+    # so trailing data from a profile-less run isn't lost.
+    writer = _writer if _writer is not None else SpoolWriter(Path("./.cirron/spool/"))
     return writer.write(batch)
 
 
