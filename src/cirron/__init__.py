@@ -40,7 +40,7 @@ from cirron.core.errors import (
     CirronError,
     CirronSecretNotFound,
 )
-from cirron.core.profiler import Profiler, flush, health, shutdown, watch
+from cirron.core.profiler import Profiler, flush, health, shutdown, trace, watch
 from cirron.core.yaml_types import CirronYaml, ProfilingConfig, ServingConfig
 from cirron.data.transform import map  # noqa: A004 — public ci.map decorator
 
@@ -58,6 +58,7 @@ def profile(
     flush_interval: float | None = None,
     enabled: bool = True,
     path: str | None = None,
+    output: str | list[str] | None = None,
 ) -> Profiler:
     """Attach the profiler using the process-wide default ``Cirron``."""
     return get_default().profile(
@@ -68,6 +69,7 @@ def profile(
         flush_interval=flush_interval,
         enabled=enabled,
         path=path,
+        output=output,
     )
 
 
@@ -138,6 +140,7 @@ __all__ = [
     "scope",
     "secret",
     "shutdown",
+    "trace",
     "watch",
     "wrap",
 ]
