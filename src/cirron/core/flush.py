@@ -678,6 +678,7 @@ def flush_now() -> Path | None:
     """
     sup = _supervisor
     worker = sup.worker if sup is not None else None
+    has_worker = worker is not None
     sinks: list[OutputSink] = list(worker._sinks) if worker is not None else []
 
     scopes = get_default_stack().drain_closed_all()
@@ -711,6 +712,11 @@ def flush_now() -> Path | None:
             if isinstance(result, Path) and path is None:
                 path = result
         return path
+    if has_worker:
+        # ``output="none"``: explicit user request to skip every local
+        # sink. The trace buffer above is the only retention path, and
+        # ``ci.trace()`` reads from it.
+        return None
     # No active worker (atexit / short script) — fall back to the spool
     # writer if one is present, or build an ad-hoc writer at ``.cirron/spool/``
     # so trailing data from a profile-less run isn't lost.
