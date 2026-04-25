@@ -158,3 +158,55 @@ def test_trace_works_without_profile():
     ci.flush()
     result = ci.trace(format="dict")
     assert result["span_count"] >= 1
+
+
+def test_trace_without_profile_does_not_write_spool(tmp_path):
+    """PR #43 review #5: ``ci.trace()`` in a profile-less process must
+    not write a spool file as a side effect — that breaks read-only
+    filesystems and surprises notebook users."""
+    set_default_trace_buffer(_TraceBuffer())
+    with ci.scope("standalone"):
+        ci.mark("x", 1)
+    ci.trace(format="dict")
+    spool_dir = tmp_path / ".cirron" / "spool"
+    if spool_dir.exists():
+        assert not list(spool_dir.glob("*.json"))
+
+
+def test_trace_buffer_caps_marks_per_span():
+    """PR #43 review #4: marks for an open (never-evicted) span must be
+    bounded so long-running processes can't grow ``_marks`` unbounded."""
+    from cirron.core.flush import Batch
+    from cirron.core.trace_buffer import _TraceBuffer
+
+    buf = _TraceBuffer(max_spans=10, max_marks_per_span=4)
+    open_span_id = "open-session"
+    # No span entry for ``open_span_id`` — it's still open, so it'll
+    # never appear in batch.spans. Push 100 point marks at it.
+    marks = [
+        {"span_id": open_span_id, "name": "loss", "value": i, "kind": "point"} for i in range(100)
+    ]
+    buf.add_batch(Batch(batch_id="b", created_ns=0, spans=[], marks=marks))
+    _, marks_by_span = buf.snapshot()
+    bucket = marks_by_span[open_span_id]
+    assert len(bucket) == 4
+    # Newest points retained.
+    assert [m["value"] for m in bucket] == [96, 97, 98, 99]
+
+
+def test_trace_buffer_keeps_summary_marks_when_capping():
+    from cirron.core.flush import Batch
+    from cirron.core.trace_buffer import _TraceBuffer
+
+    buf = _TraceBuffer(max_spans=10, max_marks_per_span=2)
+    span_id = "open-session"
+    marks = [
+        {"span_id": span_id, "name": "epoch_loss", "value": 0.1, "kind": "summary"},
+        *({"span_id": span_id, "name": "loss", "value": i, "kind": "point"} for i in range(10)),
+    ]
+    buf.add_batch(Batch(batch_id="b", created_ns=0, spans=[], marks=marks))
+    _, marks_by_span = buf.snapshot()
+    bucket = marks_by_span[span_id]
+    kinds = [m["kind"] for m in bucket]
+    assert "summary" in kinds  # canonical end-of-span value preserved
+    assert kinds.count("point") <= 2
