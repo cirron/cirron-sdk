@@ -269,6 +269,20 @@ class FlushThread(threading.Thread):
         # worker instance instead of on every tick.
         self._spool_only_notified = False
 
+    @property
+    def sinks(self) -> list[OutputSink]:
+        """Snapshot of the worker's currently configured local sinks.
+
+        Public so :func:`flush_now` (and tests) can re-emit through the
+        same sink list a live tick would use, without reaching into
+        private state.
+        """
+        return list(self._sinks)
+
+    @property
+    def trace_buffer(self) -> _TraceBuffer | None:
+        return self._trace_buffer
+
     def run(self) -> None:
         while not self._stop_event.is_set():
             triggered = self._wake_event.wait(self._interval)
@@ -664,6 +678,50 @@ def stop_flush_thread(timeout: float = 5.0) -> None:
         sup.stop(timeout=timeout)
 
 
+def flush_to_trace_buffer() -> int:
+    """Refresh the in-memory trace buffer for ``ci.trace()`` reads.
+
+    Companion to :func:`flush_now` for callers (notably ``ci.trace()``)
+    that want the buffer kept fresh without surprising side effects:
+
+    * **Active profiler** — delegates to :func:`flush_now`, which routes
+      through the user's configured sinks (so an ``output="spool"`` run
+      still writes the spans to disk). We *don't* drain into the trace
+      buffer alone here, because that would steal the spans from the
+      next live tick.
+    * **No profiler attached** — drains directly into the trace buffer
+      without writing a spool file. This avoids the surprising
+      filesystem write a profile-less ``ci.trace()`` call would
+      otherwise trigger via ``flush_now``'s ad-hoc spool fallback, and
+      makes ``ci.trace()`` safe on read-only filesystems.
+
+    Returns the number of spans drained into the buffer this call.
+    """
+    if _supervisor is not None:
+        flush_now()
+        return 0
+    scopes = get_default_stack().drain_closed_all()
+    marks = get_default_mark_buffer().drain_all()
+    snapshots = get_default_snapshot_buffer().drain()
+    if not scopes and not marks and not snapshots:
+        return 0
+    batch = Batch(
+        batch_id=uuid.uuid4().hex,
+        created_ns=time.time_ns(),
+        spans=[_scope_to_dict(s) for s in scopes],
+        marks=[_mark_to_dict(m) for m in marks],
+        snapshots=[snapshot_to_dict(s) for s in snapshots],
+    )
+    try:
+        get_default_trace_buffer().add_batch(batch)
+    except Exception:
+        log.warning(
+            "cirron trace_buffer.add_batch failed during flush_to_trace_buffer",
+            exc_info=True,
+        )
+    return len(batch.spans)
+
+
 def flush_now() -> Path | None:
     """Drain every producer thread's buffers and write one batch synchronously.
 
@@ -679,7 +737,7 @@ def flush_now() -> Path | None:
     sup = _supervisor
     worker = sup.worker if sup is not None else None
     has_worker = worker is not None
-    sinks: list[OutputSink] = list(worker._sinks) if worker is not None else []
+    sinks: list[OutputSink] = worker.sinks if worker is not None else []
 
     scopes = get_default_stack().drain_closed_all()
     marks = get_default_mark_buffer().drain_all()

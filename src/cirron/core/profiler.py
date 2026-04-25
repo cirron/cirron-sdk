@@ -212,10 +212,11 @@ class Profiler:
     ) -> Any:
         """Return the current session's scope tree.
 
-        Thin pass-through to :func:`cirron.core.trace.trace`. Works on
-        a disabled profiler too — the trace buffer accumulates whatever
-        spans/marks the SDK has seen, even when the flush thread is
-        stopped.
+        Thin pass-through to :func:`cirron.core.trace.trace`. Performs a
+        best-effort synchronous drain into the in-memory trace buffer
+        before reading it, so recently closed spans/marks appear even
+        if the periodic flush thread isn't running. Works on a disabled
+        profiler too.
         """
         return _trace_impl(format=format, name=name, last=last)
 
@@ -530,10 +531,10 @@ def trace(
 ) -> Any:
     """Module-level sugar — read back the current session's scope tree.
 
-    Always usable, even when no profiler is attached: the trace buffer
-    is process-wide and accumulates spans whenever ``ci.scope()`` /
-    ``ci.mark()`` are called, regardless of whether ``ci.profile()``
-    has been invoked.
+    Always usable, even when no profiler is attached: this call performs
+    an on-demand synchronous drain into the in-memory trace buffer, so
+    spans/marks become visible even if the background flush thread
+    hasn't been started by ``ci.profile()``.
     """
     return _trace_impl(format=format, name=name, last=last)
 
