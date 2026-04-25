@@ -401,6 +401,15 @@ def profile(
             path=path,
         )
 
+        # Validate ``output=`` BEFORE installing hooks or selecting a
+        # transport. ``normalize_output`` raises ``ValueError`` for
+        # unknown sink names; doing it here means a misconfigured call
+        # leaves no side effects (no double-wrapped DataLoader.__iter__,
+        # no orphaned transports). Resolution is the same later: explicit
+        # kwarg > ``Cirron(output=...)`` > "spool".
+        output_value = output if output is not None else getattr(ci, "output", None)
+        normalized_output = normalize_output(output_value)
+
         platform_context = _read_platform_context()
         transport = select_transport(ci)
 
@@ -418,12 +427,7 @@ def profile(
         installed = install_hooks(detected, get_default_stack(), ci)
 
         resolved_interval = ci._profile_config.get("flush_interval", ci.flush_interval)
-        # ``output=`` selects the local sinks (spool/log/stdout/none).
-        # Resolution: explicit profile() kwarg > ``Cirron(output=...)`` > "spool".
-        # ``output="none"`` yields an empty sink list — the trace buffer still
-        # populates so ``ci.trace()`` works for in-memory inspection.
-        output_value = output if output is not None else getattr(ci, "output", None)
-        normalized_output = normalize_output(output_value)
+        # ``normalized_output`` was already computed above pre-hook-install.
         # Bound the read-back ring to whatever the user asked for; falls
         # back to the default 100k inside _TraceBuffer when unset.
         max_spans = getattr(ci, "trace_buffer_max_spans", None)

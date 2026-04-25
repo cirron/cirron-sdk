@@ -150,6 +150,24 @@ def test_output_invalid_raises():
         ci.profile(output="bogus")
 
 
+def test_invalid_output_does_not_install_hooks():
+    """Regression: validation must run BEFORE hook install/transport
+    selection so a misconfigured ``output=`` doesn't leak side effects
+    that bleed into the next test (e.g. double-wrapped torch DataLoader
+    causing duplicate epoch spans)."""
+    from cirron.core.profiler import _profiler_lock
+
+    with pytest.raises(ValueError):
+        ci.profile(output="bogus")
+    # No profiler instance was created.
+    with _profiler_lock:
+        assert profiler_mod._profiler is None
+    # No flush thread was started.
+    from cirron.core import flush as flush_mod
+
+    assert flush_mod._supervisor is None
+
+
 # --- build_sinks -------------------------------------------------------------
 
 
