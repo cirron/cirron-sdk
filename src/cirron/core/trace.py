@@ -149,13 +149,15 @@ def trace(
     * ``last=N`` — keep only the N most recently closed spans by
     ``end_ns``.
     """
-    # Synchronous flush so anything closed between the last tick and now
-    # is visible. Best-effort — if no profiler is attached, the buffer is
-    # still readable from prior ticks (or empty on a fresh process).
+    # Synchronous drain into the in-memory buffer so anything closed
+    # between the last tick and now is visible. We deliberately do NOT
+    # call ``flush_now()`` here — that would write a spool file as a
+    # side effect of a read-only inspection call, which is surprising
+    # in notebooks and breaks on read-only filesystems.
     try:
-        from cirron.core.flush import flush_now
+        from cirron.core.flush import flush_to_trace_buffer
 
-        flush_now()
+        flush_to_trace_buffer()
     except Exception:
         pass
 
