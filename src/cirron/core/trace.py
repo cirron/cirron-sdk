@@ -136,18 +136,18 @@ def trace(
     last: int | None = None,
 ) -> _TraceTreeRepr | dict[str, Any] | str | pd.DataFrame | None:
     """Return the current session's scope tree.
-        * ``format="tree"`` (default) — pretty text tree. In Jupyter returns
-        a :class:`_TraceTreeRepr` so the cell renders the tree; in a
-        plain script prints to stdout and returns ``None``.
-        * ``format="dict"`` — nested dict, one node per span with
-        ``children``.
-        * ``format="json"`` — JSON string of the dict form.
-        * ``format="df"`` — flat ``pandas.DataFrame``, one row per span.
-        Raises :class:`CirronDependencyError` if pandas is missing.
-        * ``name="epoch"`` — keep only ``epoch`` spans plus their
-        descendants.
-        * ``last=N`` — keep only the N most recently closed spans by
-        ``end_ns``.
+    * ``format="tree"`` (default) — pretty text tree. In Jupyter returns
+    a :class:`_TraceTreeRepr` so the cell renders the tree; in a
+    plain script prints to stdout and returns ``None``.
+    * ``format="dict"`` — nested dict, one node per span with
+    ``children``.
+    * ``format="json"`` — JSON string of the dict form.
+    * ``format="df"`` — flat ``pandas.DataFrame``, one row per span.
+    Raises :class:`CirronDependencyError` if pandas is missing.
+    * ``name="epoch"`` — keep only ``epoch`` spans plus their
+    descendants.
+    * ``last=N`` — keep only the N most recently closed spans by
+    ``end_ns``.
     """
     # Synchronous flush so anything closed between the last tick and now
     # is visible. Best-effort — if no profiler is attached, the buffer is
