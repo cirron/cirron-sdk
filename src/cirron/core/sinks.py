@@ -42,11 +42,15 @@ class OutputSink(Protocol):
 
     Errors raised here are caught by the flush thread (see
     :meth:`FlushThread._tick`) so a broken sink can't kill profiling.
+
+    ``emit`` may return a :class:`Path` (the spool sink does, so
+    ``flush_now()`` can hand the file path back to its caller) or
+    ``None``.
     """
 
     name: str
 
-    def emit(self, batch: Batch) -> None: ...
+    def emit(self, batch: Batch) -> Path | None: ...
 
 
 class SpoolSink:
