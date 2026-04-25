@@ -29,6 +29,13 @@ if TYPE_CHECKING:
     from cirron.core.flush import Batch
 
 DEFAULT_MAX_SPANS = 100_000
+# Per-``span_id`` cap on retained marks. Long-lived open spans (notably
+# the ``cirron.session`` root, which stays open for the whole process)
+# never appear in ``batch.spans``, so the span-count cap alone can't
+# evict their marks. Bound them per-span instead — keep all summary
+# marks (canonical end-of-span values) plus the most recent
+# ``DEFAULT_MAX_MARKS_PER_SPAN`` point marks.
+DEFAULT_MAX_MARKS_PER_SPAN = 1024
 
 
 class _TraceBuffer:
@@ -42,8 +49,13 @@ class _TraceBuffer:
     lockstep when spans age out of the deque.
     """
 
-    def __init__(self, max_spans: int = DEFAULT_MAX_SPANS) -> None:
+    def __init__(
+        self,
+        max_spans: int = DEFAULT_MAX_SPANS,
+        max_marks_per_span: int = DEFAULT_MAX_MARKS_PER_SPAN,
+    ) -> None:
         self._max_spans = max(1, int(max_spans))
+        self._max_marks_per_span = max(1, int(max_marks_per_span))
         self._spans: deque[dict[str, Any]] = deque()
         self._marks: dict[str, list[dict[str, Any]]] = {}
         self._lock = threading.Lock()
@@ -70,8 +82,31 @@ class _TraceBuffer:
                 span_id = mark.get("span_id")
                 if span_id is None:
                     continue
-                self._marks.setdefault(span_id, []).append(mark)
+                bucket = self._marks.setdefault(span_id, [])
+                bucket.append(mark)
+                self._cap_marks_locked(bucket)
             self._evict_locked()
+
+    def _cap_marks_locked(self, bucket: list[dict[str, Any]]) -> None:
+        """Bound the per-span mark list. Keeps every ``summary`` mark
+        (the canonical end-of-span value) and the newest
+        ``_max_marks_per_span`` ``point`` marks. Prevents unbounded
+        growth on long-lived open spans whose ``span_id`` never appears
+        in ``self._spans`` and therefore can't be evicted by the
+        span-count cap."""
+        if len(bucket) <= self._max_marks_per_span:
+            return
+        # Cheap fast-path: if every entry is a point, just trim the head.
+        if all(m.get("kind") != "summary" for m in bucket):
+            del bucket[: len(bucket) - self._max_marks_per_span]
+            return
+        summaries = [m for m in bucket if m.get("kind") == "summary"]
+        points = [m for m in bucket if m.get("kind") != "summary"]
+        if len(points) > self._max_marks_per_span:
+            points = points[-self._max_marks_per_span :]
+        bucket.clear()
+        bucket.extend(summaries)
+        bucket.extend(points)
 
     def _evict_locked(self) -> None:
         while len(self._spans) > self._max_spans:
