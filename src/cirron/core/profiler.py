@@ -26,6 +26,13 @@ from cirron.core.config import Cirron, get_default
 from cirron.core.flush import flush_now, start_flush_thread, stop_flush_thread
 from cirron.core.mark import get_default_mark_buffer, set_fallback_span_id
 from cirron.core.scope import Scope, get_default_stack
+from cirron.core.sinks import normalize_output
+from cirron.core.trace import trace as _trace_impl
+from cirron.core.trace_buffer import (
+    _TraceBuffer,
+    get_default_trace_buffer,
+    set_default_trace_buffer,
+)
 from cirron.core.transport import select_transport
 from cirron.hooks._registry import detect_frameworks, install_hooks
 
@@ -197,6 +204,22 @@ class Profiler:
         except Exception:
             log.warning("cirron.Profiler.flush() failed", exc_info=True)
 
+    def trace(
+        self,
+        format: Literal["tree", "dict", "json", "df"] = "tree",  # noqa: A002
+        name: str | None = None,
+        last: int | None = None,
+    ) -> Any:
+        """Return the current session's scope tree.
+
+        Thin pass-through to :func:`cirron.core.trace.trace`. Performs a
+        best-effort synchronous drain into the in-memory trace buffer
+        before reading it, so recently closed spans/marks appear even
+        if the periodic flush thread isn't running. Works on a disabled
+        profiler too.
+        """
+        return _trace_impl(format=format, name=name, last=last)
+
     def shutdown(self) -> None:
         """Close the root scope, flush, stop the flush thread, clear the
         singleton. Idempotent."""
@@ -331,6 +354,7 @@ def profile(
     flush_interval: float | None = None,
     enabled: bool = True,
     path: str | None = None,
+    output: str | list[str] | None = None,
     cirron: Cirron | None = None,
 ) -> Profiler:
     """Attach the profiler to the current process (spec §4.2).
@@ -377,6 +401,15 @@ def profile(
             path=path,
         )
 
+        # Validate ``output=`` BEFORE installing hooks or selecting a
+        # transport. ``normalize_output`` raises ``ValueError`` for
+        # unknown sink names; doing it here means a misconfigured call
+        # leaves no side effects (no double-wrapped DataLoader.__iter__,
+        # no orphaned transports). Resolution is the same later: explicit
+        # kwarg > ``Cirron(output=...)`` > "spool".
+        output_value = output if output is not None else getattr(ci, "output", None)
+        normalized_output = normalize_output(output_value)
+
         platform_context = _read_platform_context()
         transport = select_transport(ci)
 
@@ -394,12 +427,21 @@ def profile(
         installed = install_hooks(detected, get_default_stack(), ci)
 
         resolved_interval = ci._profile_config.get("flush_interval", ci.flush_interval)
+        # ``normalized_output`` was already computed above pre-hook-install.
+        # Bound the read-back ring to whatever the user asked for; falls
+        # back to the default 100k inside _TraceBuffer when unset.
+        max_spans = getattr(ci, "trace_buffer_max_spans", None)
+        if max_spans is not None:
+            set_default_trace_buffer(_TraceBuffer(max_spans=max_spans))
+        trace_buffer = get_default_trace_buffer()
         supervisor = start_flush_thread(
             cirron=ci,
             output_dir=ci.output_dir,
             spool_max_bytes=ci.spool_max_bytes,
             interval=resolved_interval,
             transport=transport,
+            output=normalized_output,
+            trace_buffer=trace_buffer,
         )
 
         root_attrs: dict[str, Any] = {
@@ -486,6 +528,21 @@ def flush() -> None:
         active.flush()
 
 
+def trace(
+    format: Literal["tree", "dict", "json", "df"] = "tree",  # noqa: A002
+    name: str | None = None,
+    last: int | None = None,
+) -> Any:
+    """Module-level sugar — read back the current session's scope tree.
+
+    Always usable, even when no profiler is attached: this call performs
+    an on-demand synchronous drain into the in-memory trace buffer, so
+    spans/marks become visible even if the background flush thread
+    hasn't been started by ``ci.profile()``.
+    """
+    return _trace_impl(format=format, name=name, last=last)
+
+
 def watch(model: Any | None) -> Any | None:
     """Register ``model`` for snapshot capture (spec §4.2).
 
@@ -557,6 +614,7 @@ def _reset_for_tests() -> None:
     from cirron.core.blob_queue import _reset_default_for_tests as _reset_blob_queue
     from cirron.core.config import _reset_default_for_tests
     from cirron.core.snapshot_buffer import _reset_default_for_tests as _reset_snapshot_buffer
+    from cirron.core.trace_buffer import _reset_default_for_tests as _reset_trace_buffer
 
     global _profiler, _watched_model_ref, _watched_warning_emitted
     with _profiler_lock:
@@ -581,4 +639,5 @@ def _reset_for_tests() -> None:
     _watched_warning_emitted = False
     _reset_snapshot_buffer()
     _reset_blob_queue()
+    _reset_trace_buffer()
     _reset_default_for_tests()

@@ -345,6 +345,8 @@ class Cirron:
         ingest_path: str | None = None,
         load_warn_bytes: int | None = None,
         load_max_bytes: int | None = None,
+        output: str | list[str] | None = None,
+        trace_buffer_max_spans: int | None = None,
     ) -> None:
         merged = _resolve_config(
             {
@@ -372,6 +374,13 @@ class Cirron:
         self.ingest_path: str = merged["ingest_path"]
         self.load_warn_bytes: int = merged["load_warn_bytes"]
         self.load_max_bytes: int = merged["load_max_bytes"]
+        # Instance-level default for ``output=`` and the trace
+        # buffer cap. ``profile(output=...)`` overrides; otherwise the
+        # value flows through here. Not part of the layered TOML/env
+        # resolver yet — those layers are reserved for spec §4.10
+        # core fields.
+        self.output: str | list[str] | None = output
+        self.trace_buffer_max_spans: int | None = trace_buffer_max_spans
         self._profile_config: dict[str, Any] = {}
 
     # -- profile orchestration ----------------------------------------------
@@ -386,6 +395,7 @@ class Cirron:
         flush_interval: float | None = None,
         enabled: bool = True,
         path: str | None = None,
+        output: str | list[str] | None = None,
     ) -> Profiler:
         """Attach the profiler using this ``Cirron`` instance's config.
 
@@ -405,8 +415,19 @@ class Cirron:
             flush_interval=flush_interval,
             enabled=enabled,
             path=path,
+            output=output,
             cirron=self,
         )
+
+    def trace(
+        self,
+        format: Literal["tree", "dict", "json", "df"] = "tree",  # noqa: A002
+        name: str | None = None,
+        last: int | None = None,
+    ) -> Any:
+        from cirron.core.trace import trace as _trace
+
+        return _trace(format=format, name=name, last=last)
 
     def _resolve_profile_config(
         self,
