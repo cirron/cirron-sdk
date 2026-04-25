@@ -1,4 +1,4 @@
-"""In-memory trace buffer for ``ci.trace()`` read-back (SDK-47).
+"""In-memory trace buffer for ``ci.trace()`` read-back.
 
 The flush thread already drains closed scopes + marks into a
 :class:`Batch` once per tick and ships them off to spool / sinks /
