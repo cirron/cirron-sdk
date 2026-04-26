@@ -9,6 +9,12 @@ SnapshotMode = Literal["stats", "sampled", "full"]
 
 
 class ServingConfig(BaseModel):
+    """``serving_config:`` block of ``cirron.yaml``.
+
+    Captures runtime selection plus optional schema metadata used by
+    platform serving. Unknown keys are preserved (``extra="allow"``).
+    """
+
     model_config = ConfigDict(extra="allow")
 
     runtime: Runtime | None = None
@@ -19,6 +25,12 @@ class ServingConfig(BaseModel):
 
 
 class ProfilingConfig(BaseModel):
+    """``profiling:`` block of ``cirron.yaml``.
+
+    Holds snapshot policy, sample rate, flush interval, and an optional
+    framework allow-list. Unknown keys are preserved (``extra="allow"``).
+    """
+
     model_config = ConfigDict(extra="allow")
 
     snapshots: SnapshotMode = "stats"
@@ -28,6 +40,14 @@ class ProfilingConfig(BaseModel):
 
 
 class CirronYaml(BaseModel):
+    """Top-level Pydantic model for the ``cirron.yaml`` file.
+
+    Accepts both ``serving_config`` and ``servingConfig`` keys
+    (``populate_by_name=True``) and preserves unknown fields
+    (``extra="allow"``) so future schema additions don't break older
+    SDK versions.
+    """
+
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     name: str

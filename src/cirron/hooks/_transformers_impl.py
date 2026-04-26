@@ -30,6 +30,17 @@ log = logging.getLogger("cirron.hooks.transformers")
 
 
 def _catch(label: str, fn: Any, *args: Any, **kwargs: Any) -> Any:
+    """Call ``fn(*args, **kwargs)``; log + swallow exceptions.
+
+    Args:
+        label (str): Diagnostic label included in the log line.
+        fn (Any): Callable to invoke under the guard.
+        *args (Any): Positional args forwarded to ``fn``.
+        **kwargs (Any): Keyword args forwarded to ``fn``.
+
+    Returns:
+        Any: ``fn``'s return value, or ``None`` if it raised.
+    """
     try:
         return fn(*args, **kwargs)
     except Exception:
@@ -47,9 +58,16 @@ class TransformersHookHandle:
         self._installed = False
 
     def add_undo(self, label: str, fn: Any) -> None:
+        """Record a labeled undo callback to fire in ``uninstall``.
+
+        Args:
+            label (str): Diagnostic label logged on undo failure.
+            fn (Any): Zero-arg callable that reverses one patch.
+        """
         self._undos.append((label, fn))
 
     def uninstall(self) -> None:
+        """Reverse every recorded undo callback in LIFO order."""
         if not self._installed:
             return
         self._installed = False
@@ -72,10 +90,28 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
     hook only yields when HF ``Trainer`` is actually running. Vanilla
     torch loops in a process where transformers happens to be
     importable still get torch's own epoch/step spans.
+
+    Args:
+        scope_stack (ScopeStack): Per-process scope stack.
+        cirron (Cirron): The owning :class:`Cirron` instance.
+        context (HookContext): Shared install context — see
+            ``hooks/_registry.py``.
+
+    Returns:
+        type: The ``CirronTrainerCallback`` subclass.
     """
     from transformers import TrainerCallback  # type: ignore[import-not-found]
 
     def _open(name: str, **attrs: Any) -> Scope | None:
+        """Push a scope, swallowing exceptions.
+
+        Args:
+            name (str): Span name.
+            **attrs (Any): Attrs attached to the new scope.
+
+        Returns:
+            Scope | None: The pushed scope, or ``None`` on failure.
+        """
         try:
             return scope_stack.push(name, **attrs)
         except Exception:
@@ -83,6 +119,16 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
             return None
 
     def _close(scope_obj: Scope | None) -> None:
+        """Close ``scope_obj``, unwinding intervening spans if it's been buried.
+
+        HF ``Trainer`` fires ``on_epoch_begin`` before the first
+        ``iter(dataloader)``, so the torch hook may push its own scopes
+        on top of ours; the unwind path pops those off as siblings until
+        we reach our own scope.
+
+        Args:
+            scope_obj (Scope | None): The scope to close. ``None`` is a no-op.
+        """
         if scope_obj is None:
             return
         try:
@@ -118,7 +164,12 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
     def _capture_epoch_snapshots(model: Any, span_id: str) -> None:
         """HF ``TrainerCallback`` receives the model via ``kwargs["model"]``
         on every hook. Capture weights + grads against the epoch span id
-        before the epoch closes; no-ops when snapshots are disabled."""
+        before the epoch closes; no-ops when snapshots are disabled.
+
+        Args:
+            model (Any): The HF model being trained.
+            span_id (str): Id of the epoch span the records link to.
+        """
         from cirron.core.snapshot_buffer import get_default_snapshot_buffer
         from cirron.snapshots.stats import capture
 
@@ -127,6 +178,15 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
             get_default_snapshot_buffer().extend(records)
 
     def _record_logs(logs: Any, kind: str = "point") -> None:
+        """Emit a ``ci.mark`` per numeric entry in an HF ``logs`` dict.
+
+        Args:
+            logs (Any): The ``logs`` payload from a Trainer callback. Falsy
+                / non-mapping values are silently ignored.
+            kind (str): ``"point"`` (default) or ``"summary"`` — passed
+                through to ``ci.mark`` so end-of-epoch values aren't
+                re-aggregated downstream.
+        """
         if not logs:
             return
         try:
@@ -144,6 +204,17 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
                 continue
 
     def _resolve_lr(args: Any, kwargs: dict[str, Any]) -> float | None:
+        """Best-effort: read the current learning rate off the scheduler or args.
+
+        Args:
+            args (Any): The ``TrainingArguments`` instance for this run.
+            kwargs (dict[str, Any]): Trainer callback kwargs (``lr_scheduler``
+                is the canonical source).
+
+        Returns:
+            float | None: The resolved LR or ``None`` if neither source
+                yielded a usable value.
+        """
         sched = kwargs.get("lr_scheduler")
         if sched is not None:
             try:
@@ -171,7 +242,17 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
             self._claimed: list[str] = []
 
         def on_train_begin(self, args: Any, state: Any, control: Any, **kwargs: Any) -> None:
+            """Reset state and claim ``epoch`` / ``step`` ownership for this run.
+
+            Args:
+                args (Any): HF ``TrainingArguments``.
+                state (Any): HF ``TrainerState``.
+                control (Any): HF ``TrainerControl``.
+                **kwargs (Any): Trainer-supplied extras (model, ...).
+            """
+
             def _do() -> None:
+                """Reset stale scopes and claim epoch/step ownership."""
                 # Defensive reset: a prior train() on the same Trainer
                 # instance may have left scopes open if it errored.
                 _close(self._step_scope)
@@ -191,13 +272,34 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
             _catch("on_train_begin", _do)
 
         def on_epoch_begin(self, args: Any, state: Any, control: Any, **kwargs: Any) -> None:
+            """Open an ``epoch`` scope indexed by ``state.epoch``.
+
+            Args:
+                args (Any): HF ``TrainingArguments``.
+                state (Any): HF ``TrainerState`` carrying the epoch counter.
+                control (Any): HF ``TrainerControl``.
+                **kwargs (Any): Trainer-supplied extras (model, ...).
+            """
+
             def _do() -> None:
+                """Open the epoch scope at ``state.epoch``."""
                 self._epoch_scope = _open("epoch", index=int(state.epoch))
 
             _catch("on_epoch_begin", _do)
 
         def on_epoch_end(self, args: Any, state: Any, control: Any, **kwargs: Any) -> None:
+            """Emit per-epoch metrics as ``summary`` marks, snapshot, then close.
+
+            Args:
+                args (Any): HF ``TrainingArguments``.
+                state (Any): HF ``TrainerState``.
+                control (Any): HF ``TrainerControl``.
+                **kwargs (Any): Trainer-supplied extras — ``metrics`` and
+                    ``model`` are read.
+            """
+
             def _do() -> None:
+                """Emit summary metrics, snapshot, and close the epoch scope."""
                 # End-of-epoch logs are the canonical per-epoch values
                 # (loss at epoch close, etc.) — flag them as summary so
                 # the viewer can render them as a single per-span value
@@ -214,13 +316,34 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
             _catch("on_epoch_end", _do)
 
         def on_step_begin(self, args: Any, state: Any, control: Any, **kwargs: Any) -> None:
+            """Open a ``step`` scope indexed by ``state.global_step``.
+
+            Args:
+                args (Any): HF ``TrainingArguments``.
+                state (Any): HF ``TrainerState`` carrying the step counter.
+                control (Any): HF ``TrainerControl``.
+                **kwargs (Any): Trainer-supplied extras.
+            """
+
             def _do() -> None:
+                """Open the step scope at ``state.global_step``."""
                 self._step_scope = _open("step", index=int(state.global_step))
 
             _catch("on_step_begin", _do)
 
         def on_step_end(self, args: Any, state: Any, control: Any, **kwargs: Any) -> None:
+            """Mark the current LR and close the ``step`` scope.
+
+            Args:
+                args (Any): HF ``TrainingArguments``.
+                state (Any): HF ``TrainerState``.
+                control (Any): HF ``TrainerControl``.
+                **kwargs (Any): Trainer-supplied extras — ``lr_scheduler``
+                    is read for the current LR.
+            """
+
             def _do() -> None:
+                """Mark the current LR and close the step scope."""
                 lr = _resolve_lr(args, kwargs)
                 if lr is not None:
                     try:
@@ -240,10 +363,29 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
             logs: Any = None,
             **kwargs: Any,
         ) -> None:
+            """Emit each numeric entry in ``logs`` as a ``ci.mark``.
+
+            Args:
+                args (Any): HF ``TrainingArguments``.
+                state (Any): HF ``TrainerState``.
+                control (Any): HF ``TrainerControl``.
+                logs (Any): The log payload Trainer emits (loss, lr, ...).
+                **kwargs (Any): Trainer-supplied extras.
+            """
             _catch("on_log", _record_logs, logs)
 
         def on_train_end(self, args: Any, state: Any, control: Any, **kwargs: Any) -> None:
+            """Close any lingering scopes and release ownership claims.
+
+            Args:
+                args (Any): HF ``TrainingArguments``.
+                state (Any): HF ``TrainerState``.
+                control (Any): HF ``TrainerControl``.
+                **kwargs (Any): Trainer-supplied extras.
+            """
+
             def _do() -> None:
+                """Close lingering scopes and release ownership claims."""
                 _close(self._step_scope)
                 self._step_scope = None
                 _close(self._epoch_scope)
@@ -269,6 +411,15 @@ def install(
     torch hook yields its ``DataLoader.__iter__`` epoch rotation —
     otherwise HF ``Trainer`` would drive both callbacks and produce
     duplicate ``epoch`` spans.
+
+    Args:
+        scope_stack (ScopeStack): Per-process scope stack.
+        cirron (Cirron): The owning :class:`Cirron` instance.
+        context (HookContext): Shared install context — see
+            ``hooks/_registry.py``.
+
+    Returns:
+        TransformersHookHandle: Handle whose ``uninstall()`` reverses every patch.
     """
     from transformers import Trainer  # type: ignore[import-not-found]
 
@@ -295,11 +446,21 @@ def install(
     orig_init = Trainer.__init__
 
     def _init(self: Any, *args: Any, **kwargs: Any) -> None:
+        """Patched ``Trainer.__init__``: attach the cirron callback after init.
+
+        Args:
+            self (Any): The :class:`Trainer` instance being constructed.
+            *args (Any): Positional args forwarded to the original
+                ``Trainer.__init__``.
+            **kwargs (Any): Keyword args forwarded to the original
+                ``Trainer.__init__``.
+        """
         # Run the real (or subclass) __init__ first so callback_handler
         # exists before we attach.
         orig_init(self, *args, **kwargs)
 
         def _attach() -> None:
+            """Idempotently add the cirron callback to ``self.callback_handler``."""
             handler = getattr(self, "callback_handler", None)
             existing = getattr(handler, "callbacks", None) if handler is not None else None
             if existing is not None and any(isinstance(cb, callback_cls) for cb in existing):

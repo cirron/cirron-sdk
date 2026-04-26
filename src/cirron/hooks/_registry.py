@@ -65,20 +65,24 @@ class HookHandle(Protocol):
 
     name: str
 
-    def uninstall(self) -> None: ...
+    def uninstall(self) -> None:
+        """Reverse every patch / callback registration recorded at install time."""
+        ...
 
 
 class NoopHookHandle:
     """Trivial handle used by stub installers and tests.
 
     Real handles hold references to monkey-patched callables /
-    registered callbacks and undo them in ``uninstall``.
+    registered callbacks and undo them in ``uninstall``. The constructor
+    simply records the framework ``name``.
     """
 
     def __init__(self, name: str) -> None:
         self.name = name
 
     def uninstall(self) -> None:
+        """No-op — nothing was installed, so nothing to reverse."""
         return None
 
 
@@ -92,15 +96,35 @@ class HookRegistry:
         self._installers: dict[str, Installer] = {}
 
     def register(self, name: str, installer: Installer) -> None:
+        """Register ``installer`` under ``name``, overwriting any prior entry.
+
+        Args:
+            name (str): Framework name (e.g. ``"torch"``).
+            installer (Installer): Callable that returns a ``HookHandle``.
+        """
         self._installers[name] = installer
 
     def get(self, name: str) -> Installer | None:
+        """Return the installer registered under ``name``, or ``None``.
+
+        Args:
+            name (str): Framework name.
+
+        Returns:
+            Installer | None: The registered installer, or ``None`` if absent.
+        """
         return self._installers.get(name)
 
     def names(self) -> list[str]:
+        """Return the list of registered framework names.
+
+        Returns:
+            list[str]: Snapshot of currently registered framework names.
+        """
         return list(self._installers)
 
     def clear(self) -> None:
+        """Drop every registered installer. Used by tests to reset state."""
         self._installers.clear()
 
 
@@ -108,11 +132,21 @@ _REGISTRY = HookRegistry()
 
 
 def register_installer(name: str, installer: Installer) -> None:
-    """Module-level helper used by framework hook modules at import time."""
+    """Module-level helper used by framework hook modules at import time.
+
+    Args:
+        name (str): Framework name (e.g. ``"torch"``).
+        installer (Installer): Callable invoked by :func:`install_hooks`.
+    """
     _REGISTRY.register(name, installer)
 
 
 def get_registry() -> HookRegistry:
+    """Return the process-wide :class:`HookRegistry` singleton.
+
+    Returns:
+        HookRegistry: The shared registry populated at hook-package import.
+    """
     return _REGISTRY
 
 
@@ -121,6 +155,10 @@ def detect_frameworks() -> list[str]:
 
     Uses ``importlib.util.find_spec`` so we don't pay the import cost of
     frameworks the user didn't ask for.
+
+    Returns:
+        list[str]: Names from :data:`FRAMEWORK_MODULES` whose import spec
+            resolves in the current interpreter.
     """
     detected: list[str] = []
     for name, module_name in FRAMEWORK_MODULES.items():
@@ -144,6 +182,18 @@ def install_hooks(
     Unknown names log a WARNING and are skipped. An installer that raises
     is logged at WARNING with traceback and skipped — other frameworks
     still install. Returns the handles that installed successfully.
+
+    Args:
+        names (Iterable[str]): Framework names to install. Deduped while
+            preserving original order, then sorted by install-order priority
+            (transformers > tensorflow > torch).
+        scope_stack (ScopeStack): Per-process scope stack passed to each
+            installer.
+        cirron (Cirron): The owning :class:`Cirron` instance — installers
+            consult it for config (snapshots, ``epoch_steps``, ...).
+
+    Returns:
+        list[HookHandle]: Handles for installers that returned successfully.
     """
     # Make sure framework hook modules have had a chance to self-register.
     # Importing the package executes ``hooks/__init__.py``, which pulls in

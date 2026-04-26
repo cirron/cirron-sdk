@@ -28,6 +28,12 @@ _dotenv_lock = threading.Lock()
 
 
 def _load_dotenv_once() -> None:
+    """Load ``./.env`` into ``os.environ`` exactly once per process.
+
+    Skips silently when ``python-dotenv`` isn't installed. Container
+    environment variables win — ``override=False`` so a runtime-set
+    variable is never shadowed by a local file.
+    """
     global _dotenv_loaded
     if _dotenv_loaded:
         return
@@ -57,6 +63,19 @@ _load_dotenv_once()
 
 
 def env(key: str, default: Any = None) -> Any:
+    """Read an environment variable, optionally JSON-parsing the value.
+
+    Triggers ``.env`` loading on first call so callers don't need to
+    sequence imports. Values starting with ``{`` or ``[`` are parsed as
+    JSON; malformed JSON falls back to the raw string.
+
+    Args:
+        key (str): The environment variable name.
+        default (Any): Returned when ``key`` is unset.
+
+    Returns:
+        Any: Parsed JSON value, raw string, or ``default``.
+    """
     _load_dotenv_once()
     raw = os.environ.get(key)
     if raw is None:

@@ -48,22 +48,48 @@ class SourceConfig:
 
 
 class DataSource(ABC):
-    """Abstract base class for all source backends."""
+    """Abstract base class for all source backends.
+
+    Args:
+        config (SourceConfig): Static configuration for the source —
+            scheme, paths, credentials.
+        request (LoadRequest | None): Per-call request whose ``match`` /
+            ``columns`` / ``where`` / ``map`` fields decide how the
+            source filters and projects.
+    """
 
     def __init__(self, config: SourceConfig, request: LoadRequest | None = None) -> None:
         self.config = config
         self.request = request
 
     @abstractmethod
-    def load(self) -> Any: ...
+    def load(self) -> Any:
+        """Execute the load and return the materialized payload.
+
+        Returns:
+            Any: A DataFrame, list, dict, image, or bytes — whatever the
+                backend produces for the source format.
+        """
+        ...
 
     @abstractmethod
-    def validate(self) -> bool: ...
+    def validate(self) -> bool:
+        """Return whether the configured source is reachable.
+
+        Returns:
+            bool: ``True`` if the source can be loaded; ``False`` if the
+                backend's validation probe (e.g. ``head_bucket``) fails.
+        """
+        ...
 
     def estimate_size(self) -> tuple[int | None, int | None]:
         """Return ``(total_bytes, object_count)`` for the pending load.
 
         ``None`` means the source cannot cheaply pre-compute the value —
         the dispatcher will skip the size-tier check for this source.
+
+        Returns:
+            tuple[int | None, int | None]: ``(total_bytes, object_count)``
+                or ``(None, None)`` when no cheap estimate is available.
         """
         return (None, None)

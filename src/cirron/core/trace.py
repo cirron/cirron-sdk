@@ -49,6 +49,12 @@ class _TraceTreeRepr:
         return self._text
 
     def _repr_pretty_(self, p: Any, cycle: bool) -> None:  # noqa: ARG002 — IPython API
+        """IPython pretty-print hook.
+
+        Args:
+            p (Any): The IPython pretty-printer.
+            cycle (bool): Cycle detection flag (unused).
+        """
         p.text(self._text)
 
 
@@ -59,6 +65,9 @@ def _in_jupyter() -> bool:
     in a plain ``python``/``ipython`` REPL it either doesn't exist or
     returns a ``TerminalInteractiveShell`` (which we treat as not-Jupyter
     so ``trace()`` keeps printing in those shells).
+
+    Returns:
+        bool: ``True`` only inside a ZMQ-backed IPython kernel.
     """
     try:
         from IPython import get_ipython  # type: ignore[import-not-found]
@@ -79,7 +88,18 @@ def _filter_by_name(
     marks_by_span_id: dict[str, list[dict[str, Any]]],
     name: str,
 ) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
-    """Keep only spans whose ``name`` matches and their descendants."""
+    """Keep only spans whose ``name`` matches and their descendants.
+
+    Args:
+        spans (list[dict[str, Any]]): Flat span list.
+        marks_by_span_id (dict[str, list[dict[str, Any]]]): Marks indexed
+            by owning span id.
+        name (str): Span name to filter on.
+
+    Returns:
+        tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+            Filtered ``(spans, marks_by_span_id)``.
+    """
     by_id: dict[str, dict[str, Any]] = {s["id"]: s for s in spans if s.get("id")}
     keep_ids: set[str] = set()
 
@@ -93,6 +113,11 @@ def _filter_by_name(
             children_of.setdefault(pid, []).append(sid)
 
     def add_subtree(root_id: str) -> None:
+        """Mark ``root_id`` and every descendant as kept.
+
+        Args:
+            root_id (str): Subtree root.
+        """
         stack = [root_id]
         while stack:
             sid = stack.pop()
@@ -120,6 +145,18 @@ def _filter_by_last(
     marks_by_span_id: dict[str, list[dict[str, Any]]],
     last: int,
 ) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+    """Keep the ``last`` most recently closed spans by ``end_ns``.
+
+    Args:
+        spans (list[dict[str, Any]]): Flat span list.
+        marks_by_span_id (dict[str, list[dict[str, Any]]]): Marks indexed
+            by owning span id.
+        last (int): Maximum number of closed spans to retain.
+
+    Returns:
+        tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+            Filtered ``(spans, marks_by_span_id)``.
+    """
     if last <= 0:
         return [], {}
     closed = [s for s in spans if s.get("end_ns") is not None]
@@ -148,6 +185,22 @@ def trace(
     descendants.
     * ``last=N`` — keep only the N most recently closed spans by
     ``end_ns``.
+
+    Args:
+        format (TraceFormat): Output shape — ``"tree"`` (default),
+            ``"dict"``, ``"json"``, or ``"df"``.
+        name (str | None): Optional span-name filter.
+        last (int | None): Optional max-closed-spans filter.
+
+    Returns:
+        _TraceTreeRepr | dict[str, Any] | str | pd.DataFrame | None: The
+            rendered trace; ``None`` for ``format="tree"`` outside of
+            Jupyter (the tree is printed to stdout instead).
+
+    Raises:
+        CirronDependencyError: When ``format="df"`` and pandas isn't
+            installed.
+        ValueError: When ``format`` isn't one of the supported values.
     """
     # Synchronous drain into the in-memory buffer so anything closed
     # between the last tick and now is visible. We deliberately do NOT

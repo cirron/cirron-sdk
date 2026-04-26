@@ -58,6 +58,12 @@ _MAX_LIST_PAGES = 10
 
 
 def _sdk_version() -> str:
+    """Return the installed ``cirron-sdk`` version, or a sentinel.
+
+    Returns:
+        str: The package version, or ``"0.0.0"`` if running from a
+            source tree without an installed distribution.
+    """
     try:
         return version("cirron-sdk")
     except PackageNotFoundError:
@@ -65,6 +71,14 @@ def _sdk_version() -> str:
 
 
 def _bearer(api_key: str) -> str:
+    """Format an API key as an HTTP ``Authorization`` header value.
+
+    Args:
+        api_key (str): The workspace-scoped JWT.
+
+    Returns:
+        str: ``"Bearer <api_key>"``.
+    """
     return f"Bearer {api_key}"
 
 
@@ -90,6 +104,19 @@ class RegisteredDataset:
         self.request = request
 
     def resolve(self) -> DataSource:
+        """List the bucket via the platform API and return a backed source.
+
+        Returns:
+            DataSource: A :class:`PlatformBucketSource` whose
+                ``estimate_size`` already reflects the listing.
+
+        Raises:
+            CirronPlatformRequired: If no API key is configured, the
+                platform rejects the call, or the listing endpoint is
+                unreachable.
+            CirronDatasetNotFound: If the bucket isn't registered for
+                the workspace.
+        """
         if not self.cirron.api_key:
             raise CirronPlatformRequired(
                 "source='platform' requires an API key. Run `cirron login` or "
@@ -120,6 +147,16 @@ class RegisteredDataset:
         downloading a full bucket manifest just to drop most of it. A
         regex ``filename`` in ``match`` is *not* pushed (the platform
         only speaks glob); it's applied client-side after materializing.
+
+        Returns:
+            dict[str, Any]: ``{"objects": [...], "total_size_bytes": N}``
+                where each object is ``{"key": str, "size_bytes": int}``.
+
+        Raises:
+            CirronPlatformRequired: If the listing response is malformed
+                or pagination exceeds ``_MAX_LIST_PAGES``.
+            CirronDatasetNotFound: Propagated from
+                :func:`_http_json_get` for 404 responses.
         """
         base_path = _OBJECTS_PATH_TEMPLATE.format(bucket=urllib.parse.quote(self.name, safe=""))
         base_url = f"{self.cirron.api_endpoint.rstrip('/')}{base_path}"
@@ -211,6 +248,10 @@ class RegisteredDataset:
         (comma-separated), and ``prefix``. ``path`` + ``filename_glob``
         combine into one ``match`` string; ``filename_regex`` can't be
         pushed (route only speaks glob) and is re-applied client-side.
+
+        Returns:
+            dict[str, str]: A possibly-empty subset of ``{"match",
+                "ext", "prefix"}`` suitable for ``urlencode``.
         """
         if self.request is None or self.request.match is None:
             return {}
@@ -231,12 +272,25 @@ class RegisteredDataset:
     def _has_post_filter(self) -> bool:
         """True when we must re-filter the platform's response locally —
         only ``filename_regex`` qualifies; the glob / path / extension
-        filters are already applied server-side."""
+        filters are already applied server-side.
+
+        Returns:
+            bool: Whether a client-side re-filter pass is required.
+        """
         if self.request is None or self.request.match is None:
             return False
         return self.request.match.filename_regex is not None
 
     def _post_filter(self, objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Re-apply the regex ``filename`` filter against the listing.
+
+        Args:
+            objects (list[dict[str, Any]]): Normalized listing entries.
+
+        Returns:
+            list[dict[str, Any]]: Entries whose key satisfies the regex,
+                or ``objects`` unchanged when no post-filter applies.
+        """
         if not self._has_post_filter():
             return objects
         assert self.request is not None and self.request.match is not None
@@ -255,7 +309,14 @@ _PREFIX_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 def _sanitize_bucket_prefix(bucket: str) -> str:
-    """Produce a filesystem-safe prefix fragment from a bucket name."""
+    """Produce a filesystem-safe prefix fragment from a bucket name.
+
+    Args:
+        bucket (str): Raw bucket name.
+
+    Returns:
+        str: A 64-char-max ASCII fragment safe for ``mkdtemp(prefix=...)``.
+    """
     sanitized = _PREFIX_SAFE.sub("-", bucket).strip("-") or "bucket"
     # Cap length so pathological names don't blow past macOS NAME_MAX (255).
     return sanitized[:64]
@@ -266,6 +327,9 @@ def _rmtree_quiet(path: Path) -> None:
 
     The weakref finalizer runs during GC (or at interpreter shutdown),
     where propagating an OSError would be unhelpful noise.
+
+    Args:
+        path (Path): Tempdir to remove.
     """
     shutil.rmtree(path, ignore_errors=True)
 
@@ -278,6 +342,13 @@ def _materialize_file_handles(result: Any) -> Any:
     back to the caller (at which point the tempdir may be reclaimed by
     the finalizer), call ``.load()`` on each image and copy it into a
     detached in-memory image so subsequent reads don't touch disk.
+
+    Args:
+        result (Any): Whatever ``LocalDataSource.load`` returned.
+
+    Returns:
+        Any: ``result`` with PIL images replaced by detached copies, or
+            unchanged when PIL isn't installed / no images are present.
     """
     try:
         from PIL import Image
@@ -285,6 +356,15 @@ def _materialize_file_handles(result: Any) -> Any:
         return result
 
     def _detach(img: Image.Image) -> Image.Image:
+        """Force a PIL ``Image`` to fully load and return a detached copy.
+
+        Args:
+            img (Image.Image): A possibly file-backed PIL image.
+
+        Returns:
+            Image.Image: An in-memory copy whose data is no longer
+                bound to the original file handle.
+        """
         img.load()
         # Image.copy() returns an in-memory image whose data is no
         # longer bound to the original file handle.
@@ -303,7 +383,17 @@ def _materialize_file_handles(result: Any) -> Any:
 
 
 class PlatformBucketSource(DataSource):
-    """Materializes a platform bucket listing into a local directory."""
+    """Materializes a platform bucket listing into a local directory.
+
+    Args:
+        bucket (str): Bucket name (the ``ci.load(name=...)`` argument).
+        cirron (Cirron): Active Cirron instance.
+        request (LoadRequest | None): Per-call request.
+        objects (list[dict[str, Any]]): Normalized listing entries from
+            :meth:`RegisteredDataset._fetch_listing`.
+        total_size_bytes (int): Aggregate size used for the size-tier
+            check.
+    """
 
     def __init__(
         self,
@@ -325,12 +415,33 @@ class PlatformBucketSource(DataSource):
         self._finalizer: weakref.finalize | None = None
 
     def estimate_size(self) -> tuple[int | None, int | None]:
+        """Return the listing's pre-computed total bytes and object count.
+
+        Returns:
+            tuple[int | None, int | None]: ``(total_bytes, object_count)``.
+        """
         return (self._total_size_bytes, len(self._objects))
 
     def validate(self) -> bool:
+        """Always ``True`` — listing already succeeded if we got this far.
+
+        Returns:
+            bool: ``True``.
+        """
         return True
 
     def load(self) -> Any:
+        """Download every listed object and hand the tempdir to ``LocalDataSource``.
+
+        Returns:
+            Any: Whatever ``LocalDataSource.load`` produces, with PIL
+                handles detached so the tempdir can be reclaimed.
+
+        Raises:
+            CirronDatasetNotFound: If the listing was empty.
+            CirronPlatformRequired: If a presigned URL fetch fails or an
+                object key resolves outside the tempdir.
+        """
         if not self._objects:
             raise CirronDatasetNotFound(f"bucket '{self._bucket}' is empty or no objects matched")
 
@@ -375,7 +486,13 @@ class PlatformBucketSource(DataSource):
         tempdir would drop every object (the tempdir is flat, so e.g.
         a ``path='year=2025/*'`` glob won't match). Hand LocalDataSource
         a match with only ``columns`` preserved — that's still needed
-        for parquet column pushdown."""
+        for parquet column pushdown.
+
+        Returns:
+            LoadRequest | None: A copy of ``self.request`` with the
+                match config pruned to ``columns`` only, or ``None``
+                when there's no request to forward.
+        """
         if self.request is None:
             return None
         if self.request.match is None or self.request.match.columns is None:
@@ -404,6 +521,16 @@ class PlatformBucketSource(DataSource):
         self._tempdir = None
 
     def _download_into(self, tempdir: Path, key: str) -> None:
+        """Fetch a presigned URL for ``key`` and stream the bytes to disk.
+
+        Args:
+            tempdir (Path): Per-call download root.
+            key (str): Object key returned by the listing endpoint.
+
+        Raises:
+            CirronPlatformRequired: If the platform returns no
+                presigned URL or the download itself errors.
+        """
         url_info = self._fetch_presigned_url(key)
         presigned = url_info.get("url")
         if not isinstance(presigned, str) or not presigned:
@@ -433,6 +560,19 @@ class PlatformBucketSource(DataSource):
         (``year=2025/month=01/...``), so we can't flatten; but a
         platform-returned key like ``../../etc/passwd`` must not
         materialize outside the tempdir.
+
+        Args:
+            tempdir (Path): The per-call download root.
+            key (str): The object key returned by the listing endpoint.
+
+        Returns:
+            Path: A path under ``tempdir`` whose components mirror
+                ``key``.
+
+        Raises:
+            CirronPlatformRequired: If the key is empty, contains ``.``
+                / ``..`` segments, or otherwise resolves outside the
+                tempdir.
         """
         parts = [p for p in key.split("/") if p != ""]
         if not parts or any(p in {".", ".."} for p in parts):
@@ -451,6 +591,19 @@ class PlatformBucketSource(DataSource):
         return dest
 
     def _fetch_presigned_url(self, key: str) -> dict[str, Any]:
+        """Hit the platform's per-object URL endpoint.
+
+        Args:
+            key (str): The object key.
+
+        Returns:
+            dict[str, Any]: The decoded JSON payload (expected to
+                contain a ``url`` field).
+
+        Raises:
+            CirronPlatformRequired: On any HTTP / connection / JSON
+                error returned by :func:`_http_json_get`.
+        """
         path = _OBJECT_URL_PATH_TEMPLATE.format(
             bucket=urllib.parse.quote(self._bucket, safe=""),
             key=urllib.parse.quote(key, safe=""),
@@ -466,6 +619,20 @@ def _http_json_get(url: str, api_key: str, bucket_for_error: str) -> dict[str, A
     workspace"; 401/403 means the token is bad; 5xx / connection errors
     mean the platform is unavailable. The error taxonomy matches the
     pre-resolver so callers see the same exception shape.
+
+    Args:
+        url (str): Fully qualified GET URL.
+        api_key (str): Workspace API key for the bearer token.
+        bucket_for_error (str): Bucket name embedded in error messages
+            so callers can identify the failed call.
+
+    Returns:
+        dict[str, Any]: The decoded JSON body.
+
+    Raises:
+        CirronDatasetNotFound: On HTTP 404.
+        CirronPlatformRequired: On 401 / 403 / 5xx, connection errors,
+            or invalid JSON responses.
     """
     req = urllib.request.Request(
         url,

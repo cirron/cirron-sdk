@@ -41,9 +41,28 @@ class SnowflakeDataSource(DataSource):
         self.cirron = cirron
 
     def validate(self) -> bool:
+        """Always ``True`` — connection probes are deferred to ``load``.
+
+        Returns:
+            bool: ``True``.
+        """
         return True
 
     def load(self) -> Any:
+        """Open a Snowflake connection, run the composed ``SELECT``, return a DataFrame.
+
+        Reads ``warehouse`` / ``role`` from the platform integration's
+        ``extra`` block or from ``SNOWFLAKE_WAREHOUSE`` /
+        ``SNOWFLAKE_ROLE`` env vars.
+
+        Returns:
+            Any: A pandas DataFrame produced by :func:`execute_to_pandas`.
+
+        Raises:
+            CirronDependencyError: If ``snowflake-connector-python`` is
+                not installed.
+            CirronPlatformRequired: If credential resolution fails.
+        """
         snowflake_connector = require_driver("snowflake.connector", "snowflake")
         creds = CredentialResolver(self.cirron, self.uri).resolve()
 
@@ -86,4 +105,15 @@ class SnowflakeDataSource(DataSource):
 
 
 def build_source(uri_str: str, cirron: Cirron, request: LoadRequest | None) -> SnowflakeDataSource:
+    """Factory used by the load dispatcher.
+
+    Args:
+        uri_str (str): The raw ``snowflake://...`` URI.
+        cirron (Cirron): Active Cirron instance for credential
+            resolution.
+        request (LoadRequest | None): Per-call request.
+
+    Returns:
+        SnowflakeDataSource: A source ready to ``load()``.
+    """
     return SnowflakeDataSource(parse_sql_uri(uri_str), cirron, request)

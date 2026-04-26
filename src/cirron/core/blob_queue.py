@@ -62,6 +62,11 @@ class BlobUploadQueue:
         self._drop_count = 0
 
     def enqueue(self, blob: PendingBlob) -> None:
+        """Add one pending blob (drops + bumps ``drop_count`` past cap).
+
+        Args:
+            blob (PendingBlob): The blob to enqueue.
+        """
         with self._lock:
             if len(self._items) >= self._soft_cap:
                 self._drop_count += 1
@@ -69,6 +74,11 @@ class BlobUploadQueue:
             self._items.append(blob)
 
     def drain(self) -> list[PendingBlob]:
+        """Atomically remove and return every queued blob.
+
+        Returns:
+            list[PendingBlob]: FIFO-ordered list of pending blobs.
+        """
         with self._lock:
             out = self._items
             self._items = []
@@ -80,6 +90,11 @@ class BlobUploadQueue:
 
     @property
     def drop_count(self) -> int:
+        """Cumulative number of blobs dropped due to the soft cap.
+
+        Returns:
+            int: Drop count since process start.
+        """
         return self._drop_count
 
 
@@ -88,7 +103,11 @@ _default_lock = threading.Lock()
 
 
 def get_default_blob_queue() -> BlobUploadQueue:
-    """Process-wide default queue. Mirrors ``get_default_snapshot_buffer``."""
+    """Process-wide default queue. Mirrors ``get_default_snapshot_buffer``.
+
+    Returns:
+        BlobUploadQueue: The singleton.
+    """
     global _default_queue
     with _default_lock:
         if _default_queue is None:
@@ -97,6 +116,7 @@ def get_default_blob_queue() -> BlobUploadQueue:
 
 
 def _reset_default_for_tests() -> None:
+    """Clear the singleton (test-only)."""
     global _default_queue
     with _default_lock:
         _default_queue = None

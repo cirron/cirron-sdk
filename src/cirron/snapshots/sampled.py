@@ -34,7 +34,18 @@ log = logging.getLogger("cirron.snapshots.sampled")
 
 
 def should_sample(sample_rate: float, rng: random.Random | None = None) -> bool:
-    """Roll ``random() < sample_rate``. Extracted for deterministic tests."""
+    """Roll ``random() < sample_rate``. Extracted for deterministic tests.
+
+    Args:
+        sample_rate (float): Probability in ``[0.0, 1.0]``. Values
+            ``<= 0`` always return ``False``, values ``>= 1`` always
+            return ``True``.
+        rng (random.Random | None): Optional RNG; defaults to the global
+            ``random`` module.
+
+    Returns:
+        bool: Whether this epoch boundary should fire a sampled capture.
+    """
     if sample_rate <= 0.0:
         return False
     if sample_rate >= 1.0:
@@ -56,6 +67,13 @@ def _upgrade_records(
     names that actually made it into the safetensors file; any stats
     record whose name is missing from the set keeps ``mode="stats"`` so
     we never point ``blob_uri`` at a tensor that isn't in the blob.
+
+    Args:
+        records (list[TraceSnapshot]): Stats records to upgrade in
+            place.
+        tensor_names (set[str]): Names actually written to the blob.
+        blob_uri (str): URI to attach to matching records.
+        mode (str): New mode flag (``"sampled"`` or ``"full"``).
     """
     for rec in records:
         if rec.tensor_name in tensor_names:
@@ -77,6 +95,17 @@ def serialize_and_enqueue(
     No-op when ``named_tensors`` is empty or serialization fails — the
     records stay as ``mode="stats"`` so the epoch still produces useful
     summary data even if the blob write failed.
+
+    Args:
+        span_id (str): Span the blob attaches to.
+        kind (str): ``"weights"`` or ``"gradients"``; selects the
+            output filename.
+        named_tensors (list[tuple[str, Any]]): Tensors to serialize.
+        output_dir (str): Root output directory (typically
+            ``./.cirron/``).
+        mode (str): Snapshot mode flag for upgraded records.
+        records (list[TraceSnapshot]): Stats records to upgrade in
+            place with the resulting ``blob_uri``.
     """
     result = serialize_tensors(span_id, kind, named_tensors, output_dir)
     if result is None:

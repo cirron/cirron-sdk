@@ -40,7 +40,14 @@ _CAPTURE_CPU_TIME: bool = False
 
 
 def set_capture_cpu_time(enabled: bool) -> None:
-    """Toggle whether scope push/pop records ``cpu_ns``. See ``_CAPTURE_CPU_TIME``."""
+    """Toggle whether scope push/pop records ``cpu_ns``. See ``_CAPTURE_CPU_TIME``.
+
+    Args:
+        enabled (bool): When ``True``, future ``push`` calls capture
+            ``time.process_time_ns()`` and ``pop`` derives ``cpu_ns`` from
+            the delta. Already-open scopes carry their original decision
+            so a mid-scope flip can't produce a bogus value.
+    """
     global _CAPTURE_CPU_TIME
     _CAPTURE_CPU_TIME = bool(enabled)
 
@@ -66,6 +73,15 @@ class Scope:
     the ubuntu CI runner, which is a measurable chunk of the 5 μs
     scope-cycle budget. ``__slots__`` keeps memory low; a positional
     ``__init__`` gives CPython the smallest possible frame to build.
+
+    Constructor parameters: ``id`` is a 32-char hex string;
+    ``name`` is the span label; ``index`` is the optional positional
+    index (epoch / batch number); ``attrs`` is a dict adopted by
+    reference; ``parent_id`` points at the enclosing span (``None`` at
+    the root); ``start_ns`` is wall-clock from ``time.time_ns``;
+    ``cpu_start_ns`` is ``process_time_ns()`` when CPU capture is
+    enabled, else ``None``; ``thread_id`` / ``pid`` / ``rank`` identify
+    the producer.
     """
 
     __slots__ = (
@@ -160,6 +176,12 @@ _ctx_state: ContextVar[_ScopeState | None] = ContextVar("cirron_scope_state", de
 
 
 def _resolve_rank() -> int:
+    """Read the distributed rank from the env, defaulting to ``0``.
+
+    Returns:
+        int: ``RANK`` if set, else ``LOCAL_RANK``, else ``0``. Non-integer
+            values silently fall back to ``0``.
+    """
     raw = os.environ.get("RANK") or os.environ.get("LOCAL_RANK") or "0"
     try:
         return int(raw)
@@ -194,6 +216,16 @@ class ScopeStack:
         self._states: dict[Any, _ScopeState] = {}
 
     def _get_state(self) -> _ScopeState:
+        """Return the active per-thread (or per-context) ``_ScopeState``.
+
+        Cold path on first touch: lazily allocates a fresh ``_ScopeState``
+        and registers it under the calling thread's id so cross-thread
+        drainers can find it. Hot path is a single attribute read.
+
+        Returns:
+            _ScopeState: The state for either the active ContextVar
+                overlay (``@ci.inference``) or the calling thread.
+        """
         # ContextVar overlay: an ``isolated_state`` context set by
         # ``@ci.inference`` wins over the thread-local default so concurrent
         # asyncio tasks on one event-loop thread don't share a stack.
@@ -213,9 +245,31 @@ class ScopeStack:
 
     @property
     def _state(self) -> _ScopeState:
+        """Property alias for :meth:`_get_state`.
+
+        Returns:
+            _ScopeState: Same as :meth:`_get_state`.
+        """
         return self._get_state()
 
     def push(self, name: str, index: int | None = None, **attrs: Any) -> Scope | None:
+        """Open a new scope on the calling thread's stack.
+
+        Drops the push silently when the stack already holds
+        ``MAX_DEPTH`` scopes; the first overflow on a thread emits a
+        single ``UserWarning``.
+
+        Args:
+            name (str): Span name (e.g. ``"forward"``, ``"data_load"``).
+            index (int | None): Optional positional index for repeated
+                spans of the same name (epoch / batch number).
+            **attrs (Any): Arbitrary metadata adopted directly into the
+                scope's ``attrs`` dict — no defensive copy is made.
+
+        Returns:
+            Scope | None: The newly opened scope, or ``None`` when the
+                push was dropped due to depth overflow.
+        """
         # Inline the ``_get_state`` fast path: when no ContextVar override
         # is set (the common case — ``@ci.inference`` is the only caller
         # that sets one) and the thread-local attr is populated, this
@@ -263,6 +317,18 @@ class ScopeStack:
         return scope_obj
 
     def pop(self) -> Scope | None:
+        """Pop and finalize the innermost scope on the calling thread's stack.
+
+        Sets ``end_ns``, derives ``cpu_ns`` when CPU capture was on at
+        push time, and appends the closed scope to the per-thread
+        drainable deque. A scope already finalized by
+        :meth:`close_scope` is returned as-is (no double-emit).
+
+        Returns:
+            Scope | None: The just-popped scope, or ``None`` when the
+                stack was empty (one underflow warning is emitted per
+                thread).
+        """
         ctx = _ctx_state.get()
         if ctx is not None:
             state = ctx
@@ -294,16 +360,31 @@ class ScopeStack:
         return scope_obj
 
     def current(self) -> Scope | None:
+        """Return the innermost open scope on the calling thread.
+
+        Returns:
+            Scope | None: Top-of-stack scope, or ``None`` when the
+                stack is empty.
+        """
         stack = self._state.stack
         return stack[-1] if stack else None
 
     def depth(self) -> int:
+        """Number of scopes open on the calling thread's stack.
+
+        Returns:
+            int: Stack length; ``0`` when nothing is open.
+        """
         return len(self._state.stack)
 
     def drain_closed(self) -> list[Scope]:
         """Drain *this thread's* closed scopes. Safe to call from the
         producer thread only — use :meth:`drain_closed_all` from a
         consumer thread (e.g., the flush thread).
+
+        Returns:
+            list[Scope]: Snapshot of the per-thread closed deque; the
+                deque itself is replaced with a fresh empty one.
         """
         state = self._state
         closed = state.closed
@@ -317,6 +398,12 @@ class ScopeStack:
         state so concurrent producer appends are not lost — an append
         racing with this drain lands in the same deque and is picked up
         on the next call.
+
+        Returns:
+            list[Scope]: All closed scopes drained from every producer
+                thread plus any per-request synthetic states. Per-request
+                states whose stack and closed deque are both empty after
+                draining are pruned from the registry.
         """
         out: list[Scope] = []
         with self._states_lock:
@@ -354,6 +441,11 @@ class ScopeStack:
         return out
 
     def drop_count(self) -> int:
+        """Number of scopes dropped due to ``MAX_DEPTH`` on the calling thread.
+
+        Returns:
+            int: Per-thread drop count.
+        """
         return self._state.drop_count
 
     def drop_count_all(self) -> int:
@@ -363,6 +455,9 @@ class ScopeStack:
         own thread. ``health()`` needs process-wide visibility, so we
         aggregate here the same way ``drain_closed_all`` enumerates
         ``_states``.
+
+        Returns:
+            int: Process-wide cumulative scope drops.
         """
         with self._states_lock:
             states = list(self._states.values())
@@ -381,6 +476,10 @@ class ScopeStack:
         isn't atomic, and a concurrent ``push``/``pop`` on the owning
         thread could race. Instead, ``pop()`` checks ``end_ns`` and skips
         re-emitting a scope that was already closed out of band.
+
+        Args:
+            scope_obj (Scope): The scope to finalize. Already-closed
+                scopes (``end_ns is not None``) are no-ops.
         """
         if scope_obj.end_ns is not None:
             return
@@ -409,6 +508,9 @@ class ScopeStack:
         Framework hooks use this to rotate long-lived internal spans
         (``epoch``, ``step``) without popping user scopes that happen to
         be open above them.
+
+        Args:
+            scope_obj (Scope): The scope to close and remove.
         """
         if threading.get_ident() != scope_obj.thread_id:
             self.close_scope(scope_obj)
@@ -445,6 +547,14 @@ class ScopeStack:
         On exit the ContextVar token is reset; if the state left no residual
         open or closed scopes the registry entry is cleaned up to cap memory
         growth across many requests.
+
+        Args:
+            key (str): Per-request identifier; registered as
+                ``f"req-{key}"`` in the cross-thread registry.
+
+        Yields:
+            _ScopeState: The freshly allocated per-context state, bound
+                as the active stack for the duration of the ``with`` block.
         """
         state = _ScopeState()
         reg_key = f"req-{key}"
@@ -481,6 +591,11 @@ def get_current_scope() -> Scope | None:
     Inlines the ContextVar + ``threading.local`` lookups instead of
     delegating through ``_default_stack.current()``; see the module-level
     alias comment above.
+
+    Returns:
+        Scope | None: The innermost open scope on the calling thread or
+            in the active ContextVar overlay, or ``None`` when nothing
+            is open.
     """
     ctx = _ctx_state_get()
     if ctx is not None:
@@ -502,6 +617,9 @@ def get_default_stack() -> ScopeStack:
     """Accessor for the process-wide default stack. Mostly here so the
     flush thread has a stable entry point; tests can also import this to
     drain closed scopes without going through the module-level API.
+
+    Returns:
+        ScopeStack: The module-level ``_default_stack`` instance.
     """
     return _default_stack
 
@@ -516,6 +634,11 @@ class _ScopeCM:
     the 5 μs scope budget, and ``ci.epochs``/``ci.batches`` pay it on
     every iteration. ``__slots__`` + two method calls keep the overhead
     to what ``push``/``pop`` themselves cost.
+
+    Constructor parameter ``opened`` is the ``Scope`` returned by the
+    immediately preceding ``ScopeStack.push``, or ``None`` when the
+    push was dropped due to depth overflow — in the latter case
+    ``__exit__`` skips the ``pop()`` so the stack stays balanced.
     """
 
     __slots__ = ("opened",)
@@ -542,5 +665,16 @@ def scope(name: str, index: int | None = None, **attrs: Any) -> _ScopeCM:
 
             with ci.scope("epoch", index=0):
     ...
+
+    Args:
+        name (str): Span name (e.g. ``"forward"``, ``"data_load"``).
+        index (int | None): Optional positional index for repeated spans
+            of the same name (epoch / batch number).
+        **attrs (Any): Arbitrary metadata attached to the span as
+            ``span.attrs[key] = value``.
+
+    Returns:
+        _ScopeCM: A minimal context manager whose ``__enter__`` yields
+            the opened ``Scope`` (or ``None`` on overflow).
     """
     return _ScopeCM(_default_stack.push(name, index, **attrs))

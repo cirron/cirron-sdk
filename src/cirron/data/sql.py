@@ -87,6 +87,17 @@ def parse_sql_uri(uri: str) -> SqlUri:
 
     Postgres/MySQL accept a single-element path (table only) — the driver
     falls back to its default database.
+
+    Args:
+        uri (str): A SQL-scheme URI in one of the supported formats.
+
+    Returns:
+        SqlUri: Parsed components.
+
+    Raises:
+        ValueError: If the URI is missing a scheme, is missing a table,
+            has too many path segments, has empty schema/table parts, or
+            uses an unsupported scheme.
     """
     parsed = urllib.parse.urlparse(uri)
     scheme = parsed.scheme.lower()
@@ -100,6 +111,14 @@ def parse_sql_uri(uri: str) -> SqlUri:
 
         Handles both ``a.b.c`` (dotted, standard Snowflake / Databricks
         convention) and ``a/b/c`` (slash-separated, ergonomic in URLs).
+
+        Returns:
+            tuple[str | None, str | None, str]: ``(database, schema,
+                table)``; missing tiers come back as ``None``.
+
+        Raises:
+            ValueError: If the path supplies zero or more than three
+                segments.
         """
         if len(path_parts) == 1 and "." in path_parts[0]:
             pieces = path_parts[0].split(".")
@@ -165,6 +184,20 @@ def _parse_pg_mysql_path(
     correctly through the dispatcher. Without this, ``build_query``
     would emit ``FROM "public.events"`` (single double-quoted
     identifier), which is invalid SQL.
+
+    Args:
+        scheme (str): ``"postgres"`` or ``"mysql"`` — used in error
+            messages.
+        path_parts (list[str]): Non-empty path segments split on ``/``.
+        uri (str): The original URI, included verbatim in error
+            messages.
+
+    Returns:
+        tuple[str | None, str | None, str]: ``(database, schema, table)``.
+
+    Raises:
+        ValueError: If the path is empty, has more than three segments,
+            or has an empty schema/table piece.
     """
     if not path_parts:
         raise ValueError(
@@ -220,6 +253,12 @@ class SqlCredentials:
 
 
 def _sdk_version() -> str:
+    """Return the installed ``cirron-sdk`` version, or a sentinel.
+
+    Returns:
+        str: The package version, or ``"0.0.0"`` when running from a
+            source tree without an installed distribution.
+    """
     try:
         return version("cirron-sdk")
     except PackageNotFoundError:
@@ -249,6 +288,16 @@ class CredentialResolver:
         self.uri = uri
 
     def resolve(self) -> SqlCredentials:
+        """Walk the URI / platform / secret / env chain to produce credentials.
+
+        Returns:
+            SqlCredentials: A bundle filled from URI inline → platform
+                resolve → ``ci.secret()`` / driver env, in that order.
+
+        Raises:
+            CirronPlatformRequired: If the resulting bundle still lacks a
+                field the chosen driver requires.
+        """
         creds = SqlCredentials(
             user=self.uri.user,
             password=self.uri.password,
@@ -279,6 +328,14 @@ class CredentialResolver:
         return creds
 
     def _try_platform(self) -> SqlCredentials | None:
+        """Hit ``GET /api/integrations/resolve`` for scoped credentials.
+
+        Returns:
+            SqlCredentials | None: A populated bundle when the platform
+                returns a matching integration, ``None`` when the API is
+                unreachable, returns 404, returns invalid JSON, or the
+                workspace has no API key configured.
+        """
         if not self.cirron.api_key or not self.cirron.api_endpoint:
             return None
 
@@ -356,6 +413,13 @@ class CredentialResolver:
         )
 
     def _try_env_secret(self) -> str | None:
+        """Look up a password / token via ``ci.secret()`` then the driver env var.
+
+        Returns:
+            str | None: A non-empty credential string, or ``None`` if
+                neither the secret store nor the driver-specific env var
+                is set.
+        """
         from cirron.core.env import env as _env
         from cirron.secrets.client import secret as _secret
 
@@ -393,6 +457,14 @@ class CredentialResolver:
         user + password (or a Unix socket, which we don't currently
         support); Databricks needs host + token; Snowflake needs
         account (= host) + user + (password or token).
+
+        Args:
+            creds (SqlCredentials): The bundle assembled by ``resolve``.
+
+        Raises:
+            CirronPlatformRequired: If any required field is missing,
+                with a message naming the missing fields and a hint at
+                where to set them.
         """
         missing: list[str] = []
         if self.uri.scheme in ("postgres", "mysql"):
@@ -425,6 +497,15 @@ class CredentialResolver:
 
 
 def _env_hint_for(scheme: str) -> str:
+    """Return a human-readable env-var hint string for ``scheme``.
+
+    Args:
+        scheme (str): The SQL scheme (``"postgres"``, ``"mysql"``, ...).
+
+    Returns:
+        str: A short string naming the conventional secret keys / env
+            vars to set.
+    """
     hints = {
         "postgres": "CIRRON_SECRET_POSTGRES_<HOST> or PGPASSWORD",
         "mysql": "CIRRON_SECRET_MYSQL_<HOST> or MYSQL_PWD",
@@ -435,7 +516,14 @@ def _env_hint_for(scheme: str) -> str:
 
 
 def _merge_into(base: SqlCredentials, override: SqlCredentials) -> None:
-    """Fill ``None`` fields on ``base`` from ``override``."""
+    """Fill ``None`` fields on ``base`` from ``override``.
+
+    Args:
+        base (SqlCredentials): Mutated in place. Existing non-``None``
+            fields are preserved.
+        override (SqlCredentials): Source of fill-in values; ``extra``
+            entries are added to ``base.extra``.
+    """
     for field_name in ("user", "password", "host", "port", "database", "schema", "token"):
         if getattr(base, field_name) is None:
             value = getattr(override, field_name)
@@ -453,13 +541,29 @@ Quoter = Callable[[str], str]
 
 
 def _quote_double(identifier: str) -> str:
-    """ANSI double-quote identifier quoting (Postgres, Snowflake, Databricks)."""
+    """ANSI double-quote identifier quoting (Postgres, Snowflake, Databricks).
+
+    Args:
+        identifier (str): A raw SQL identifier.
+
+    Returns:
+        str: ``identifier`` wrapped in double quotes with embedded quotes
+            doubled.
+    """
     escaped = identifier.replace('"', '""')
     return f'"{escaped}"'
 
 
 def _quote_backtick(identifier: str) -> str:
-    """Backtick identifier quoting (MySQL)."""
+    """Backtick identifier quoting (MySQL).
+
+    Args:
+        identifier (str): A raw SQL identifier.
+
+    Returns:
+        str: ``identifier`` wrapped in backticks with embedded backticks
+            doubled.
+    """
     escaped = identifier.replace("`", "``")
     return f"`{escaped}`"
 
@@ -485,6 +589,16 @@ def build_query(
     queries against their own database. Identifier quoting is applied
     to the table name and column list so valid identifiers with
     reserved keywords or mixed case work on every dialect.
+
+    Args:
+        uri (SqlUri): Parsed URI carrying the table reference.
+        where (str | None): Optional ``WHERE`` clause body. Spliced in
+            verbatim.
+        columns (list[str] | None): Optional column projection. ``None``
+            emits ``SELECT *``.
+
+    Returns:
+        str: A single-statement ``SELECT`` ready for the driver.
     """
     quote = QUOTERS[uri.scheme]
     if columns:
@@ -505,6 +619,14 @@ def _qualified_table(uri: SqlUri, quote: Quoter) -> str:
     in FROM clauses; Postgres/MySQL leave the database selection to the
     connection itself, so only ``table`` (or ``schema.table`` if the
     user specified a schema) is emitted.
+
+    Args:
+        uri (SqlUri): Parsed URI.
+        quote (Quoter): Dialect-appropriate identifier quoter.
+
+    Returns:
+        str: The dotted, quoted table reference (e.g.
+            ``"db"."schema"."table"``).
     """
     parts: list[str] = []
     if uri.scheme in ("snowflake", "databricks"):
@@ -541,6 +663,17 @@ def execute_to_pandas(cursor: Any, query: str) -> Any:
     ``execute_to_iter`` / streaming ``DataSource`` path. The per-driver
     surface diverges enough to be worth its own ticket. Raised in PR #35
     review; tracked as a SQL-streaming follow-up.
+
+    Args:
+        cursor (Any): An open DB-API 2.0 cursor.
+        query (str): The composed ``SELECT`` to execute.
+
+    Returns:
+        Any: A pandas DataFrame whose columns come from
+            ``cursor.description``.
+
+    Raises:
+        CirronDependencyError: If pandas is not installed.
     """
     try:
         import pandas as pd
@@ -571,6 +704,17 @@ def require_driver(module_name: str, extra_name: str) -> Any:
     so dotted names like ``"databricks.sql"`` return the leaf module.
     The error message names the pip extra so users can copy-paste the
     fix.
+
+    Args:
+        module_name (str): Driver module to import (e.g. ``"psycopg"``,
+            ``"databricks.sql"``).
+        extra_name (str): Cirron extra name used in the install hint.
+
+    Returns:
+        Any: The imported driver module.
+
+    Raises:
+        CirronDependencyError: If the driver isn't installed.
     """
     import importlib
 

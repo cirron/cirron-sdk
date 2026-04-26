@@ -50,7 +50,17 @@ class OutputSink(Protocol):
 
     name: str
 
-    def emit(self, batch: Batch) -> Path | None: ...
+    def emit(self, batch: Batch) -> Path | None:
+        """Forward one batch to this sink.
+
+        Args:
+            batch (Batch): The just-built batch.
+
+        Returns:
+            Path | None: A file path when the sink wrote to disk
+                (spool sink), otherwise ``None``.
+        """
+        ...
 
 
 class SpoolSink:
@@ -66,9 +76,22 @@ class SpoolSink:
 
     @property
     def writer(self) -> SpoolWriter:
+        """The underlying spool writer.
+
+        Returns:
+            SpoolWriter: Writer this sink dispatches to.
+        """
         return self._writer
 
     def emit(self, batch: Batch) -> Path:
+        """Write the batch to the spool directory.
+
+        Args:
+            batch (Batch): The just-built batch.
+
+        Returns:
+            Path: Final path of the written JSON file.
+        """
         return self._writer.write(batch)
 
 
@@ -85,6 +108,11 @@ class _PerSpanSink:
     name = "<base>"
 
     def emit(self, batch: Batch) -> None:
+        """Format each closed span in ``batch`` and write it via :meth:`_write`.
+
+        Args:
+            batch (Batch): The just-built batch.
+        """
         if not batch.spans:
             return
         marks_by_span: dict[str, list[dict[str, Any]]] = {}
@@ -99,6 +127,14 @@ class _PerSpanSink:
             self._write(f"[cirron] {line}")
 
     def _write(self, line: str) -> None:
+        """Emit one already-formatted line. Subclasses override.
+
+        Args:
+            line (str): The line to write.
+
+        Raises:
+            NotImplementedError: Always — subclasses must override.
+        """
         raise NotImplementedError
 
 
@@ -111,6 +147,11 @@ class LogSink(_PerSpanSink):
         self._logger = logger if logger is not None else logging.getLogger("cirron.trace")
 
     def _write(self, line: str) -> None:
+        """Log ``line`` at INFO level.
+
+        Args:
+            line (str): The formatted span line.
+        """
         self._logger.info(line)
 
 
@@ -125,6 +166,11 @@ class StdoutSink(_PerSpanSink):
         self._stream = stream
 
     def _write(self, line: str) -> None:
+        """Print ``line`` to the configured stream (or live ``sys.stdout``).
+
+        Args:
+            line (str): The formatted span line.
+        """
         stream = self._stream if self._stream is not None else sys.stdout
         print(line, file=stream, flush=True)
 
@@ -136,6 +182,18 @@ def normalize_output(value: str | list[str] | None) -> list[str]:
     containing it) → ``[]``. Unknown names raise ``ValueError`` at
     profile-time so misconfigurations are caught loudly instead of
     silently dropping traces.
+
+    Args:
+        value (str | list[str] | None): Raw user-supplied ``output=``
+            value.
+
+    Returns:
+        list[str]: Normalized, deduped list of sink names. Empty list
+            when the user opted into ``"none"``.
+
+    Raises:
+        ValueError: If a name isn't in :data:`VALID_OUTPUTS` or any
+            entry isn't a string.
     """
     if value is None:
         return [DEFAULT_OUTPUT]
@@ -168,6 +226,16 @@ def build_sinks(output: list[str], spool_writer: SpoolWriter | None) -> list[Out
     ``output="none"`` and skipped writer construction. Asking for
     ``"spool"`` without a writer is a programming error — callers in
     this module always pair them.
+
+    Args:
+        output (list[str]): Normalized sink names.
+        spool_writer (SpoolWriter | None): Writer for the spool sink.
+
+    Returns:
+        list[OutputSink]: Concrete sink instances in the same order.
+
+    Raises:
+        ValueError: If ``"spool"`` is requested without a writer.
     """
     sinks: list[OutputSink] = []
     for name in output:

@@ -69,6 +69,10 @@ def _populate_device_attrs(attrs: dict[str, Any]) -> None:
     Writes ``device`` / ``cuda_count`` / ``mixed_precision`` into ``attrs``
     in place. Guarded so the absence of torch (core-only install) doesn't
     surface an import error — CPU-only sessions just get ``device=cpu``.
+
+    Args:
+        attrs (dict[str, Any]): Root-scope attribute dict, mutated in place
+            with ``device`` / ``cuda_count`` / ``mixed_precision`` keys.
     """
     try:
         import torch  # type: ignore[import-not-found]
@@ -98,7 +102,12 @@ def _populate_device_attrs(attrs: dict[str, Any]) -> None:
 
 def _rank_from_env() -> int:
     """Same logic as ``scope._resolve_rank`` — duplicated here so we don't
-    depend on a private import from a sibling module."""
+    depend on a private import from a sibling module.
+
+    Returns:
+        int: Distributed rank parsed from ``RANK`` or ``LOCAL_RANK``;
+            ``0`` when neither is set or the value isn't an integer.
+    """
     raw = os.environ.get("RANK") or os.environ.get("LOCAL_RANK") or "0"
     try:
         return int(raw)
@@ -107,7 +116,13 @@ def _rank_from_env() -> int:
 
 
 def _read_platform_context() -> dict[str, str]:
-    """Return platform context env vars that are set (omit keys missing)."""
+    """Return platform context env vars that are set (omit keys missing).
+
+    Returns:
+        dict[str, str]: Mapping of logical keys (``run_id`` / ``pipeline_id``
+            / ``deployment_id`` / ``workspace_id``) to their resolved values
+            from ``CIRRON_*`` env vars. Missing keys are omitted entirely.
+    """
     ctx: dict[str, str] = {}
     for key, env_name in _PLATFORM_ENV_KEYS:
         value = os.environ.get(env_name)
@@ -123,6 +138,14 @@ class Profiler:
     The handle is kept alive by the module-level singleton, so most users
     can discard it and use ``ci.shutdown()`` / ``ci.health()`` / ``ci.flush()``
     instead.
+
+    Constructor parameters (set by :func:`profile`): ``cirron`` is the
+    owning ``Cirron`` instance; ``enabled`` flips the no-op path on /
+    off; ``transport`` is the live ingest transport (or ``None`` when
+    spool-only); ``hook_handles`` is the framework hook list; ``platform_context``
+    captures the ``CIRRON_*`` run/pipeline/deployment/workspace env vars
+    that were set; ``root_scope`` is the ``cirron.session`` span;
+    ``supervisor`` is the flush-thread supervisor.
     """
 
     def __init__(
@@ -147,26 +170,64 @@ class Profiler:
 
     @property
     def enabled(self) -> bool:
+        """Whether instrumentation is live.
+
+        Returns:
+            bool: ``False`` when the profiler was constructed with
+                ``enabled=False`` (no transport, no hooks, no flush thread).
+        """
         return self._enabled
 
     @property
     def cirron(self) -> Cirron:
+        """The owning ``Cirron`` instance.
+
+        Returns:
+            Cirron: Driven by ``ci.profile(cirron=...)`` or the process-wide
+                default when the bare ``ci.profile()`` form was used.
+        """
         return self._cirron
 
     @property
     def installed_hooks(self) -> list[str]:
+        """Names of framework hooks installed by this profiler.
+
+        Returns:
+            list[str]: Hook names in install order (e.g. ``["torch"]``,
+                ``["transformers", "torch"]``).
+        """
         return [h.name for h in self._hook_handles]
 
     @property
     def hook_handles(self) -> list[HookHandle]:
+        """Live hook handles, copied so external mutation can't disturb shutdown.
+
+        Returns:
+            list[HookHandle]: A snapshot list of installed hook handles.
+        """
         return list(self._hook_handles)
 
     @property
     def platform_context(self) -> dict[str, str]:
+        """Platform context env vars that were set at ``ci.profile()`` time.
+
+        Returns:
+            dict[str, str]: Mapping of ``run_id`` / ``pipeline_id`` /
+                ``deployment_id`` / ``workspace_id`` to their resolved
+                values; missing entries are omitted.
+        """
         return dict(self._platform_context)
 
     def health(self) -> dict[str, Any]:
-        """Return a best-effort snapshot of SDK internals. Never raises."""
+        """Return a best-effort snapshot of SDK internals. Never raises.
+
+        Returns:
+            dict[str, Any]: Diagnostics map with ``enabled`` plus per-buffer
+                drop counts, spool stats, flush mode, transport class name,
+                installed hooks, and platform context. Each subreader is
+                wrapped in ``_safe`` so a transient internal error returns a
+                fallback value rather than propagating.
+        """
         if not self._enabled:
             return {
                 "enabled": False,
@@ -196,7 +257,12 @@ class Profiler:
         }
 
     def flush(self) -> None:
-        """Synchronously drain scope + mark buffers to the spool."""
+        """Synchronously drain scope + mark buffers to the spool.
+
+        No-op when the profiler is disabled. Failures are logged at
+        ``WARNING`` and swallowed so caller code (often a test teardown
+        or a deliberate mid-run flush) never raises from this path.
+        """
         if not self._enabled:
             return
         try:
@@ -217,12 +283,31 @@ class Profiler:
         before reading it, so recently closed spans/marks appear even
         if the periodic flush thread isn't running. Works on a disabled
         profiler too.
+
+        Args:
+            format (Literal["tree", "dict", "json", "df"]): Output shape.
+                ``"tree"`` is the printable text rendering; ``"dict"`` /
+                ``"json"`` return structured data; ``"df"`` returns a
+                pandas DataFrame.
+            name (str | None): Optional span-name filter — return only
+                subtrees rooted at spans matching this name.
+            last (int | None): Optional cap on number of root spans
+                returned; most-recent first.
+
+        Returns:
+            Any: Shape determined by ``format``.
         """
         return _trace_impl(format=format, name=name, last=last)
 
     def shutdown(self) -> None:
         """Close the root scope, flush, stop the flush thread, clear the
-        singleton. Idempotent."""
+        singleton. Idempotent.
+
+        Hook uninstalls run in reverse install order so layered installs
+        (e.g. transformers stacked on top of torch) unwind cleanly. Per-step
+        failures are logged and swallowed — one bad uninstall cannot block
+        the rest of teardown.
+        """
         global _profiler
         if self._is_shutdown:
             return
@@ -283,6 +368,9 @@ def _close_root_scope(root: Scope) -> None:
     a dangling reference. Cross-thread shutdown falls back to
     ``close_scope``, which only marks ``end_ns`` + appends to the owning
     thread's closed deque without mutating that thread's stack list.
+
+    Args:
+        root (Scope): The session root scope opened by :func:`profile`.
     """
     stack = get_default_stack()
     if threading.get_ident() == root.thread_id:
@@ -295,6 +383,15 @@ def _close_root_scope(root: Scope) -> None:
 
 
 def _safe(fn: Any, default: Any) -> Any:
+    """Call ``fn()`` and return its result, swallowing any exception.
+
+    Args:
+        fn (Any): Zero-arg callable to invoke.
+        default (Any): Value returned if ``fn`` raises.
+
+    Returns:
+        Any: The result of ``fn()``, or ``default`` on exception.
+    """
     try:
         return fn()
     except Exception:
@@ -302,22 +399,46 @@ def _safe(fn: Any, default: Any) -> Any:
 
 
 def _flush_module() -> Any:
+    """Return the ``cirron.core.flush`` module if loaded, else ``None``.
+
+    Returns:
+        Any: The module object, or ``None`` when the flush submodule
+            hasn't been imported yet.
+    """
     return sys.modules.get("cirron.core.flush")
 
 
 def _spool_drop_count() -> int:
+    """Read ``drop_count`` from the active spool writer.
+
+    Returns:
+        int: Cumulative spool-side drops, or ``0`` when no writer is active.
+    """
     mod = _flush_module()
     writer = getattr(mod, "_writer", None)
     return int(writer.drop_count) if writer is not None else 0
 
 
 def _spool_dir_str() -> str | None:
+    """Return the spool directory path as a string, or ``None`` when inactive.
+
+    Returns:
+        str | None: ``str(writer.spool_dir)`` or ``None``.
+    """
     mod = _flush_module()
     writer = getattr(mod, "_writer", None)
     return str(writer.spool_dir) if writer is not None else None
 
 
 def _spool_bytes() -> int:
+    """Sum of all ``*.json`` file sizes in the spool directory.
+
+    Per-file ``stat`` failures (e.g. file rotated mid-iteration) are
+    silently skipped.
+
+    Returns:
+        int: Total bytes on disk; ``0`` when no writer is active.
+    """
     mod = _flush_module()
     writer = getattr(mod, "_writer", None)
     if writer is None:
@@ -332,6 +453,12 @@ def _spool_bytes() -> int:
 
 
 def _flush_mode() -> str:
+    """Current flush-supervisor mode (``"running"``, ``"degraded"``, ``"stopped"``).
+
+    Returns:
+        str: The supervisor's ``mode`` string, or ``"stopped"`` when no
+            supervisor is active.
+    """
     mod = _flush_module()
     sup = getattr(mod, "_supervisor", None)
     if sup is None:
@@ -341,6 +468,11 @@ def _flush_mode() -> str:
 
 
 def _flush_restart_count() -> int:
+    """Number of times the flush supervisor has restarted its worker.
+
+    Returns:
+        int: Restart count, or ``0`` when no supervisor is active.
+    """
     mod = _flush_module()
     sup = getattr(mod, "_supervisor", None)
     return int(sup.restart_count) if sup is not None else 0
@@ -369,6 +501,31 @@ def profile(
     ``enabled=False`` returns a disabled handle — no transport, no flush
     thread, no root scope. ``ci.scope()`` and ``ci.mark()`` still work
     (they operate on the process-wide buffers) but nothing is flushed.
+
+    Args:
+        config (dict[str, Any] | None): Inline profiling-section dict,
+            same shape as the ``profiling:`` block in ``cirron.yaml``.
+        frameworks (list[str] | None): Subset of frameworks to instrument.
+            ``None`` means autodetect; ``[]`` means install nothing.
+        snapshots (Literal["stats", "sampled", "full"] | None): Snapshot
+            policy for epoch boundaries.
+        sample_rate (float | None): Per-epoch probability for the
+            ``"sampled"`` policy.
+        flush_interval (float | None): Seconds between background spool
+            flushes.
+        enabled (bool): When ``False``, returns a no-op ``Profiler`` and
+            installs no hooks.
+        path (str | None): Override ``cirron.yaml`` discovery path.
+        output (str | list[str] | None): Sink selection (``"spool"``,
+            ``"stream"``, ``"both"``, or a list).
+        cirron (Cirron | None): Owning ``Cirron`` instance. Defaults to
+            the process-wide singleton via ``get_default()``.
+
+    Returns:
+        Profiler: The shared profiler singleton.
+
+    Raises:
+        ValueError: When ``output=`` resolves to an unknown sink name.
     """
     global _profiler, _atexit_registered
     with _profiler_lock:
@@ -489,6 +646,12 @@ def profile(
 
 
 def _disabled_health() -> dict[str, Any]:
+    """Return the canonical ``enabled=False`` health shape.
+
+    Returns:
+        dict[str, Any]: Same key set as :meth:`Profiler.health` with
+            zeroed counters and ``enabled=False``.
+    """
     # Reuse the default Cirron so we don't pay repeated TOML/env config
     # reads every time ``health()`` is polled without an active profiler.
     return Profiler(
@@ -512,7 +675,12 @@ def shutdown() -> None:
 
 def health() -> dict[str, Any]:
     """Module-level sugar — return the active profiler's health snapshot,
-    or an ``enabled=False`` shape when none is active."""
+    or an ``enabled=False`` shape when none is active.
+
+    Returns:
+        dict[str, Any]: Live :meth:`Profiler.health` output, or the
+            disabled-shape fallback.
+    """
     with _profiler_lock:
         active = _profiler
     if active is None:
@@ -539,6 +707,14 @@ def trace(
     an on-demand synchronous drain into the in-memory trace buffer, so
     spans/marks become visible even if the background flush thread
     hasn't been started by ``ci.profile()``.
+
+    Args:
+        format (Literal["tree", "dict", "json", "df"]): Output shape.
+        name (str | None): Optional span-name filter.
+        last (int | None): Optional cap on root spans returned.
+
+    Returns:
+        Any: Shape determined by ``format``.
     """
     return _trace_impl(format=format, name=name, last=last)
 
@@ -555,6 +731,14 @@ def watch(model: Any | None) -> Any | None:
     keeping the SDK attached doesn't keep the user's model alive.
     Returns the argument unchanged so call sites can chain
     (``model = ci.watch(build_model())``).
+
+    Args:
+        model (Any | None): The user's model (typically an
+            ``nn.Module``), or ``None`` to clear the registration.
+
+    Returns:
+        Any | None: ``model`` unchanged so the call can be chained, or
+            ``None`` when clearing.
     """
     global _watched_model_ref, _watched_warning_emitted
     if model is None:
@@ -586,6 +770,14 @@ def get_watched_model(*, warn_if_missing: bool = True) -> Any | None:
     hooks that run on every step (e.g. torch's ``opt_post`` grad stash)
     — in HF/Keras workflows those callers never require ``ci.watch()``
     and the diagnostic would be misleading.
+
+    Args:
+        warn_if_missing (bool): When ``True``, emit a one-shot
+            ``info``-level diagnostic if no model has been registered.
+
+    Returns:
+        Any | None: The watched model, or ``None`` if none is registered
+            (or the weakref's referent has been garbage-collected).
     """
     global _watched_warning_emitted
     if _watched_model_ref is None:
@@ -601,7 +793,8 @@ def get_watched_model(*, warn_if_missing: bool = True) -> Any | None:
 
 def _atexit_clear_singleton() -> None:
     """atexit hook — release the singleton so the interpreter tear-down path
-    doesn't leave a stale reference behind."""
+    doesn't leave a stale reference behind.
+    """
     global _profiler
     with _profiler_lock:
         _profiler = None
@@ -610,7 +803,8 @@ def _atexit_clear_singleton() -> None:
 def _reset_for_tests() -> None:
     """Test-only: shut down the active profiler, drain global buffers, stop
     the flush thread, and clear the module-level default ``Cirron``.
-    Ensures no state leaks across tests."""
+    Ensures no state leaks across tests.
+    """
     from cirron.core.blob_queue import _reset_default_for_tests as _reset_blob_queue
     from cirron.core.config import _reset_default_for_tests
     from cirron.core.snapshot_buffer import _reset_default_for_tests as _reset_snapshot_buffer

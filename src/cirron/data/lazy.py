@@ -18,6 +18,16 @@ from typing import Any
 
 
 class LazyHandle:
+    """Memoizing wrapper around a zero-arg materialization thunk.
+
+    Returned by ``ci.load(lazy=True)``. ``collect()`` runs the thunk on
+    first call and caches the result so subsequent calls are free.
+
+    Args:
+        thunk (Callable[[], Any]): Zero-arg callable that produces the
+            final return-type-converted value.
+    """
+
     __slots__ = ("_thunk", "_collected", "_value")
 
     def __init__(self, thunk: Callable[[], Any]) -> None:
@@ -26,6 +36,12 @@ class LazyHandle:
         self._value: Any = None
 
     def collect(self) -> Any:
+        """Run the thunk (once) and return its cached result.
+
+        Returns:
+            Any: Whatever the thunk produced — typically a DataFrame or
+                iterator.
+        """
         if not self._collected:
             self._value = self._thunk()
             self._collected = True

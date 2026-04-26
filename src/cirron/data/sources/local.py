@@ -42,6 +42,16 @@ class LocalDataSource(DataSource):
     """
 
     def _resolve_path(self) -> Path:
+        """Locate the on-disk path for the configured source.
+
+        Returns:
+            Path: The first existing path among ``config.path``, ``./<name>``,
+                and ``./data/<name>``.
+
+        Raises:
+            ValueError: If ``config.path`` is empty.
+            FileNotFoundError: If no candidate path exists.
+        """
         raw = self.config.path
         if not raw:
             raise ValueError("path is required for local data source")
@@ -60,6 +70,18 @@ class LocalDataSource(DataSource):
         raise FileNotFoundError(f"path does not exist: {raw}")
 
     def load(self) -> Any:
+        """Resolve the path and dispatch to the file / directory loaders.
+
+        Returns:
+            Any: A pandas DataFrame for csv/parquet (single file or
+                concatenable directory), a Python value for json, an
+                image / list of images for image formats, or raw text
+                otherwise.
+
+        Raises:
+            FileNotFoundError: If the path doesn't exist or no files
+                under a directory match the request filters.
+        """
         path = self._resolve_path()
         fmt = self.config.format or self._infer_format(path)
 
@@ -75,6 +97,17 @@ class LocalDataSource(DataSource):
         """Walk ``root`` recursively and concat files that satisfy
         ``match_cfg``. Uses POSIX-style relative paths for matching so
         the user-facing glob is the same on every OS.
+
+        Args:
+            root (Path): Directory to walk recursively.
+            match_cfg (MatchConfig): Filter spec.
+
+        Returns:
+            Any: A concatenated DataFrame for homogeneous csv/parquet
+                trees, or a list of per-file results otherwise.
+
+        Raises:
+            FileNotFoundError: If no files satisfy ``match_cfg``.
         """
         all_files = [p for p in root.rglob("*") if p.is_file()]
         rel_map = {str(p.relative_to(root).as_posix()): p for p in all_files}
@@ -93,6 +126,19 @@ class LocalDataSource(DataSource):
         return [self._load_file(f, self._infer_format(f)) for f in files]
 
     def _load_file(self, path: Path, fmt: str | None) -> Any:
+        """Load a single file according to its inferred format.
+
+        Args:
+            path (Path): Absolute path to the file.
+            fmt (str | None): Format hint (``"csv"``, ``"parquet"``,
+                ``"json"``, ``"png"``, ...). ``None`` falls through to
+                a plain text read.
+
+        Returns:
+            Any: A pandas DataFrame for csv/parquet, a Python value for
+                json, a PIL ``Image`` (or bytes) for image formats, or
+                the raw text contents otherwise.
+        """
         # ``None`` means "all columns"; an explicit ``[]`` is passed
         # through so local behavior matches S3/GCS/Azure (pandas returns
         # a 0-column frame) rather than silently loading everything.
@@ -116,6 +162,19 @@ class LocalDataSource(DataSource):
             return f.read()
 
     def _load_directory(self, path: Path, fmt: str | None) -> Any:
+        """Load every file under a directory.
+
+        Args:
+            path (Path): Directory to read (non-recursive).
+            fmt (str | None): Format hint applied to each file.
+
+        Returns:
+            Any: A concatenated DataFrame for homogeneous csv/parquet
+                directories, or a list of per-file results otherwise.
+
+        Raises:
+            FileNotFoundError: If the directory is empty.
+        """
         # Eagerly concat a homogeneous directory (e.g. every file is
         # parquet). Mixed directories fall through to the legacy "return a
         # list of whatever each file loaded to" behavior.
@@ -132,10 +191,33 @@ class LocalDataSource(DataSource):
         return [self._load_file(f, fmt or self._infer_format(f)) for f in files]
 
     def _infer_format(self, path: Path) -> str | None:
+        """Return the lowercased file extension without the leading dot.
+
+        Args:
+            path (Path): The file or directory path.
+
+        Returns:
+            str | None: Extension string, or ``None`` if the path has no
+                suffix.
+        """
         suffix = path.suffix.lower().lstrip(".")
         return suffix or None
 
     def _load_image(self, path: Path) -> Any:
+        """Load a single image or a directory of images via PIL.
+
+        Args:
+            path (Path): Either an image file or a directory containing
+                images.
+
+        Returns:
+            Any: A PIL ``Image``, list of ``Image`` instances, or raw
+                bytes when PIL isn't installed.
+
+        Raises:
+            FileNotFoundError: If ``path`` is neither a file nor a
+                directory.
+        """
         try:
             from PIL import Image
         except ImportError:
@@ -150,6 +232,12 @@ class LocalDataSource(DataSource):
         raise FileNotFoundError(f"image path does not exist: {path}")
 
     def validate(self) -> bool:
+        """Return ``True`` when the configured path exists.
+
+        Returns:
+            bool: ``True`` if ``_resolve_path`` succeeds, ``False`` on
+                ``FileNotFoundError`` / ``ValueError``.
+        """
         try:
             self._resolve_path()
             return True
@@ -157,6 +245,17 @@ class LocalDataSource(DataSource):
             return False
 
     def estimate_size(self) -> tuple[int | None, int | None]:
+        """Sum byte size and file count for the configured path.
+
+        For directories, recursively walks the tree (applying
+        ``MatchConfig`` when present) so partitioned layouts contribute
+        their real size to the tier check.
+
+        Returns:
+            tuple[int | None, int | None]: ``(total_bytes, file_count)``,
+                or ``(None, None)`` when the path is unresolvable or any
+                stat call fails.
+        """
         try:
             path = self._resolve_path()
         except (FileNotFoundError, ValueError):

@@ -43,10 +43,18 @@ def _make_stream_closer(stack: ScopeStack, opened: Any) -> Callable[[], None]:
     routed through here — the decorator always exits the context manager
     synchronously so the caller's ContextVar is never left bound across
     stream consumption.
+
+    Args:
+        stack (ScopeStack): The scope stack the request span lives on.
+        opened (Any): The scope handle returned by ``stack.push``.
+
+    Returns:
+        Callable[[], None]: An idempotent ``close()`` callable.
     """
     called = False
 
     def _close() -> None:
+        """Close ``opened`` exactly once; later calls are no-ops."""
         nonlocal called
         if called:
             return
@@ -70,7 +78,19 @@ def _finish_call(
 ) -> tuple[Any, bool]:
     """Run post-call detectors and decide whether the caller should still
     pop the scope. Returns ``(final_result, transferred)`` where
-    ``transferred`` means the stream wrapper now owns scope closure."""
+    ``transferred`` means the stream wrapper now owns scope closure.
+
+    Args:
+        stack (ScopeStack): The scope stack the request span lives on.
+        state (Any): Per-request ``_ScopeState`` from ``isolated_state``.
+        opened (Any): The scope handle returned by ``stack.push``.
+        start_ns (int): Wall-clock start time of the request.
+        result (Any): The wrapped function's return value.
+        cfg (dict[str, Any]): Per-decorator config dict.
+
+    Returns:
+        tuple[Any, bool]: ``(final_result, transferred)``.
+    """
     try:
         maybe_mark_openai_usage(result)
     except Exception:
@@ -97,6 +117,16 @@ def inference(
     ``config`` (if given) is attached to the wrapped function as
     ``_cirron_config`` so user code can read feature toggles via
     ``wrapped._cirron_config.get(...)`` without re-plumbing the dict.
+
+    Args:
+        fn (Callable[..., Any] | None): The function being decorated
+            (populated by the bare ``@ci.inference`` form).
+        config (dict[str, Any] | None): Optional per-decorator config —
+            currently honors ``stream_chunk_timing`` (bool).
+
+    Returns:
+        Callable[..., Any]: The wrapped function, or — when ``fn`` is
+            ``None`` — a decorator awaiting ``fn``.
     """
     cfg: dict[str, Any] = dict(config) if config else {}
 
@@ -109,12 +139,31 @@ def inference(
         pass
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+        """Wrap ``func`` (sync or ``async def``) with request instrumentation.
+
+        Args:
+            func (Callable[..., Any]): The serving function.
+
+        Returns:
+            Callable[..., Any]: The wrapped function (matching ``func``'s
+                sync / async shape).
+        """
         stack = get_default_stack()
 
         if inspect.iscoroutinefunction(func):
 
             @functools.wraps(func)
             async def awrapper(*args: Any, **kwargs: Any) -> Any:
+                """Async request wrapper that opens / closes a request scope.
+
+                Args:
+                    *args (Any): Positional args forwarded to ``func``.
+                    **kwargs (Any): Keyword args forwarded to ``func``.
+
+                Returns:
+                    Any: ``func``'s return value, possibly wrapped as a
+                        scope-aware stream.
+                """
                 rid = uuid.uuid4().hex
                 cm = stack.isolated_state(rid)
                 state = cm.__enter__()
@@ -141,6 +190,16 @@ def inference(
 
         @functools.wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
+            """Sync request wrapper that opens / closes a request scope.
+
+            Args:
+                *args (Any): Positional args forwarded to ``func``.
+                **kwargs (Any): Keyword args forwarded to ``func``.
+
+            Returns:
+                Any: ``func``'s return value, possibly wrapped as a
+                    scope-aware stream.
+            """
             rid = uuid.uuid4().hex
             cm = stack.isolated_state(rid)
             state = cm.__enter__()
