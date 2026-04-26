@@ -535,12 +535,12 @@ class _ScopeCM:
 def scope(name: str, index: int | None = None, **attrs: Any) -> _ScopeCM:
     """Open a named scope on the current thread.
 
-    Returns a context manager that yields the ``Scope`` object, or ``None``
-    if the push was dropped due to ``MAX_DEPTH`` overflow. Advanced callers
-    can read the yielded scope's ``id`` (for correlation) or mutate
-    ``attrs``; typical usage ignores it::
+        Returns a context manager that yields the ``Scope`` object, or ``None``
+        if the push was dropped due to ``MAX_DEPTH`` overflow. Advanced callers
+        can read the yielded scope's ``id`` (for correlation) or mutate
+        ``attrs``; typical usage ignores it::
 
-        with ci.scope("epoch", index=0):
-...
+            with ci.scope("epoch", index=0):
+    ...
     """
     return _ScopeCM(_default_stack.push(name, index, **attrs))

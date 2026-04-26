@@ -23,7 +23,7 @@ from cirron.core.errors import CirronDependencyError
 
 log = logging.getLogger("cirron.snapshots.blob")
 
-SIZE_WARN_BYTES = 100 * 1024 * 1024  # 100 MB — 
+SIZE_WARN_BYTES = 100 * 1024 * 1024  # 100 MB —
 SNAPSHOTS_SUBDIR = "snapshots"
 WEIGHTS_FILENAME = "weights.safetensors"
 GRADIENTS_FILENAME = "gradients.safetensors"
