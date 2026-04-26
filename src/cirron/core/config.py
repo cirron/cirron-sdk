@@ -376,7 +376,7 @@ class Cirron:
         # Instance-level default for ``output=`` and the trace
         # buffer cap. ``profile(output=...)`` overrides; otherwise the
         # value flows through here. Not part of the layered TOML/env
-        # resolver yet — those layers are reserved for 
+        # resolver yet — those layers are reserved for
         # core fields.
         self.output: str | list[str] | None = output
         self.trace_buffer_max_spans: int | None = trace_buffer_max_spans

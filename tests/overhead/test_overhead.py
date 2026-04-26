@@ -6,7 +6,7 @@ Measures wall-clock overhead of three configurations:
   - ``profile_torch_hooks`` — ``ci.profile(frameworks=["torch"])``
 
 Asserts each measured overhead ratio stays within a regression
-tolerance of the committed baseline (``baseline.json``). The 
+tolerance of the committed baseline (``baseline.json``). The
 targets (<1% scaffold, <2% torch hooks) are not asserted — the
 current CPU torch-hook path exceeds those goals in this reference
 loop, so this suite's job is to catch *regressions* from today's
