@@ -1,6 +1,6 @@
 """``ci.secret(name)`` — reads a secret injected by the platform runtime.
 
-Per spec §4.9, secrets are mounted two ways:
+secrets are mounted two ways:
 
 * Cloud / on-prem: as environment variables with a ``CIRRON_SECRET_`` prefix.
 * Air-gapped: as files under ``/etc/cirron/secrets/<name>`` (k8s / Docker

@@ -1,11 +1,11 @@
-"""MySQL source backend (spec §4.7).
+"""MySQL source backend.
 
 Thin shim over :mod:`cirron.data.sql`: parse the ``mysql://`` URI,
 resolve credentials, connect via ``PyMySQL``, run the composed
 ``SELECT`` through :func:`execute_to_pandas`. PyMySQL is pure-Python
 (no libmysqlclient build) and works against PlanetScale — the platform
 runs MySQL here, so first-class MySQL support is consistent with
-§2 "no new infrastructure".
+ "no new infrastructure".
 """
 
 from __future__ import annotations

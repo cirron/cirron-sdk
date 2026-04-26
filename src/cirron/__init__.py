@@ -1,8 +1,8 @@
 """Cirron SDK — Python-side profiler and data loader for the Cirron platform.
 
-Surface area is defined in ``docs/spec.md`` §4. Module-level ``ci.*``
+Surface area is defined in ``docs/spec.md``. Module-level ``ci.*``
 functions are thin delegators over the process-wide default ``Cirron``
-instance (spec §4.10). Constructing ``Cirron(api_endpoint=...)``
+instance. Constructing ``Cirron(api_endpoint=...)``
 explicitly gives you a separate instance — methods on that instance use
 its config, without disturbing the default. This is the path for
 self-hosted endpoints, multi-workspace scenarios, and test harnesses.

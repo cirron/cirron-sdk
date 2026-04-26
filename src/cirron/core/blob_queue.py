@@ -7,7 +7,7 @@ final destination — nothing more to do. For HTTP / event-stream transports
 the flush thread drains this queue each tick and asks the transport to
 upload, so that by the time the JSON batch referencing the blob is sent
 the platform worker can find the blob where its metadata says it should
-be (spec §5.3).
+be.
 
 Mirrors ``SnapshotBuffer``'s thread-safety + soft-cap shape so the health
 surface treats blob drops the same way it treats span/mark/snapshot drops.

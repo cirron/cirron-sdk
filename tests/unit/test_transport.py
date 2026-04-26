@@ -1,7 +1,6 @@
-"""Tests for SDK-12 transport layer (src/cirron/core/transport.py, ingest.py).
+"""Tests for transport layer (src/cirron/core/transport.py, ingest.py).
 
-Covers the acceptance criteria on SDK-12:
-- ``select_transport`` picks EventStream / HTTP / FileOnly based on env + config
+Covers the acceptance criteria on ``select_transport`` picks EventStream / HTTP / FileOnly based on env + config
 - ``HttpTransport`` sends correct headers, compression, and handles 202/400/429/5xx
 - Client-generated batch id is stable across retries (idempotency)
 - 429 honors Retry-After; 5xx uses exponential backoff
@@ -372,7 +371,7 @@ def test_ingest_result_defaults() -> None:
     assert r.status is None
 
 
-# SDK-25 — upload_blob across all three transports
+# — upload_blob across all three transports
 
 
 def test_file_only_upload_blob_returns_file_uri(tmp_path) -> None:

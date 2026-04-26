@@ -1,4 +1,4 @@
-"""Tests for ``ci.profile()`` orchestration (SDK-13).
+"""Tests for ``ci.profile()`` orchestration.
 
 These exercise the full lifecycle: singleton behavior, enabled=False,
 framework autodetection, platform context, home-toml seeding, health(),
@@ -222,7 +222,7 @@ def test_module_level_sugar_delegates_to_singleton():
 
 
 def test_session_root_has_framework_and_device_attrs():
-    """Spec §5.4: session-root scope carries cross-run semantic attrs
+    """Spec : session-root scope carries cross-run semantic attrs
     (``framework`` list, ``device``) so consumers can compare traces
     without re-deriving env info from downstream spans."""
     p = cirron.profile(frameworks=["torch"])

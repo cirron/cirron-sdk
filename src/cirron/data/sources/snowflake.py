@@ -1,4 +1,4 @@
-"""Snowflake source backend (spec §4.7).
+"""Snowflake source backend.
 
 Uses ``snowflake-connector-python``. URI is
 ``snowflake://<account>/<database>.<schema>.<table>``; the account

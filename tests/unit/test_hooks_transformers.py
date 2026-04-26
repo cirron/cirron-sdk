@@ -1,10 +1,10 @@
-"""SDK-22 HuggingFace transformers hook — unit tests.
+"""HuggingFace transformers hook — unit tests.
 
 Skipped in environments without ``transformers`` (or ``torch``) so the
 core CI path stays green. When available, we exercise the
 ``TrainerCallback`` auto-attach on ``Trainer.__init__``, the
 ``epoch`` / ``step`` scope shape, ``loss`` / ``learning_rate`` marks,
-nesting under torch hooks (SDK-20), subclass safety, and clean
+nesting under torch hooks, subclass safety, and clean
 ``uninstall``.
 """
 
@@ -31,7 +31,7 @@ from cirron.hooks._transformers_impl import install as tr_install  # noqa: E402
 
 
 class _LossModel(nn.Module):
-    """Tiny model that returns a HF-style ``{"loss": ...}`` dict so
+    """Tiny model that returns a HF-style ``{"loss":...}`` dict so
     ``Trainer.compute_loss`` can read ``outputs["loss"]`` (its dict
     branch) without us having to construct a full ``ModelOutput``."""
 

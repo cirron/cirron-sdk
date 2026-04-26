@@ -1,4 +1,4 @@
-"""Sampled tensor-value snapshot mode (spec §4.2).
+"""Sampled tensor-value snapshot mode.
 
 ``snapshots="sampled"`` produces inline per-tensor stats at every epoch
 boundary (same as the default mode) plus — on a ``random() <

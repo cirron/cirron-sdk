@@ -1,4 +1,4 @@
-"""SDK-21 TensorFlow / Keras hook — unit tests.
+"""TensorFlow / Keras hook — unit tests.
 
 Skipped in environments without ``tensorflow`` so the core CI path stays
 green. When available, we exercise the callback auto-attach on

@@ -1,6 +1,6 @@
 """Filesystem-source pattern matching (``ci.load(match=...)``).
 
-Per spec §4.7, ``match`` is a dict with ``path`` (glob), ``filename``
+``match`` is a dict with ``path`` (glob), ``filename``
 (regex), ``extension`` (shorthand), and ``columns`` (pushdown). The
 landed ``ci.load()`` dispatcher also accepts a flat ``ext=`` kwarg and a
 bare ``match="*.parquet"`` string — both are normalized to
@@ -47,7 +47,7 @@ class MatchConfig:
 
     filename_regex: str | None = None
     """Regex applied to the basename via :func:`re.fullmatch`. Set when
-    the caller passed ``match={"filename": r"..."}`` per spec §4.7.
+    the caller passed ``match={"filename": r"..."}``.
     Not pushable to the platform route — the route only speaks glob."""
 
     extension: tuple[str, ...] = ()
@@ -99,7 +99,7 @@ class MatchConfig:
 
         # Flat kwargs override their dict equivalents — no one calls the
         # dict shape in production yet, and the flat kwargs are the
-        # spec's public surface.
+        # public surface.
         if ext:
             extensions = _normalize_extensions(ext)
         if columns:
@@ -119,7 +119,7 @@ def _normalize_extensions(raw: Any) -> tuple[str, ...]:
         parts: list[str] = [raw]
     else:
         parts = list(raw)
-    # Strip before filtering so whitespace-only values ("  ", "\t") don't
+    # Strip before filtering so whitespace-only values (" ", "\t") don't
     # slip through as empty extensions — an empty ext would turn the
     # ``endswith('.<ext>')`` check into ``endswith('.')`` and match any
     # filename that happens to end in a period.

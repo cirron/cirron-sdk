@@ -1,7 +1,6 @@
-"""Tests for the SDK-10 mark buffer (src/cirron/core/mark.py).
+"""Tests for the mark buffer (src/cirron/core/mark.py).
 
-Covers the acceptance criteria on SDK-10:
-- marks attach to the innermost open scope
+Covers the acceptance criteria on marks attach to the innermost open scope
 - marks attach to the root sentinel when no scope is open
 - buffer overflow drops oldest and increments the drop counter
 - value coercion for float / int / string (with UTF-8 byte truncation) / bool
@@ -211,7 +210,7 @@ def test_coercion_string_truncation_multibyte_clean():
 
 def test_coercion_rejects_unsupported_type():
     with pytest.raises(TypeError, match="float, int, str, or bool"):
-        ci.mark("bad", [1, 2, 3])  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+        ci.mark("bad", [1, 2, 3])  # type: ignore[arg-type] # ty: ignore[invalid-argument-type]
 
 
 def test_threads_have_isolated_buffers():
@@ -240,7 +239,7 @@ def test_threads_have_isolated_buffers():
 
 def test_drain_all_crosses_threads():
     # Marks emitted on a worker thread are drainable from any thread via
-    # drain_all() — required for the SDK-11 flush thread.
+    # drain_all() — required for the flush thread.
     get_default_mark_buffer().drain_all()  # clear lingering
     get_default_stack().drain_closed_all()
 

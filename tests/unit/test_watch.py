@@ -1,4 +1,4 @@
-"""SDK-24 — public ``ci.watch()`` registers a model for snapshot capture."""
+"""public ``ci.watch()`` registers a model for snapshot capture."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Integration test for SDK-12 HTTP transport against a real local server.
+"""Integration test for HTTP transport against a real local server.
 
 Ticket acceptance criterion: "mock HTTP server receives valid payload".
 We stand up a ``http.server.ThreadingHTTPServer`` on an ephemeral port and

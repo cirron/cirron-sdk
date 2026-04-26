@@ -1,11 +1,11 @@
 """Platform-resolved bucket source — ``ci.load(name, source='platform')``.
 
-SDK-50 replaces the legacy ``/v1/datasets/resolve`` flow with a bucket-
+Replaces the legacy ``/v1/datasets/resolve`` flow with a bucket-
 oriented contract served by the platform monorepo under
 ``apps/app/app/api/data/``:
 
-    GET  {api_endpoint}/api/data/{bucket}/objects?limit=<n>&prefix=<p>
-    GET  {api_endpoint}/api/data/{bucket}/objects/{key}
+    GET {api_endpoint}/api/data/{bucket}/objects?limit=<n>&prefix=<p>
+    GET {api_endpoint}/api/data/{bucket}/objects/{key}
 
 The listing call returns every object's size and the aggregate
 ``total_size_bytes`` so the dispatcher can enforce the load-size tier
@@ -465,7 +465,7 @@ def _http_json_get(url: str, api_key: str, bucket_for_error: str) -> dict[str, A
     404 on either endpoint means "bucket doesn't exist for this
     workspace"; 401/403 means the token is bad; 5xx / connection errors
     mean the platform is unavailable. The error taxonomy matches the
-    pre-SDK-50 resolver so callers see the same exception shape.
+    pre-resolver so callers see the same exception shape.
     """
     req = urllib.request.Request(
         url,

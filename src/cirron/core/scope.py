@@ -1,4 +1,4 @@
-"""Thread-local scope stack (spec §3.2, §4.4).
+"""Thread-local scope stack.
 
 ``ci.scope("name", index=..., **attrs)`` opens a span, pushes it onto the
 current thread's scope stack, and closes it on exit. The innermost open
@@ -57,7 +57,7 @@ _process_time_ns = time.process_time_ns
 
 class Scope:
     """A single span in the scope tree. Shape mirrors the platform
-    ``TraceSpan`` model (spec §5.4); fields the SDK hasn't populated yet
+    ``TraceSpan`` model; fields the SDK hasn't populated yet
     (``gpu_ns``, ``memory_peak_bytes``) stay ``None`` until framework hooks
     fill them in.
 
@@ -533,7 +533,7 @@ class _ScopeCM:
 
 
 def scope(name: str, index: int | None = None, **attrs: Any) -> _ScopeCM:
-    """Open a named scope on the current thread (spec §4.4).
+    """Open a named scope on the current thread.
 
     Returns a context manager that yields the ``Scope`` object, or ``None``
     if the push was dropped due to ``MAX_DEPTH`` overflow. Advanced callers
@@ -541,6 +541,6 @@ def scope(name: str, index: int | None = None, **attrs: Any) -> _ScopeCM:
     ``attrs``; typical usage ignores it::
 
         with ci.scope("epoch", index=0):
-            ...
+...
     """
     return _ScopeCM(_default_stack.push(name, index, **attrs))

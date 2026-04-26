@@ -1,4 +1,4 @@
-"""Per-thread mark ring buffer (spec §4.5).
+"""Per-thread mark ring buffer.
 
 ``ci.mark(name, value, **attrs)`` attaches a coerced scalar (float, int,
 string, or bool) to the innermost open scope on the current thread and
@@ -58,7 +58,7 @@ _VALID_KINDS = frozenset({MARK_KIND_POINT, MARK_KIND_SUMMARY})
 
 class Mark:
     """A single scalar value attached to a span. Shape mirrors the
-    platform ``TraceMark`` model (spec §5.4).
+    platform ``TraceMark`` model.
 
     ``kind`` distinguishes a time-series point from a canonical summary
     value for the span: per-step losses use ``"point"``; end-of-epoch
@@ -265,7 +265,7 @@ def mark(
     **attrs: Any,
 ) -> None:
     """Attach a scalar value to the innermost open scope on the current
-    thread (spec §4.5).
+    thread.
 
     ``kind`` is ``"point"`` (a time-series data point logged inside the
     span, the default) or ``"summary"`` (a canonical end-of-span value,

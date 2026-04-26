@@ -1,4 +1,4 @@
-"""SDK-24 — stats snapshot capture.
+"""stats snapshot capture.
 
 Covers the acceptance criteria on the ticket:
 - Stats correctness on a tensor with known values.

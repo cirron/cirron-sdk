@@ -1,4 +1,4 @@
-"""Integration test: atexit handler flushes remaining data (SDK-11).
+"""Integration test: atexit handler flushes remaining data.
 
 Spawns a subprocess that opens a scope and emits a mark, then exits without
 calling ``flush()``. The parent asserts that the spool directory contains a

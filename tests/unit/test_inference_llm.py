@@ -1,4 +1,4 @@
-"""Tests for SDK-27 LLM inference detectors (src/cirron/inference/llm.py).
+"""Tests for LLM inference detectors (src/cirron/inference/llm.py).
 
 Covers the acceptance criteria:
 - OpenAI-style response dict has tokens marked
@@ -6,7 +6,7 @@ Covers the acceptance criteria:
 - Detection failure is silent
 
 Plus streaming TTFT / throughput and the HuggingFace ``generate`` patch
-described in spec §4.6.
+described in.
 """
 
 from __future__ import annotations

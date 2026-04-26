@@ -1,6 +1,6 @@
-"""Tests for SDK-14 loop wrappers (``ci.epochs`` / ``ci.batches``).
+"""Tests for loop wrappers (``ci.epochs`` / ``ci.batches``).
 
-Covers the acceptance criteria on SDK-14: passthrough semantics, indexed
+Covers the acceptance criteria on passthrough semantics, indexed
 scope emission, nested parent-child linkage, early-break cleanup, and
 DataLoader stall-time attribution.
 """

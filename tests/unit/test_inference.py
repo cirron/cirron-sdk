@@ -1,4 +1,4 @@
-"""Tests for SDK-26 ``@ci.inference`` (src/cirron/inference/decorator.py).
+"""Tests for ``@ci.inference`` (src/cirron/inference/decorator.py).
 
 Covers the acceptance criteria:
 - decorated fn produces a ``request`` scope per call with a ``request_id``

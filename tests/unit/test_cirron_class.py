@@ -1,4 +1,4 @@
-"""Tests for the ``Cirron`` class (spec §4.10, SDK-16).
+"""Tests for the ``Cirron`` class.
 
 Covers constructor config resolution (defaults → ``~/.cirron/config.toml``
 → ``CIRRON_*`` env vars → explicit kwargs), the module-level

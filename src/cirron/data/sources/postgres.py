@@ -1,4 +1,4 @@
-"""Postgres source backend (spec §4.7).
+"""Postgres source backend.
 
 Thin shim over :mod:`cirron.data.sql`: parse the ``postgres://`` URI,
 resolve credentials, connect via ``psycopg`` (v3), run the composed

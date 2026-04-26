@@ -1,5 +1,5 @@
 """``TraceSnapshot`` dataclass — the record written to the spool for every
-captured tensor (spec §5.4).
+captured tensor.
 
 Lives in its own module so ``core/flush.py`` can import the serializer
 without pulling in the stats-capture code, which only loads a tensor
@@ -14,7 +14,7 @@ from typing import Any
 
 @dataclass(slots=True)
 class TraceSnapshot:
-    """Mirror of the platform ``TraceSnapshot`` model (spec §5.4).
+    """Mirror of the platform ``TraceSnapshot`` model.
 
     ``mode="stats"`` records carry computed statistics inline in
     ``stats`` and leave ``blob_uri`` unset. ``"sampled"`` / ``"full"``

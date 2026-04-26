@@ -531,7 +531,7 @@ def execute_to_pandas(cursor: Any, query: str) -> Any:
     / ``"iter"`` / ``"tensor"`` / ``"hf"`` — SQL sources don't need
     their own conversion path.
 
-    TODO(SDK-30-followup): streaming path for ``as_='iter'`` / ``lazy=True``.
+    TODO: streaming path for ``as_='iter'`` / ``lazy=True``.
     Today ``fetchall`` materializes the whole result set into memory
     before the adapter slices it into batches — effectively negating
     ``as_='iter'`` for large tables. A proper fix uses per-driver

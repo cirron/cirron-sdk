@@ -1,4 +1,4 @@
-"""Tests for ``ci.env()`` — SDK-15."""
+"""Tests for ``ci.env()``."""
 
 from __future__ import annotations
 

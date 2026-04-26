@@ -1,4 +1,4 @@
-"""Background flush thread and spool writer (spec §3.3, §3.1).
+"""Background flush thread and spool writer.
 
 The flush thread periodically drains closed scopes and marks and writes
 them to ``./.cirron/spool/`` as versioned JSON batches. When a transport
@@ -295,7 +295,7 @@ class FlushThread(threading.Thread):
             self._tick()
 
     def _tick(self) -> None:
-        # SDK-46 safety net: any bug inside the tick path becomes a logged
+        # safety net: any bug inside the tick path becomes a logged
         # WARNING instead of a thread death. The supervisor still catches
         # truly fatal failures (OOM, abort) — this just prevents a bad
         # tick from burning one of the three supervisor lives.
@@ -309,7 +309,7 @@ class FlushThread(threading.Thread):
         # ``blob_uri`` with the remote URI returned by ``upload_blob``
         # before the batch reaches the transport. Uploading *first* also
         # means the worker's "blob must exist when metadata arrives"
-        # contract (spec §5.3) holds even with interleaved retries.
+        # contract holds even with interleaved retries.
         scopes = self._scope_stack.drain_closed_all()
         marks = self._mark_buffer.drain_all()
         snapshots: list[TraceSnapshot] = (

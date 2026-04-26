@@ -1,4 +1,4 @@
-"""TensorFlow / Keras hook implementation (spec §4.8).
+"""TensorFlow / Keras hook implementation.
 
 Kept out of ``tensorflow.py`` so self-registration at package import
 stays cheap — ``install()`` defers ``import keras`` until called by
@@ -8,7 +8,7 @@ Auto-attaches a ``keras.callbacks.Callback`` to every ``Model.fit`` call
 so users get ``epoch`` / ``batch`` scopes plus metric marks from the
 Keras ``logs`` dict with zero user code. Every callback entry point is
 wrapped in :func:`_catch` — a bad ``logs`` payload or a scope push
-failure must never crash training (spec §6.3).
+failure must never crash training.
 """
 
 from __future__ import annotations

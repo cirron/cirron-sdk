@@ -1,4 +1,4 @@
-"""SDK-23 scikit-learn ``ci.wrap()`` — unit tests.
+"""scikit-learn ``ci.wrap()`` — unit tests.
 
 Skipped when ``scikit-learn`` is not installed so the core CI path stays
 green, matching ``tests/unit/test_hooks_torch.py``.

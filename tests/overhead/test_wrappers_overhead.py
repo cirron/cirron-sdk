@@ -1,7 +1,7 @@
-"""SDK-14 overhead budget: ``ci.batches()`` / ``ci.epochs()`` < 10μs/iter.
+"""Overhead budget: ``ci.batches()`` / ``ci.epochs()`` < 10μs/iter.
 
-Gating + result logging are handled by ``conftest.py`` (SDK-44). The
-budget is inherited from the underlying SDK-9/10 scope push/pop cost;
+Gating + result logging are handled by ``conftest.py``. The
+budget is inherited from the underlying /10 scope push/pop cost;
 this test will fail until that path meets its own budget.
 """
 

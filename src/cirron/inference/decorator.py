@@ -1,6 +1,6 @@
 """``@ci.inference`` — serving instrumentation decorator.
 
-Per spec §4.6, wraps a serving function with profiling: opens a ``request``
+Wraps a serving function with profiling: opens a ``request``
 scope tagged with an auto-generated ``request_id``, invokes the function,
 closes the scope. Sync and ``async def`` functions are both supported.
 

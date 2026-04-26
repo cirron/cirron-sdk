@@ -1,4 +1,4 @@
-"""Tests for SQL-backed ``ci.load()`` sources (spec §4.7, SDK-30).
+"""Tests for SQL-backed ``ci.load()`` sources.
 
 Covers the shared :mod:`cirron.data.sql` helpers (URI parsing,
 credential resolution, query composition) and the per-driver source

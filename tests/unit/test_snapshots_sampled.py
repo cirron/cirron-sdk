@@ -1,4 +1,4 @@
-"""SDK-25 — sampled and full snapshot modes.
+"""sampled and full snapshot modes.
 
 Covers:
 - Sample-rate roll approximately matches the configured rate.
@@ -323,7 +323,7 @@ def test_unconvertible_tensor_keeps_mode_stats(require_safetensors, tmp_path, mo
     assert bad_rec.blob_uri is None
 
 
-# -------- SDK-46: never-crash under injected failures ----------------------
+# -------- never-crash under injected failures ----------------------
 
 
 def test_sampled_serialize_failure_preserves_stats(

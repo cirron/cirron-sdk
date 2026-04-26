@@ -1,4 +1,4 @@
-"""SDK-20 integration — a real (tiny) training loop under ``ci.profile()``.
+"""integration — a real (tiny) training loop under ``ci.profile()``.
 
 Verifies end-to-end that calling ``ci.profile()`` on a training loop with
 torch installed produces the expected scope tree: a session root

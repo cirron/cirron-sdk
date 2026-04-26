@@ -1,4 +1,4 @@
-"""HTTP client for trace ingestion (spec §3.1, §5.2).
+"""HTTP client for trace ingestion.
 
 ``IngestClient`` is the network layer behind ``HttpTransport``. It owns
 serialization, gzip, auth headers, retry policy, and idempotency. The flush
@@ -105,7 +105,7 @@ class IngestClient:
     """POSTs batches to the platform ingest route with retry + idempotency.
 
     The SDK version and batch id travel as headers so the server can dedupe
-    without parsing the body (spec §5.2 — Redis-backed idempotency).
+    without parsing the body ( — Redis-backed idempotency).
     """
 
     def __init__(

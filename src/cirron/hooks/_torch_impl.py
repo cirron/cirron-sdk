@@ -1,4 +1,4 @@
-"""PyTorch hook implementation (spec §4.8).
+"""PyTorch hook implementation.
 
 Kept out of ``torch.py`` so self-registration at package import stays
 cheap — ``import torch`` only happens when :func:`install` is called by
@@ -7,8 +7,7 @@ cheap — ``import torch`` only happens when :func:`install` is called by
 The installer mutates four PyTorch extension points and records undo
 callbacks on a :class:`TorchHookHandle` so ``Profiler.shutdown()`` can
 cleanly restore the originals. Every callback is wrapped in
-:func:`_catch` — hook exceptions are logged at WARNING and swallowed
-per spec §6.3.
+:func:`_catch` — hook exceptions are logged at WARNING and swallowed.
 """
 
 from __future__ import annotations
@@ -472,7 +471,7 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
         prev = epoch_state["scope"]
         # Capture weight + gradient stats against the outgoing epoch span
         # *before* we unwind it — the span id is what the snapshots link
-        # to (spec §5.4). Skipped silently when ``snapshots`` is off or
+        # to. Skipped silently when ``snapshots`` is off or
         # ``ci.watch()`` was never called (bare torch case).
         if prev is not None:
             _catch("snapshot_capture", _capture_epoch_snapshots, prev.id)

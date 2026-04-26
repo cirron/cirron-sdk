@@ -1,12 +1,12 @@
-"""SDK-24 overhead budget: stats snapshot of a ResNet50-sized model
-must complete in < 50 ms (spec §4.2).
+"""Overhead budget: stats snapshot of a ResNet50-sized model
+must complete in < 50 ms.
 
-Gating + result logging are handled by ``conftest.py`` (SDK-44).
+Gating + result logging are handled by ``conftest.py``.
 Requires ``torch`` + ``torchvision`` at runtime — missing deps skip
 the test.
 
-**Hardware-dependent budget.** The spec §4.2 50 ms figure is calibrated
-against the reference hardware for the rest of spec §6.1: a single
+**Hardware-dependent budget.** The 50 ms figure is calibrated
+against the reference hardware for the rest of : a single
 A100 with tensors on-device, where torch reductions are sub-ms kernel
 launches. On CPU-only hardware (GitHub Actions ubuntu-latest is 2
 shared vCPUs on x86_64), the same ResNet50 traversal is
@@ -34,7 +34,7 @@ import pytest
 
 from cirron.snapshots.stats import capture_weight_stats
 
-_GPU_BUDGET_NS = 50_000_000  # 50 ms — spec §4.2, GPU reference
+_GPU_BUDGET_NS = 50_000_000  # 50 ms —, GPU reference
 _CPU_BUDGET_NS = 250_000_000  # 250 ms — CI CPU (~30% headroom over 175 ms)
 
 
@@ -44,7 +44,7 @@ def test_resnet50_stats_under_budget(record_result) -> None:
     torch = pytest.importorskip("torch")
     torchvision = pytest.importorskip("torchvision")
     # ResNet50 is ~25M params — representative of the "typical model"
-    # the spec budgets against. No pretrained weights download — random
+    # the SDK budgets against. No pretrained weights download — random
     # init is fine for measuring per-tensor stat cost.
     model = torchvision.models.resnet50(weights=None)
     # Put the model in inference mode so there's no lingering autograd
@@ -75,6 +75,6 @@ def test_resnet50_stats_under_budget(record_result) -> None:
     )
     assert records, "expected at least one record for ResNet50"
     assert elapsed_ns < budget_ns, (
-        f"SDK-24 overhead regression: {elapsed_ns / 1e6:.2f}ms for "
+        f"snapshot overhead regression: {elapsed_ns / 1e6:.2f}ms for "
         f"{len(records)} tensors (budget {budget_label})"
     )

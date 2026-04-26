@@ -1,4 +1,4 @@
-"""Shared harness for the overhead regression suite (SDK-44).
+"""Shared harness for the overhead regression suite.
 
 The suite is gated behind ``CIRRON_RUN_OVERHEAD_TESTS=1`` so that the
 default ``uv run pytest`` stays fast; CI sets the env var for the
