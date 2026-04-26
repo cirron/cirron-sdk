@@ -1,4 +1,4 @@
-"""Trace transports (spec §3.1).
+"""Trace transports.
 
 Three concrete transports selected automatically by ``select_transport``:
 

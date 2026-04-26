@@ -1,4 +1,4 @@
-"""SDK extras dependency check (``ci.deps``) — SDK-49.
+"""SDK extras dependency check (``ci.deps``).
 
 In-process equivalent of the external ``cirron doctor`` CLI. Reports which
 optional extras are installed and, when called with required names, raises
@@ -117,7 +117,7 @@ def _resolve_to_import_name(name: str) -> str:
 
 
 def deps(*required: str) -> dict[str, str | None]:
-    """Check SDK extras availability (spec §4, SDK-49).
+    """Check SDK extras availability.
 
     With no arguments, return ``{import_name: version_or_None}`` for every
     known extra. With one or more arguments, probe only those and raise

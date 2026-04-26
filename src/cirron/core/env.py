@@ -1,6 +1,6 @@
 """``ci.env(key, default=None)`` — read env vars with JSON auto-parsing.
 
-Per spec §4.9: if the value of an env var starts with ``{`` or ``[``, parse
+If the value of an env var starts with ``{`` or ``[``, parse
 it as JSON and return the parsed object. Otherwise return the raw string.
 Users who don't want auto-parsing can call ``os.environ.get`` directly.
 
@@ -40,8 +40,8 @@ def _load_dotenv_once() -> None:
             _dotenv_loaded = True
             return
         # Explicit CWD path: ``load_dotenv()`` with no args walks up from
-        # the caller's file, which would pick up .env files outside the
-        # user's project. Spec §4.9 says "load from current working
+        # the caller's file, which would pick up.env files outside the
+        # user's project. Spec says "load from current working
         # directory".
         load_dotenv(dotenv_path=os.path.join(os.getcwd(), ".env"), override=False)
         _dotenv_loaded = True

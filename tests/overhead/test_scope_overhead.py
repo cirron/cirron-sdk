@@ -1,7 +1,7 @@
-"""SDK-9 overhead budget: scope push/pop must stay under ~5μs per cycle.
+"""Overhead budget: scope push/pop must stay under ~5μs per cycle.
 
 1M push/pop cycles in < 5s on a single thread. Gating + result logging
-are handled by ``conftest.py`` (SDK-44).
+are handled by ``conftest.py``.
 """
 
 from __future__ import annotations

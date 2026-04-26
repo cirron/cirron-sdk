@@ -1,4 +1,4 @@
-"""TensorFlow / Keras hooks (spec §4.8).
+"""TensorFlow / Keras hooks.
 
 Registered at package import; the real install body lives in
 ``_tf_impl`` so we can defer loading the Keras / TensorFlow backend

@@ -1,4 +1,4 @@
-"""SDK-25 — ``BlobUploadQueue`` basics."""
+"""``BlobUploadQueue`` basics."""
 
 from __future__ import annotations
 

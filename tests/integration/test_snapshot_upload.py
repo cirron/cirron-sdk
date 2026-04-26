@@ -1,4 +1,4 @@
-"""SDK-25 — end-to-end sampled/full blob upload against a mock object store.
+"""end-to-end sampled/full blob upload against a mock object store.
 
 Stands up a ``ThreadingHTTPServer`` on an ephemeral port that accepts PUTs
 under ``/api/traces/blob/...`` and records them. Runs a full capture →
@@ -161,8 +161,8 @@ def test_blob_uploads_to_mock_object_storage(server, tmp_path):
     )
 
     # 3. One tick should drain the blob queue (→ PUT) and then produce a JSON
-    #    batch (which the /api/traces POST will record but we ignore — the
-    #    ticket criterion is "blob uploads to mock object storage").
+    # batch (which the /api/traces POST will record but we ignore — the
+    # ticket criterion is "blob uploads to mock object storage").
     ft._tick()  # type: ignore[attr-defined]
 
     blob_puts = [r for r in srv.received if r["path"].startswith("/api/traces/blob/")]

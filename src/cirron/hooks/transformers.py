@@ -1,4 +1,4 @@
-"""HuggingFace transformers hooks (spec §4.8).
+"""HuggingFace transformers hooks.
 
 Registered at package import; the real install body lives in
 ``_transformers_impl`` so we can defer loading the ``transformers``

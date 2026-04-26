@@ -1,7 +1,7 @@
 """YAML + layered config loader and ``Cirron`` entry-point class.
 
 Merges the YAML loader previously at ``cirron/config/loader.py`` with the
-``Cirron`` class described in spec §4.10. The layered resolver
+``Cirron`` class described in. The layered resolver
 (defaults → ``~/.cirron/config.toml`` → ``CIRRON_*`` env vars → explicit
 constructor kwargs) drives ``__init__``; instance methods mirror the
 module-level functions in ``cirron/__init__.py``, most as pure delegators
@@ -167,8 +167,7 @@ _ENV_MAP: dict[str, str] = {
 }
 
 # Size tiers for ``ci.load()``: warn above warn_bytes, raise above max_bytes
-# unless ``confirm_large=True``. See spec §4.7 for the rationale —
-# users on laptops should not accidentally pull a 500 GB bucket.
+# unless ``confirm_large=True``. Users on laptops should not accidentally pull a 500 GB bucket.
 DEFAULT_LOAD_WARN_BYTES = 1_000_000_000  # 1 GB
 DEFAULT_LOAD_MAX_BYTES = 10_000_000_000  # 10 GB
 
@@ -321,7 +320,7 @@ def _resolve_config(
 
 
 class Cirron:
-    """Main SDK entry point (spec §4.10).
+    """Main SDK entry point.
 
     The module-level functions in ``cirron/__init__.py`` (``ci.profile``,
     ``ci.scope``, ``ci.mark``, …) are thin delegators over the global
@@ -377,7 +376,7 @@ class Cirron:
         # Instance-level default for ``output=`` and the trace
         # buffer cap. ``profile(output=...)`` overrides; otherwise the
         # value flows through here. Not part of the layered TOML/env
-        # resolver yet — those layers are reserved for spec §4.10
+        # resolver yet — those layers are reserved for 
         # core fields.
         self.output: str | list[str] | None = output
         self.trace_buffer_max_spans: int | None = trace_buffer_max_spans
@@ -403,7 +402,7 @@ class Cirron:
         ``cirron=self`` — the instance's ``api_endpoint``, ``api_key``,
         ``output_dir``, ``spool_max_bytes``, and ``ingest_path`` drive
         transport selection and spool location. Returns the shared
-        ``Profiler`` singleton per spec §4.2; idempotent on repeat calls.
+        ``Profiler`` singleton ; idempotent on repeat calls.
         """
         from cirron.core.profiler import profile as _profile
 
@@ -546,7 +545,7 @@ class Cirron:
         return _deps(*required)
 
 
-# Module-level default singleton (spec §4.10).
+# Module-level default singleton.
 
 _default_instance: Cirron | None = None
 _default_lock = threading.Lock()

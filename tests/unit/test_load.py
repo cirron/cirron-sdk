@@ -1,4 +1,4 @@
-"""Tests for ``ci.load()`` (spec §4.7, SDK-28).
+"""Tests for ``ci.load()``.
 
 Covers the dispatcher contract: scheme routing, ``source='local'`` default,
 platform resolver behavior, multi-source concat, ``as_=`` conversions for
@@ -115,7 +115,7 @@ def test_scheme_routing_rejects_unknown():
 
 
 def test_postgres_scheme_routes_to_postgres_source(monkeypatch):
-    """SDK-30 wired postgres:// through to ``PostgresDataSource``; the
+    """wired postgres:// through to ``PostgresDataSource``; the
     driver import is what should fail on a dev machine without psycopg,
     not the dispatcher."""
     from cirron.data.sources import postgres as pg_mod
@@ -569,13 +569,13 @@ def test_gcs_validate_returns_actual_bool(monkeypatch):
     monkeypatch.setitem(sys.modules, "google.cloud.storage", mod)
 
     src = GCSDataSource(SourceConfig(source_type="gs", bucket_name="x"))
-    # Previous implementation returned True regardless; now it reflects .exists().
+    # Previous implementation returned True regardless; now it reflects.exists().
     assert src.validate() is False
 
 
 def test_azure_account_url_uses_account_name():
     """AzureDataSource must build account_url from config.account_name,
-    not container_name (SDK-8 review bug)."""
+    not container_name (review bug)."""
     from cirron.data.sources import SourceConfig
     from cirron.data.sources.azure import AzureDataSource
 
@@ -733,7 +733,7 @@ def test_where_rejected_for_non_sql_sources(tmp_path):
         ci.load(str(path), where="a > 0")
 
 
-# -- map= transform (SDK-31) -------------------------------------------------
+# -- map= transform -------------------------------------------------
 
 
 def test_map_rowwise_transforms_each_row(tmp_path):
@@ -893,7 +893,7 @@ def test_s3_bare_bucket_uses_folder_path(monkeypatch):
     assert cfg.path is None
 
 
-# -- NumpyAdapter 1D empty-selection bug fix (SDK-8 review item) --------------
+# -- NumpyAdapter 1D empty-selection bug fix (review item) --------------
 
 
 def test_numpy_adapter_1d_empty_selection_returns_zero_cols():

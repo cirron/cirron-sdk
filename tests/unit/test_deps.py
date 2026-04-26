@@ -1,4 +1,4 @@
-"""Tests for ``ci.deps`` (SDK-49)."""
+"""Tests for ``ci.deps``."""
 
 from __future__ import annotations
 

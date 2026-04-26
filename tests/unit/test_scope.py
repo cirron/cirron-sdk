@@ -1,7 +1,6 @@
-"""Tests for the SDK-9 scope stack (src/cirron/core/scope.py).
+"""Tests for the scope stack (src/cirron/core/scope.py).
 
-Covers the acceptance criteria on SDK-9:
-- parent-child linkage across nested scopes
+Covers the acceptance criteria on parent-child linkage across nested scopes
 - attrs + index attach correctly
 - depth up to MAX_DEPTH works; overflow is dropped with a warning
 - two threads don't contaminate each other's stacks
@@ -192,7 +191,7 @@ def test_pop_on_empty_stack_is_safe():
 
 def test_drain_closed_all_crosses_threads():
     # Scopes closed on a worker thread must be visible to a drain called
-    # from a different (e.g. flush) thread. This is SDK-11's consumer pattern.
+    # from a different (e.g. flush) thread. This is 's consumer pattern.
     get_default_stack().drain_closed_all()  # clear anything lingering
     worker_done = threading.Event()
 

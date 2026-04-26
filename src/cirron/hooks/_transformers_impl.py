@@ -1,4 +1,4 @@
-"""HuggingFace transformers hook implementation (spec §4.8).
+"""HuggingFace transformers hook implementation.
 
 Kept out of ``transformers.py`` so self-registration at package import
 stays cheap — ``install()`` defers ``import transformers`` until called
@@ -11,7 +11,7 @@ scopes plus ``loss`` / ``learning_rate`` marks with zero user code. The
 so the underlying torch ``forward`` / ``backward`` / ``optimizer_step``
 spans nest cleanly inside it. Every callback entry point is
 wrapped in :func:`_catch` — a bad ``logs`` payload or a scope push
-failure must never crash training (spec §6.3).
+failure must never crash training.
 """
 
 from __future__ import annotations

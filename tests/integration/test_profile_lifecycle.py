@@ -1,4 +1,4 @@
-"""End-to-end lifecycle: profile → scope → mark → flush → spool (SDK-13)."""
+"""End-to-end lifecycle: profile → scope → mark → flush → spool."""
 
 from __future__ import annotations
 

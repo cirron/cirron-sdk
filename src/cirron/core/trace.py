@@ -131,7 +131,7 @@ def _filter_by_last(
 
 
 def trace(
-    format: TraceFormat = "tree",  # noqa: A002 — public API name per spec
+    format: TraceFormat = "tree",  # noqa: A002 — public API name
     name: str | None = None,
     last: int | None = None,
 ) -> _TraceTreeRepr | dict[str, Any] | str | pd.DataFrame | None:

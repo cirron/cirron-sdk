@@ -1,4 +1,4 @@
-"""Tests for ``ci.secret()`` — SDK-17."""
+"""Tests for ``ci.secret()``."""
 
 from __future__ import annotations
 

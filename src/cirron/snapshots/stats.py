@@ -1,9 +1,9 @@
-"""Per-tensor statistics snapshot mode (spec §4.2).
+"""Per-tensor statistics snapshot mode.
 
 Default snapshot mode. Fires at epoch boundaries from framework hooks
 (torch ``_rotate_epoch``, Keras ``on_epoch_end``, HF ``on_epoch_end``)
 and at most once per epoch for gradient stats — per-step gradient
-capture would blow the spec's < 50 ms/epoch budget on a ResNet50-sized
+capture would blow the SDK's < 50 ms/epoch budget on a ResNet50-sized
 model, and the last backward's ``.grad`` tensors are still live at the
 epoch boundary (before the next ``zero_grad()``), which is what we read.
 
@@ -179,12 +179,12 @@ def _tensor_stats_torch(tensor: Any) -> dict[str, Any]:
         return _empty_stats()
 
     # Fused reductions:
-    #   * ``aminmax`` returns (min, max) in one pass.
-    #   * ``mean`` + ``std(unbiased=False)`` together are two passes.
-    #   * ``norm`` is derived algebraically from mean + std + N via
-    #     ``‖x‖₂ = √(N * (mean² + std²))`` (since ``var = E[x²] − E[x]²``).
-    #     Skipping the dedicated ``vector_norm`` call saves one full
-    #     pass over the data per tensor — measurable on ResNet50 on CI.
+    # * ``aminmax`` returns (min, max) in one pass.
+    # * ``mean`` + ``std(unbiased=False)`` together are two passes.
+    # * ``norm`` is derived algebraically from mean + std + N via
+    # ``‖x‖₂ = √(N * (mean² + std²))`` (since ``var = E[x²] − E[x]²``).
+    # Skipping the dedicated ``vector_norm`` call saves one full
+    # pass over the data per tensor — measurable on ResNet50 on CI.
     # Four scalar materializations land in a single ``.tolist()``.
     # ``var_mean`` was tried here and measured slower than the explicit
     # mean/std pair on CPU-contiguous tensors.
@@ -427,8 +427,7 @@ def capture_gradient_stats(model: Any, span_id: str) -> list[TraceSnapshot]:
     """Compute stats for every parameter's ``.grad`` tensor.
 
     Parameters with ``grad is None`` (never used in the loss, frozen,
-    or ``zero_grad(set_to_none=True)`` already fired) are skipped — the
-    spec's acceptance criteria explicitly require this.
+    or ``zero_grad(set_to_none=True)`` already fired) are skipped.
 
     Keras ``Variable`` objects don't carry a ``.grad`` attribute; this
     function is effectively PyTorch-only today. Keras gradient snapshots

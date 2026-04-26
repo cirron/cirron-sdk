@@ -1,4 +1,4 @@
-"""``ci.load()`` — unified data-access dispatcher (spec §4.7).
+"""``ci.load()`` — unified data-access dispatcher.
 
 The dispatcher parses a flat keyword signature into a :class:`LoadRequest`,
 resolves each input to a concrete ``DataSource``, enforces the

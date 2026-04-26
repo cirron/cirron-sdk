@@ -1,18 +1,18 @@
-"""SDK-44 reference loop: tiny MLP, synthetic data, CPU.
+"""Reference loop: tiny MLP, synthetic data, CPU.
 
 Measures wall-clock overhead of three configurations:
-  - ``baseline``              — no profiling
-  - ``profile_no_hooks``      — ``ci.profile(frameworks=[], snapshots=None)``
-  - ``profile_torch_hooks``   — ``ci.profile(frameworks=["torch"])``
+  - ``baseline`` — no profiling
+  - ``profile_no_hooks`` — ``ci.profile(frameworks=[], snapshots=None)``
+  - ``profile_torch_hooks`` — ``ci.profile(frameworks=["torch"])``
 
 Asserts each measured overhead ratio stays within a regression
-tolerance of the committed baseline (``baseline.json``). The spec §6.1
+tolerance of the committed baseline (``baseline.json``). The 
 targets (<1% scaffold, <2% torch hooks) are not asserted — the
 current CPU torch-hook path exceeds those goals in this reference
 loop, so this suite's job is to catch *regressions* from today's
 committed behavior rather than fail on the known gap. The recorded
 JSON artifact carries the raw ratios so a reader can compare against
-the spec targets without re-running the loop.
+the SDK targets without re-running the loop.
 
 The model is a two-layer MLP — we're exercising the hook surface
 (forward / backward / optimizer_step / data_load), not training
@@ -142,8 +142,8 @@ def test_reference_loop_overhead(measure, record_result) -> None:
     )
 
     # Regression gate. Compare against the committed baseline, not the
-    # spec budget (CLAUDE.md documents why: the hot path is known to
-    # miss spec §6.1 today; we ratchet from where we are).
+    # documented budget (CLAUDE.md explains why: the hot path is known
+    # to miss today; we ratchet from where we are).
     ceiling_no_hooks = expected["profile_no_hooks_ratio"] * _REGRESSION_TOLERANCE
     assert no_hooks_ratio <= ceiling_no_hooks, (
         f"profile() scaffold overhead regressed: {no_hooks_ratio * 100:.2f}% "

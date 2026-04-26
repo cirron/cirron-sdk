@@ -1,4 +1,4 @@
-"""Safetensors serialization for sampled/full snapshot modes (spec §4.2).
+"""Safetensors serialization for sampled/full snapshot modes.
 
 The stats path emits inline per-tensor summaries; sampled/full
 additionally persist the raw tensor values. One safetensors file is
@@ -23,7 +23,7 @@ from cirron.core.errors import CirronDependencyError
 
 log = logging.getLogger("cirron.snapshots.blob")
 
-SIZE_WARN_BYTES = 100 * 1024 * 1024  # 100 MB — spec §4.2
+SIZE_WARN_BYTES = 100 * 1024 * 1024  # 100 MB — 
 SNAPSHOTS_SUBDIR = "snapshots"
 WEIGHTS_FILENAME = "weights.safetensors"
 GRADIENTS_FILENAME = "gradients.safetensors"
@@ -191,7 +191,7 @@ def snapshot_dir(output_dir: str | Path, span_id: str) -> Path:
 
 def blob_remote_key(span_id: str, filename: str) -> str:
     """Remote object key for the platform blob store. Mirrors the on-disk
-    layout under the ``snapshots/`` prefix — the platform worker (SDK-36)
+    layout under the ``snapshots/`` prefix — the platform worker
     uses the same path to look up the blob."""
     return f"{SNAPSHOTS_SUBDIR}/{span_id}/{filename}"
 
@@ -210,7 +210,7 @@ def serialize_tensors(
     path some tensors can be skipped if ``_tensor_to_numpy`` fails, so
     callers must use this set (not the input names) when annotating
     records with a ``blob_uri``. ``kind`` must be ``"weights"`` or
-    ``"gradients"`` — it selects the filename per spec §10.8.
+    ``"gradients"`` — it selects the filename.
     """
     if not named_tensors:
         return None

@@ -1,7 +1,7 @@
 """Tests for the YAML profiling-section resolution path used by the
 profiler orchestrator.
 
-``Cirron.profile()`` is now the real orchestration entry point (SDK-16);
+``Cirron.profile()`` is now the real orchestration entry point;
 the YAML-section resolution it used to own moved to the private
 ``Cirron._resolve_profile_config`` helper, which the orchestrator calls
 before selecting transport / starting the flush thread. These tests

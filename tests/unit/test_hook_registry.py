@@ -1,6 +1,6 @@
-"""Tests for the hook registry and autodetection (SDK-19).
+"""Tests for the hook registry and autodetection.
 
-Covers spec §4.8 acceptance criteria: detection via mocked imports,
+Covers acceptance criteria: detection via mocked imports,
 explicit framework arg skips detection, unknown names warn but don't
 crash, and hook handles uninstall cleanly on shutdown.
 """
@@ -131,7 +131,7 @@ def test_install_hooks_installer_exception_is_swallowed(caplog):
         # install_hooks was called directly (not via ci.profile), so the
         # returned handles aren't tracked by the profiler. Uninstall them
         # here so torch's global forward/optimizer/DataLoader patches from
-        # the real SDK-20 installer don't leak into other tests.
+        # the real installer don't leak into other tests.
         for h in handles:
             try:
                 h.uninstall()

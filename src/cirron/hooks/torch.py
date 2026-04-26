@@ -1,4 +1,4 @@
-"""PyTorch hooks (spec §4.8).
+"""PyTorch hooks.
 
 Registered at package import; the real install body lives in
 ``_torch_impl`` so we can defer ``import torch`` until ``ci.profile()``

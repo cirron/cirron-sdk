@@ -1,7 +1,6 @@
-"""Tests for the SDK-11 flush thread (src/cirron/core/flush.py).
+"""Tests for the flush thread (src/cirron/core/flush.py).
 
-Covers the acceptance criteria on SDK-11:
-- ``drain_once`` empties both buffers into a well-formed batch
+Covers the acceptance criteria on ``drain_once`` empties both buffers into a well-formed batch
 - ``SpoolWriter.write`` produces a parseable file matching the schema
 - spool cap enforced; oldest files dropped and counter incremented
 - supervisor respawns the worker after a thread death
@@ -192,7 +191,7 @@ def test_tick_writes_spool_and_invokes_transport(tmp_path):
 def test_live_flush_thread_drains_cross_thread(tmp_path):
     # Scope + mark produced on the main thread must appear in a spool file
     # written by the flush thread (which runs on a different thread). This
-    # is the end-to-end guarantee SDK-11 is supposed to provide.
+    # is the end-to-end guarantee is supposed to provide.
     writer = _make_writer(tmp_path)
     sent: list[dict] = []
 
@@ -236,7 +235,7 @@ def test_buffer_full_event_wakes_thread_before_interval(tmp_path):
     # 60s interval — the wake event is the only thing that can trigger a
     # tick inside the test window. We observe the tick via ``_tick_hook``
     # instead of the drain path because scope/mark state is thread-local
-    # (SDK-9): a scope closed on the main thread is not visible from the
+    #: a scope closed on the main thread is not visible from the
     # flush thread, so file-existence is not a reliable signal here.
     wake = threading.Event()
     ticked = threading.Event()

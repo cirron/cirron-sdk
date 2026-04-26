@@ -1,6 +1,6 @@
 """Data-source backends for ``ci.load()``.
 
-Per spec §4.7, each call to ``ci.load()`` resolves to one of the
+Each call to ``ci.load()`` resolves to one of the
 scheme-specific backends here (``s3``, ``gcs``, ``azure``, ``local``,
 ``postgres``, ``databricks``, ``snowflake``) or to the platform resolver
 (``registered``). The dispatcher handles local + platform-registered

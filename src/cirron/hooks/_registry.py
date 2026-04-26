@@ -1,4 +1,4 @@
-"""Hook registry and framework autodetection (spec §4.8).
+"""Hook registry and framework autodetection.
 
 Each framework module (``hooks/torch.py``, etc.) exposes an
 ``install(scope_stack, cirron) -> HookHandle`` and self-registers via

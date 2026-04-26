@@ -1,4 +1,4 @@
-"""SDK-25 — flush-thread blob upload flow.
+"""Flush-thread blob upload flow.
 
 Covers the new behavior added for PR-27 review:
 - remote URI from ``upload_blob`` rewrites matching ``TraceSnapshot.blob_uri``

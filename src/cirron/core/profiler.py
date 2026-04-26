@@ -1,4 +1,4 @@
-"""Module-level ``profile()`` and ``Profiler`` handle (spec §4.2).
+"""Module-level ``profile()`` and ``Profiler`` handle.
 
 ``ci.profile()`` is the main SDK entry point. It resolves config, selects a
 transport, detects installed frameworks, opens a root scope, and starts the
@@ -117,7 +117,7 @@ def _read_platform_context() -> dict[str, str]:
 
 
 class Profiler:
-    """Handle returned from :func:`profile` (spec §4.2).
+    """Handle returned from :func:`profile`.
 
     Construction is private; always obtain an instance via ``ci.profile()``.
     The handle is kept alive by the module-level singleton, so most users
@@ -357,7 +357,7 @@ def profile(
     output: str | list[str] | None = None,
     cirron: Cirron | None = None,
 ) -> Profiler:
-    """Attach the profiler to the current process (spec §4.2).
+    """Attach the profiler to the current process.
 
     Idempotent — a second call logs a warning and returns the existing
     ``Profiler``. Effective kwarg defaults are ``snapshots="stats"``,
@@ -452,7 +452,7 @@ def profile(
             root_attrs[f"cirron.{key}"] = value
         # Cheap cross-run semantic attrs so consumers can compare traces
         # without re-deriving environment info from spans further down.
-        # Keys mirror spec §5.4 root-scope attrs; detection is best-effort
+        # Keys mirror root-scope attrs; detection is best-effort
         # and failure is silent.
         if detected:
             root_attrs["framework"] = ",".join(detected)
@@ -544,7 +544,7 @@ def trace(
 
 
 def watch(model: Any | None) -> Any | None:
-    """Register ``model`` for snapshot capture (spec §4.2).
+    """Register ``model`` for snapshot capture.
 
     Required for bare PyTorch loops — the torch hook sees optimizers and
     DataLoaders but never receives a direct model reference, so it can't

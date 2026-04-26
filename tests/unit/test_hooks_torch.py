@@ -1,4 +1,4 @@
-"""SDK-20 PyTorch hooks — unit tests.
+"""PyTorch hooks — unit tests.
 
 Skipped in environments without ``torch`` so the core CI path (no
 frameworks installed) stays green. When ``torch`` is available, we

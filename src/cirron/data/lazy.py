@@ -1,4 +1,4 @@
-"""Deferred loading primitive for ``ci.load(lazy=True)`` (spec §4.7).
+"""Deferred loading primitive for ``ci.load(lazy=True)``.
 
 ``LazyHandle`` wraps a zero-arg thunk that materializes the final
 return-type-converted value. ``.collect()`` runs it exactly once and
