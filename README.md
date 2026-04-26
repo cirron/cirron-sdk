@@ -37,24 +37,25 @@ When epoch 10 goes sideways, you see where the time went, what the weights looke
 
 ## Standalone or platform
 
-The SDK is useful on its own. `ci.profile()` with no credentials writes traces to `./.cirron/` as structured JSON span records and safetensors snapshots (both open formats — documented, versioned, consumable by any tool):
+The SDK is useful on its own. `ci.profile()` with no credentials writes traces to `./.cirron/` as structured JSON span records and safetensors snapshots (both open formats — documented, versioned, consumable by any tool). Inspect them from inside Python:
 
-```bash
-cirron traces view                       # text flamegraph of the scope tree in your terminal
-cirron spool inspect                     # file listing, sizes, timestamps
-cirron traces export --format parquet    # hand traces to DuckDB, pandas, Polars
-cirron traces export --format otel       # ship to Jaeger / Tempo / Honeycomb
+```python
+import cirron as ci
+
+ci.trace()                       # pretty text tree of the current session
+ci.trace(format="df")            # pandas DataFrame, one row per span
+ci.trace(name="epoch")           # only `epoch` spans + descendants
 ```
 
-> **Status:** `ci.profile()`, the local spool writer, and `cirron traces view` are live. `cirron traces export --format parquet|otel` is a post-launch commitment. See the Status section below for what's shipped and what's still coming.
-
-No lock-in. Your traces are yours. If you stop using Cirron, the `./.cirron/` directory still works with any analytics or observability tool that reads Parquet or OpenTelemetry.
+No lock-in. Your traces are yours. The `./.cirron/` directory is JSON + safetensors — readable by any tool that handles those formats.
 
 Connect to the platform when you want aggregation across runs, epoch diffing, cost attribution, live dashboards, and team visibility:
 
 ```bash
-cirron login                             # store API key + endpoint
-ci.profile()                             # now traces flow to the platform as well
+export CIRRON_API_KEY=...                # traces now flow to the platform as well
+```
+```python
+ci.profile()
 ```
 
 Both modes produce the same artifacts — the platform just adds features that only make sense across many runs and many users.
@@ -63,17 +64,24 @@ Both modes produce the same artifacts — the platform just adds features that o
 
 ```bash
 pip install cirron-sdk                 # core, minimal footprint
-pip install cirron-sdk[pandas]         # + pandas backend for ci.load()
+pip install cirron-sdk[pandas]         # + pandas backend for ci.load() and ci.trace(format="df")
 pip install cirron-sdk[polars]         # + polars backend for ci.load()
+pip install cirron-sdk[arrow]          # + pyarrow / Arrow integration
 pip install cirron-sdk[torch]          # + PyTorch profiling hooks
 pip install cirron-sdk[tensorflow]     # + TF/Keras profiling hooks
 pip install cirron-sdk[transformers]   # + HuggingFace Trainer hooks
+pip install cirron-sdk[sklearn]        # + ci.wrap(estimator) for scikit-learn
 pip install cirron-sdk[hf]             # + datasets.Dataset return type
+pip install cirron-sdk[s3]             # + ci.load("s3://...")
+pip install cirron-sdk[gcs]            # + ci.load("gs://...")
+pip install cirron-sdk[azure]          # + ci.load("azure://...")
 pip install cirron-sdk[postgres]       # + ci.load("postgres://...")
 pip install cirron-sdk[mysql]          # + ci.load("mysql://...")
 pip install cirron-sdk[databricks]     # + ci.load("databricks://...")
 pip install cirron-sdk[snowflake]      # + ci.load("snowflake://...")
 pip install cirron-sdk[sql]            # + all four SQL drivers
+pip install cirron-sdk[dotenv]         # + .env file loading for ci.env()
+pip install cirron-sdk[safetensors]    # + safetensors snapshot serialization
 pip install cirron-sdk[all]            # everything
 ```
 
@@ -89,7 +97,7 @@ Authentication is optional — skip this for standalone use. To connect to the p
 export CIRRON_API_KEY=...
 ```
 
-When running inside a Cirron pipeline or deployment, the pipeline/deployment/run context is injected automatically. When running locally with credentials, the SDK writes to `./.cirron/` and syncs on next platform contact. When running locally *without* credentials, the SDK writes the same artifacts to `./.cirron/` — they stay there, fully usable, until you either run `cirron traces view` / `export` on them or connect a workspace and `cirron spool flush` them.
+When running inside a Cirron pipeline or deployment, the pipeline/deployment/run context is injected automatically. When running locally with credentials, the SDK writes to `./.cirron/` and syncs on next platform contact. When running locally *without* credentials, the SDK writes the same artifacts to `./.cirron/` — they stay there, fully usable, and you can read them back in-process with `ci.trace()` or hand the JSON / safetensors files to any tool that consumes those formats.
 
 ## `profile()` — the 80% case
 
@@ -115,6 +123,8 @@ ci.profile(
 - `"stats"` (default) — mean, std, norm, histogram per tensor per epoch. Cheap.
 - `"sampled"` — stats plus actual tensor values for a configurable fraction of steps. Useful for debugging specific layers.
 - `"full"` — every weight and gradient tensor. Expensive. Do not enable on large models without a reason.
+
+For bare PyTorch loops where the framework hooks can't see the model object (no `Trainer`, no Keras callback), call `ci.watch(model)` once before training so snapshot capture knows which parameters to traverse. Keras and HuggingFace Trainer discover the model from the callback automatically.
 
 ## `epochs()` and `batches()` — custom loops
 
@@ -143,6 +153,26 @@ with ci.scope("postprocess", variant="beam-search"):
 ```
 
 Scopes nest arbitrarily (max depth 64) and attach as children of whatever scope is already open — so the hooks' `epoch` / `batch` / `forward` tree stays intact and your custom scope slots in at the right level. Marks attach to the innermost open scope. Both are cheap: scope open/close runs a few microseconds (~4.4 μs on x86_64, ~2.7 μs on arm64), and the overhead is itself tracked and reported as a mark so you can see the instrumentation tax.
+
+## `trace` — read the scope tree from inside Python
+
+`ci.trace()` returns the current session's scope tree without touching the spool files. In a Jupyter cell it renders the tree inline; in a script it prints to stdout. It triggers a synchronous drain first so spans closed since the last flush tick are visible.
+
+```python
+import cirron as ci
+ci.profile()
+# ... training ...
+
+ci.trace()                         # pretty text tree (default)
+ci.trace(format="dict")            # nested dict, one node per span
+ci.trace(format="json")            # JSON string of the dict form
+ci.trace(format="df")              # pandas DataFrame, one row per span
+
+ci.trace(name="epoch")             # only `epoch` spans + descendants
+ci.trace(last=5)                   # 5 most recently closed spans
+```
+
+`format="df"` requires pandas (`pip install 'cirron-sdk[pandas]'`); the other formats have no extra dependencies. `ci.trace()` is read-only — it never writes spool files, so it's safe in notebooks and on read-only filesystems.
 
 ## `@inference` — instrumenting served models
 
@@ -194,14 +224,16 @@ df = ci.load(["./data/a/", "./data/b/"])
 # Column selection (pushdown to parquet / SQL readers)
 df = ci.load("./events.parquet", columns=["user_id", "ts", "event_type"])
 
-# Row-wise or batch-wise transform at load time
+# Transform at load time. Pass `map=` as a plain function for row-wise;
+# decorate with `@ci.map` to opt into batch-wise (the function receives
+# the whole frame at once).
 df = ci.load(
     "./raw/",
     columns=["raw_text", "label"],
     map=lambda row: {"text": row["raw_text"].lower(), "label": int(row["label"])},
 )
 
-@ci.map  # batch-wise — receives the full frame at once
+@ci.map
 def to_features(frame):
     frame["text"] = frame["raw_text"].str.lower()
     return frame
@@ -352,7 +384,7 @@ Shipped:
 - Snapshots: `snapshots="stats" | "sampled" | "full"` with safetensors blob upload
 - `@ci.inference` — sync and async, per-request ContextVar isolation, OpenAI / HF LLM detectors with TTFT and throughput marks
 - `ci.env` / `ci.secret`, the `Cirron` config class, and YAML loader
-- `cirron traces view` CLI (terminal flamegraph)
+- `ci.trace()` — in-process scope-tree reader (`tree` / `dict` / `json` / `df` formats, `name=` / `last=` filters, Jupyter-aware rendering)
 - `ci.load()` — local-first dispatcher, explicit `source="platform"`, scheme routing for `s3://` / `gs://` / `azure://` / `file://`, multi-source concat, all five `as_=` return types, `lazy=True`
 - Filesystem filtering: `match=` glob + regex and `ext=` shorthand via `MatchConfig`, with column pushdown to Parquet readers
 - SQL sources: `postgres://` / `mysql://` / `databricks://` / `snowflake://` with `where=` pushdown and a 4-tier credential resolver (URI-inline → platform integrations → `ci.secret` → driver env var)
@@ -364,7 +396,6 @@ Shipped:
 Coming:
 
 - Platform-managed embeddings search (`search=` / `top_k=`)
-- `cirron traces export --format parquet|otel`
 
 Platform follow-up (not SDK work):
 
