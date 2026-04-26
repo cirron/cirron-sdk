@@ -27,19 +27,49 @@ def map(fn: Callable[..., Any]) -> Callable[..., Any]:  # noqa: A001 — public 
     Without this decorator, ``ci.load(..., map=fn)`` invokes ``fn(row)``
     per row. With it, ``fn(frame)`` is called once with the full
     concatenated frame and its return value replaces the frame as-is.
+
+    Args:
+        fn (Callable[..., Any]): The user-supplied callable.
+
+    Returns:
+        Callable[..., Any]: ``fn`` unchanged, with the batch-mode
+            attribute set so :func:`apply_map` dispatches differently.
     """
     setattr(fn, _BATCH_MAP_ATTR, True)
     return fn
 
 
 def apply_map(raw: Any, fn: Callable[..., Any]) -> Any:
-    """Apply ``fn`` to ``raw`` row-wise, or batch-wise if decorated."""
+    """Apply ``fn`` to ``raw`` row-wise, or batch-wise if decorated.
+
+    Args:
+        raw (Any): The concatenated source result (DataFrame or list).
+        fn (Callable[..., Any]): User callable. Decorated with
+            :func:`map` for batch-wise mode.
+
+    Returns:
+        Any: The transformed value (same type as ``raw`` for row-wise
+            mode; whatever ``fn`` returns for batch mode).
+    """
     if getattr(fn, _BATCH_MAP_ATTR, False):
         return fn(raw)
     return _apply_rowwise(raw, fn)
 
 
 def _apply_rowwise(raw: Any, fn: Callable[..., Any]) -> Any:
+    """Dispatch row-wise application based on the type of ``raw``.
+
+    Args:
+        raw (Any): A pandas DataFrame, polars DataFrame, or ``list``.
+        fn (Callable[..., Any]): The per-row callable.
+
+    Returns:
+        Any: The transformed value (same type as ``raw``).
+
+    Raises:
+        CirronError: If ``raw`` is not one of the supported tabular
+            types.
+    """
     try:
         import pandas as pd
 
@@ -63,6 +93,17 @@ def _apply_rowwise(raw: Any, fn: Callable[..., Any]) -> Any:
 
 
 def _rowwise_pandas(raw: Any, fn: Callable[..., Any], pd: Any) -> Any:
+    """Apply ``fn`` to every row of a pandas DataFrame.
+
+    Args:
+        raw (Any): The pandas DataFrame.
+        fn (Callable[..., Any]): The per-row callable.
+        pd (Any): The pandas module (already imported by the caller).
+
+    Returns:
+        Any: A new DataFrame built from the transformed records, or
+            ``raw`` unchanged when empty.
+    """
     if len(raw) == 0:
         return raw
     records = raw.to_dict(orient="records")
@@ -71,6 +112,17 @@ def _rowwise_pandas(raw: Any, fn: Callable[..., Any], pd: Any) -> Any:
 
 
 def _rowwise_polars(raw: Any, fn: Callable[..., Any], pl: Any) -> Any:
+    """Apply ``fn`` to every row of a polars DataFrame.
+
+    Args:
+        raw (Any): The polars DataFrame.
+        fn (Callable[..., Any]): The per-row callable.
+        pl (Any): The polars module (already imported).
+
+    Returns:
+        Any: A new polars DataFrame built from the transformed records,
+            or ``raw`` unchanged when empty.
+    """
     if raw.height == 0:
         return raw
     records = raw.to_dicts()
@@ -79,12 +131,35 @@ def _rowwise_polars(raw: Any, fn: Callable[..., Any], pl: Any) -> Any:
 
 
 def _rowwise_list(raw: list[Any], fn: Callable[..., Any]) -> list[Any]:
+    """Apply ``fn`` to every element of a list.
+
+    Args:
+        raw (list[Any]): Input list.
+        fn (Callable[..., Any]): The per-row callable.
+
+    Returns:
+        list[Any]: Transformed list, or ``raw`` unchanged when empty.
+    """
     if not raw:
         return raw
     return _map_with_index(raw, fn)
 
 
 def _map_with_index(rows: list[Any], fn: Callable[..., Any]) -> list[Any]:
+    """Apply ``fn`` per element, wrapping any exception with row context.
+
+    Args:
+        rows (list[Any]): Rows to transform.
+        fn (Callable[..., Any]): The per-row callable.
+
+    Returns:
+        list[Any]: The transformed rows.
+
+    Raises:
+        CirronError: If ``fn`` raises on any row; the original exception
+            is chained and the failing row index plus a truncated
+            ``repr`` are included in the message.
+    """
     out: list[Any] = []
     for i, row in enumerate(rows):
         try:

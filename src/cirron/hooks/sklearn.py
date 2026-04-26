@@ -46,6 +46,15 @@ class _WrappedEstimator:
         object.__setattr__(self, "_estimator", estimator)
 
     def __getattr__(self, name: str) -> Any:
+        """Forward attribute reads, wrapping profiled methods with a scope.
+
+        Args:
+            name (str): Attribute name on the underlying estimator.
+
+        Returns:
+            Any: The underlying attribute, or a scope-opening closure when
+                ``name`` is one of :data:`_METHODS_TO_WRAP` and callable.
+        """
         est = object.__getattribute__(self, "_estimator")
         attr = getattr(est, name)
         if name in _METHODS_TO_WRAP and callable(attr):
@@ -53,11 +62,18 @@ class _WrappedEstimator:
         return attr
 
     def __setattr__(self, name: str, value: Any) -> None:
-        # Proxy-owned slots stay on the proxy; everything else forwards to
-        # the wrapped estimator so ``proxy.n_estimators = 50`` reaches the
-        # real object. Without this guard, ``copy``/``__setstate__``
-        # reconstruction paths that assign ``_estimator`` would silently
-        # mutate the wrapped estimator instead of rebuilding the proxy.
+        """Forward attribute writes, keeping proxy-owned slots on the proxy.
+
+        Proxy-owned slots stay on the proxy; everything else forwards to
+        the wrapped estimator so ``proxy.n_estimators = 50`` reaches the
+        real object. Without this guard, ``copy``/``__setstate__``
+        reconstruction paths that assign ``_estimator`` would silently
+        mutate the wrapped estimator instead of rebuilding the proxy.
+
+        Args:
+            name (str): Attribute name being set.
+            value (Any): New value.
+        """
         if name in type(self).__slots__:
             object.__setattr__(self, name, value)
             return
@@ -70,14 +86,35 @@ class _WrappedEstimator:
 
 
 def _wrap_method(estimator: Any, method_name: str, method: Any) -> Any:
-    # User-code exception contract: exceptions raised
-    # inside the underlying sklearn ``fit``/``predict``/etc. propagate to
-    # the caller. Swallowing them would hide real bugs in the user's
-    # pipeline. The ``ci.scope`` context manager still pops cleanly on
-    # exception so the scope tree stays consistent.
+    """Return a closure that opens a ``ci.scope`` around ``method``.
+
+    User-code exception contract: exceptions raised inside the
+    underlying sklearn ``fit``/``predict``/etc. propagate to the caller.
+    Swallowing them would hide real bugs in the user's pipeline. The
+    ``ci.scope`` context manager still pops cleanly on exception so the
+    scope tree stays consistent.
+
+    Args:
+        estimator (Any): The underlying sklearn estimator (used for the
+            ``estimator=<ClassName>`` span attr and qualname).
+        method_name (str): One of :data:`_METHODS_TO_WRAP`.
+        method (Any): The bound method to delegate to.
+
+    Returns:
+        Any: A new callable with the same call shape as ``method``.
+    """
     est_class = type(estimator).__name__
 
     def _wrapped(*args: Any, **kwargs: Any) -> Any:
+        """Open a ``ci.scope`` named ``method_name`` and delegate to ``method``.
+
+        Args:
+            *args (Any): Positional args forwarded to the underlying method.
+            **kwargs (Any): Keyword args forwarded to the underlying method.
+
+        Returns:
+            Any: Whatever the wrapped method returns.
+        """
         with _scope(method_name, estimator=est_class):
             return method(*args, **kwargs)
 
@@ -93,6 +130,10 @@ def _wrap_pipeline_steps(estimator: Any) -> None:
     exposes them as ``.steps`` and ``FeatureUnion`` as
     ``.transformer_list``. We don't import sklearn; we just look for the
     attribute and shape.
+
+    Args:
+        estimator (Any): A pipeline / feature-union candidate. Non-pipeline
+            estimators are silently ignored.
     """
     for container_attr in ("steps", "transformer_list"):
         container = getattr(estimator, container_attr, None)
@@ -122,6 +163,14 @@ def wrap(estimator: Any) -> Any:
 
     For pipelines, each step is recursively wrapped so per-step scopes
     nest under the pipeline's top-level scope.
+
+    Args:
+        estimator (Any): An sklearn estimator or pipeline. Other objects
+            are returned as-is.
+
+    Returns:
+        Any: A :class:`_WrappedEstimator` proxy, or ``estimator`` unchanged
+            when wrapping has already happened.
     """
     if isinstance(estimator, _WrappedEstimator):
         return estimator

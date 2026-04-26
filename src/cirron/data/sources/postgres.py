@@ -34,9 +34,23 @@ class PostgresDataSource(DataSource):
         self.cirron = cirron
 
     def validate(self) -> bool:
+        """Always ``True`` — connection probes are deferred to ``load``.
+
+        Returns:
+            bool: ``True``.
+        """
         return True
 
     def load(self) -> Any:
+        """Open a Postgres connection, run the composed ``SELECT``, return a DataFrame.
+
+        Returns:
+            Any: A pandas DataFrame produced by :func:`execute_to_pandas`.
+
+        Raises:
+            CirronDependencyError: If ``psycopg`` is not installed.
+            CirronPlatformRequired: If credential resolution fails.
+        """
         psycopg = require_driver("psycopg", "postgres")
         creds = CredentialResolver(self.cirron, self.uri).resolve()
         query = build_query(
@@ -61,5 +75,15 @@ class PostgresDataSource(DataSource):
 
 
 def build_source(uri_str: str, cirron: Cirron, request: LoadRequest | None) -> PostgresDataSource:
-    """Factory used by the load dispatcher."""
+    """Factory used by the load dispatcher.
+
+    Args:
+        uri_str (str): The raw ``postgres://...`` URI.
+        cirron (Cirron): Active Cirron instance for credential
+            resolution.
+        request (LoadRequest | None): Per-call request.
+
+    Returns:
+        PostgresDataSource: A source ready to ``load()``.
+    """
     return PostgresDataSource(parse_sql_uri(uri_str), cirron, request)

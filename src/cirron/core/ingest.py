@@ -38,10 +38,24 @@ BLOB_KEY_HEADER = "X-Cirron-Blob-Key"
 
 
 def _bearer(api_key: str) -> str:
+    """Format an HTTP ``Authorization`` value for ``api_key``.
+
+    Args:
+        api_key (str): Cirron platform API key.
+
+    Returns:
+        str: ``"Bearer <api_key>"``.
+    """
     return f"Bearer {api_key}"
 
 
 def _sdk_version() -> str:
+    """Resolve the installed ``cirron-sdk`` version string.
+
+    Returns:
+        str: The installed package version, or ``"0.0.0"`` if metadata
+            isn't reachable.
+    """
     try:
         from importlib.metadata import PackageNotFoundError, version
 
@@ -55,6 +69,8 @@ def _sdk_version() -> str:
 
 @dataclass(frozen=True)
 class IngestResult:
+    """Outcome of a single ``post_batch`` call."""
+
     ok: bool
     retryable: bool = False
     status: int | None = None
@@ -62,6 +78,8 @@ class IngestResult:
 
 @dataclass(frozen=True)
 class BlobUploadResult:
+    """Outcome of a single ``post_blob`` call."""
+
     ok: bool
     remote_uri: str | None = None
     retryable: bool = False
@@ -70,20 +88,46 @@ class BlobUploadResult:
 
 @dataclass(frozen=True)
 class _Attempt:
+    """Internal state machine for the retry loop in ``post_batch``."""
+
     done: bool
     result: IngestResult | None = None
     sleep_for: float = 0.0
 
     @classmethod
     def finish(cls, result: IngestResult) -> _Attempt:
+        """Build a terminal attempt carrying the final result.
+
+        Args:
+            result (IngestResult): The terminal outcome.
+
+        Returns:
+            _Attempt: A done-state attempt.
+        """
         return cls(done=True, result=result)
 
     @classmethod
     def retry(cls, sleep_for: float) -> _Attempt:
+        """Build a retry-state attempt.
+
+        Args:
+            sleep_for (float): Seconds to sleep before the next attempt.
+
+        Returns:
+            _Attempt: A retry-state attempt.
+        """
         return cls(done=False, sleep_for=sleep_for)
 
 
 def _parse_retry_after(value: str | None) -> float | None:
+    """Parse an HTTP ``Retry-After`` header value.
+
+    Args:
+        value (str | None): Raw header value (seconds or HTTP-date).
+
+    Returns:
+        float | None: Seconds to wait, or ``None`` when unparseable.
+    """
     if not value:
         return None
     value = value.strip()
@@ -145,9 +189,19 @@ class IngestClient:
         self._session = session
 
     def close(self) -> None:
+        """Close the underlying ``requests.Session``."""
         self._session.close()
 
     def post_batch(self, batch: dict[str, Any]) -> IngestResult:
+        """POST one batch with retries and idempotency headers.
+
+        Args:
+            batch (dict[str, Any]): The serialized batch.
+
+        Returns:
+            IngestResult: Terminal result; ``retryable=True`` indicates
+                the spool should retain the batch for the next flush.
+        """
         payload, headers = self._build_request(batch)
         for attempt in range(self._max_retries + 1):
             outcome = self._attempt_once(payload, headers, attempt)
@@ -157,6 +211,15 @@ class IngestClient:
         return IngestResult(ok=False, retryable=True)
 
     def _build_request(self, batch: dict[str, Any]) -> tuple[bytes, dict[str, str]]:
+        """Serialize ``batch`` and build the request payload + headers.
+
+        Args:
+            batch (dict[str, Any]): The serialized batch.
+
+        Returns:
+            tuple[bytes, dict[str, str]]: ``(payload, headers)`` —
+                payload is gzipped when ``len(body) >= GZIP_MIN_BYTES``.
+        """
         body = json.dumps(batch, separators=(",", ":")).encode("utf-8")
         compressed = len(body) >= GZIP_MIN_BYTES
         payload = gzip.compress(body, mtime=0) if compressed else body
@@ -171,6 +234,17 @@ class IngestClient:
         return payload, headers
 
     def _attempt_once(self, payload: bytes, headers: dict[str, str], attempt: int) -> _Attempt:
+        """Issue one POST attempt and classify the outcome.
+
+        Args:
+            payload (bytes): Already-encoded request body.
+            headers (dict[str, str]): Request headers.
+            attempt (int): Zero-based attempt index.
+
+        Returns:
+            _Attempt: ``finish`` carrying the terminal result, or
+                ``retry`` carrying the next sleep duration.
+        """
         last_attempt = attempt >= self._max_retries
         try:
             resp = self._session.post(
@@ -185,6 +259,16 @@ class IngestClient:
         return self._classify(resp, attempt, last_attempt)
 
     def _classify(self, resp: Any, attempt: int, last_attempt: bool) -> _Attempt:
+        """Translate an HTTP response into a retry decision.
+
+        Args:
+            resp (Any): The ``requests`` response object.
+            attempt (int): Current zero-based attempt index.
+            last_attempt (bool): ``True`` if no further retries remain.
+
+        Returns:
+            _Attempt: Terminal-result or retry-with-backoff state.
+        """
         status = resp.status_code
         if 200 <= status < 300:
             return _Attempt.finish(IngestResult(ok=True, status=status))
@@ -216,6 +300,11 @@ class IngestClient:
         return _Attempt.finish(IngestResult(ok=False, retryable=False, status=status))
 
     def _warn_auth_once(self, status: int) -> None:
+        """Log a single 401/403 warning per client instance.
+
+        Args:
+            status (int): The HTTP status that triggered the warning.
+        """
         if self._auth_warned:
             return
         log.warning("cirron ingest auth failed (%d) — check api_key / workspace", status)
@@ -238,6 +327,14 @@ class IngestClient:
         like ``post_batch``. 4xx (other than 429) is non-retryable —
         usually a quota or permissions issue the flush thread can't
         resolve by itself.
+
+        Args:
+            local_path (Path): Local safetensors file.
+            remote_key (str): Storage-side object key.
+
+        Returns:
+            BlobUploadResult: Terminal result with ``remote_uri`` set on
+                success.
         """
         try:
             size = local_path.stat().st_size
@@ -266,6 +363,18 @@ class IngestClient:
         headers: dict[str, str],
         attempt: int,
     ) -> BlobUploadResult | None:
+        """Issue one PUT attempt for a blob and classify the outcome.
+
+        Args:
+            url (str): Fully-formed upload URL.
+            local_path (Path): Local file to stream.
+            headers (dict[str, str]): Request headers.
+            attempt (int): Zero-based attempt index.
+
+        Returns:
+            BlobUploadResult | None: A terminal result, or ``None`` to
+                signal "retry after sleeping".
+        """
         last_attempt = attempt >= self._max_retries
         try:
             with local_path.open("rb") as fh:
@@ -303,7 +412,15 @@ class IngestClient:
     @staticmethod
     def _parse_blob_response(resp: Any, fallback_url: str) -> str:
         """Prefer a ``Location`` header or trimmed response body; fall back
-        to the URL we PUT to so the record always has *some* pointer."""
+        to the URL we PUT to so the record always has *some* pointer.
+
+        Args:
+            resp (Any): The ``requests`` response.
+            fallback_url (str): The URL the PUT was issued against.
+
+        Returns:
+            str: A resolvable remote URI.
+        """
         loc = resp.headers.get("Location")
         if loc:
             return str(loc)
@@ -315,4 +432,12 @@ class IngestClient:
 
     @staticmethod
     def _backoff(attempt: int) -> float:
+        """Exponential backoff with jitter, capped at ``MAX_BACKOFF_SEC``.
+
+        Args:
+            attempt (int): Zero-based attempt index.
+
+        Returns:
+            float: Seconds to sleep before the next attempt.
+        """
         return min(2.0**attempt + random.random(), MAX_BACKOFF_SEC)

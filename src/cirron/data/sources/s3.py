@@ -19,7 +19,23 @@ logger = logging.getLogger(__name__)
 
 
 class S3DataSource(DataSource):
+    """Reads CSV / Parquet / JSON / raw bytes from an S3 bucket.
+
+    Credentials come from the boto3 default credential chain (env vars,
+    IAM role, ``~/.aws/credentials``); the SDK never holds them itself.
+    """
+
     def load(self) -> Any:
+        """List or fetch one or more S3 objects.
+
+        Returns:
+            Any: A single parsed object's contents, or a list of parsed
+                contents when listing a folder. Empty folders return
+                ``[]``.
+
+        Raises:
+            ImportError: If ``boto3`` is not installed.
+        """
         try:
             import boto3
         except ImportError as e:
@@ -43,7 +59,15 @@ class S3DataSource(DataSource):
         return self._parse(obj)
 
     def _list_keys(self, client: Any) -> list[str]:
-        """Walk the paginator so folders with >1000 keys are covered."""
+        """Walk the paginator so folders with >1000 keys are covered.
+
+        Args:
+            client (Any): An S3 boto3 client.
+
+        Returns:
+            list[str]: Every object key under the configured
+                ``folder_path`` prefix.
+        """
         paginator = client.get_paginator("list_objects_v2")
         pages = paginator.paginate(
             Bucket=self.config.bucket_name,
@@ -58,6 +82,16 @@ class S3DataSource(DataSource):
         return keys
 
     def _parse(self, obj_response: dict[str, Any]) -> Any:
+        """Decode an S3 ``get_object`` response according to the source format.
+
+        Args:
+            obj_response (dict[str, Any]): A raw boto3 ``get_object``
+                response.
+
+        Returns:
+            Any: A pandas DataFrame for csv/parquet, a Python value for
+                json, or the raw bytes otherwise.
+        """
         body = obj_response["Body"].read()
         fmt = self.config.format
         if fmt == "csv":
@@ -80,6 +114,13 @@ class S3DataSource(DataSource):
         return body
 
     def _columns(self) -> list[str] | None:
+        """Resolve the effective column projection for the current request.
+
+        Returns:
+            list[str] | None: The match config's ``columns`` if set,
+                otherwise the request's flat ``columns``, or ``None`` for
+                "all columns".
+        """
         if self.request is None:
             return None
         if self.request.match and self.request.match.columns:
@@ -87,6 +128,12 @@ class S3DataSource(DataSource):
         return self.request.columns
 
     def validate(self) -> bool:
+        """Return whether the bucket is reachable via ``head_bucket``.
+
+        Returns:
+            bool: ``True`` on a successful HEAD; ``False`` for any
+                exception (auth failure, missing bucket, network error).
+        """
         try:
             import boto3
 

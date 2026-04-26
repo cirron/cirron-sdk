@@ -37,11 +37,34 @@ EVENT_TYPE_BLOB = "trace_blob"
 
 
 class Transport(Protocol):
-    def send(self, batch: dict[str, Any]) -> bool: ...
+    """Common shape for the platform-bound transport implementations."""
 
-    def upload_blob(self, local_path: str | Path, remote_key: str) -> str | None: ...
+    def send(self, batch: dict[str, Any]) -> bool:
+        """Forward one trace batch.
 
-    def close(self) -> None: ...
+        Args:
+            batch (dict[str, Any]): The serialized batch (spool format).
+
+        Returns:
+            bool: ``True`` on success; ``False`` to leave the batch in spool.
+        """
+        ...
+
+    def upload_blob(self, local_path: str | Path, remote_key: str) -> str | None:
+        """Upload a blob and return its remote URI.
+
+        Args:
+            local_path (str | Path): Local path to the safetensors file.
+            remote_key (str): Storage-side object key.
+
+        Returns:
+            str | None: Remote URI on success, ``None`` on failure.
+        """
+        ...
+
+    def close(self) -> None:
+        """Release any underlying network resources."""
+        ...
 
 
 class FileOnlyTransport:
@@ -52,10 +75,27 @@ class FileOnlyTransport:
     """
 
     def send(self, batch: dict[str, Any]) -> bool:
+        """Discard ``batch`` — the spool is the only retention path.
+
+        Args:
+            batch (dict[str, Any]): Ignored.
+
+        Returns:
+            bool: Always ``True``.
+        """
         del batch
         return True
 
     def upload_blob(self, local_path: str | Path, remote_key: str) -> str | None:
+        """Resolve ``local_path`` to a ``file://`` URI.
+
+        Args:
+            local_path (str | Path): The local blob.
+            remote_key (str): Ignored.
+
+        Returns:
+            str | None: A ``file://`` URI, or ``None`` if path resolution fails.
+        """
         del remote_key
         try:
             return Path(local_path).resolve().as_uri()
@@ -63,6 +103,7 @@ class FileOnlyTransport:
             return None
 
     def close(self) -> None:
+        """No-op."""
         return None
 
 
@@ -81,6 +122,15 @@ class EventStreamTransport:
         self._sdk_version = _sdk_version()
 
     def send(self, batch: dict[str, Any]) -> bool:
+        """Write the trace-batch sentinel to the configured stream.
+
+        Args:
+            batch (dict[str, Any]): The serialized batch.
+
+        Returns:
+            bool: ``True`` if the line was written, ``False`` on stream
+                error.
+        """
         envelope = {
             EVENT_STREAM_MARKER: EVENT_TYPE_TRACE_BATCH,
             "schema_version": SPOOL_SCHEMA_VERSION,
@@ -98,6 +148,15 @@ class EventStreamTransport:
         the bytes to S3) is a platform-side follow-up; the SDK's
         contract here is just to announce the file so nothing downstream
         has to scrape the filesystem to find it.
+
+        Args:
+            local_path (str | Path): Local blob path.
+            remote_key (str): Object key the kernel forwarder should
+                use when re-uploading.
+
+        Returns:
+            str | None: ``file://`` URI of the local blob on success,
+                ``None`` on stream error.
         """
         path = Path(local_path)
         envelope = {
@@ -114,6 +173,15 @@ class EventStreamTransport:
             return None
 
     def _write_envelope(self, envelope: dict[str, Any]) -> bool:
+        """Serialize ``envelope`` and write one JSON line to the stream.
+
+        Args:
+            envelope (dict[str, Any]): Sentinel-tagged dict to write.
+
+        Returns:
+            bool: ``True`` on success, ``False`` on broken pipe / closed
+                stream.
+        """
         line = json.dumps(envelope, separators=(",", ":"))
         try:
             with self._lock:
@@ -126,6 +194,7 @@ class EventStreamTransport:
         return True
 
     def close(self) -> None:
+        """No-op — stdout is owned by the host process."""
         return None
 
 
@@ -136,16 +205,34 @@ class HttpTransport:
         self._client = client
 
     def send(self, batch: dict[str, Any]) -> bool:
+        """POST ``batch`` through :class:`IngestClient`.
+
+        Args:
+            batch (dict[str, Any]): Serialized batch.
+
+        Returns:
+            bool: ``True`` on a 2xx response.
+        """
         result = self._client.post_batch(batch)
         return result.ok
 
     def upload_blob(self, local_path: str | Path, remote_key: str) -> str | None:
+        """PUT a blob through :class:`IngestClient`.
+
+        Args:
+            local_path (str | Path): Local blob path.
+            remote_key (str): Storage-side object key.
+
+        Returns:
+            str | None: Remote URI on success, ``None`` on failure.
+        """
         result = self._client.post_blob(Path(local_path), remote_key)
         if not result.ok:
             return None
         return result.remote_uri
 
     def close(self) -> None:
+        """Close the underlying ``requests`` session."""
         self._client.close()
 
 
@@ -155,6 +242,13 @@ def select_transport(config: Cirron) -> Transport:
     Priority: ``CIRRON_RUN_ID`` > ``config.api_key`` > file-only. We read
     ``os.environ`` directly (not ``ci.env``) so transport selection stays
     deterministic under test.
+
+    Args:
+        config (Cirron): Resolved SDK config.
+
+    Returns:
+        Transport: One of :class:`EventStreamTransport`,
+            :class:`HttpTransport`, or :class:`FileOnlyTransport`.
     """
     if os.environ.get("CIRRON_RUN_ID"):
         return EventStreamTransport()

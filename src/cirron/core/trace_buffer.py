@@ -62,6 +62,11 @@ class _TraceBuffer:
 
     @property
     def max_spans(self) -> int:
+        """Configured span-count cap.
+
+        Returns:
+            int: Maximum spans retained before oldest-first eviction.
+        """
         return self._max_spans
 
     def add_batch(self, batch: Batch) -> None:
@@ -72,6 +77,9 @@ class _TraceBuffer:
         deque under a single lock acquisition. Eviction of the oldest
         spans (and their join-table entries) happens here too, so
         ``trace()`` never has to think about the cap.
+
+        Args:
+            batch (Batch): The just-built batch.
         """
         if not batch.spans and not batch.marks:
             return
@@ -93,7 +101,12 @@ class _TraceBuffer:
         ``_max_marks_per_span`` ``point`` marks. Prevents unbounded
         growth on long-lived open spans whose ``span_id`` never appears
         in ``self._spans`` and therefore can't be evicted by the
-        span-count cap."""
+        span-count cap.
+
+        Args:
+            bucket (list[dict[str, Any]]): The per-span mark list to
+                trim in place.
+        """
         if len(bucket) <= self._max_marks_per_span:
             return
         # Cheap fast-path: if every entry is a point, just trim the head.
@@ -109,6 +122,7 @@ class _TraceBuffer:
         bucket.extend(points)
 
     def _evict_locked(self) -> None:
+        """Drop oldest spans + their join-table rows until under ``max_spans``."""
         while len(self._spans) > self._max_spans:
             old = self._spans.popleft()
             sid = old.get("id")
@@ -120,6 +134,10 @@ class _TraceBuffer:
 
         ``trace()`` calls this once per invocation and then operates on
         the returned lists/dicts without further locking.
+
+        Returns:
+            tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+                ``(spans, marks_by_span_id)`` — both freshly copied.
         """
         with self._lock:
             spans = list(self._spans)
@@ -127,6 +145,7 @@ class _TraceBuffer:
         return spans, marks
 
     def clear(self) -> None:
+        """Drop every retained span and mark."""
         with self._lock:
             self._spans.clear()
             self._marks.clear()
@@ -141,7 +160,11 @@ _default_lock = threading.Lock()
 
 
 def get_default_trace_buffer() -> _TraceBuffer:
-    """Return the process-wide default trace buffer (lazy singleton)."""
+    """Return the process-wide default trace buffer (lazy singleton).
+
+    Returns:
+        _TraceBuffer: The singleton buffer.
+    """
     global _default_buffer
     instance = _default_buffer
     if instance is not None:
@@ -156,6 +179,10 @@ def set_default_trace_buffer(buffer: _TraceBuffer | None) -> None:
     """Replace (or clear) the default buffer. Used by ``Profiler`` setup
     so the buffer's bound matches the user's ``trace_buffer_max_spans``
     config, and by tests.
+
+    Args:
+        buffer (_TraceBuffer | None): The new singleton, or ``None`` to
+            clear it.
     """
     global _default_buffer
     with _default_lock:
@@ -163,4 +190,5 @@ def set_default_trace_buffer(buffer: _TraceBuffer | None) -> None:
 
 
 def _reset_default_for_tests() -> None:
+    """Clear the singleton (test-only)."""
     set_default_trace_buffer(None)

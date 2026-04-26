@@ -45,6 +45,15 @@ class CirronYamlError(Exception):
 
 
 def _collect_known_fields() -> set:
+    """Build the set of top-level field names the SDK recognizes in cirron.yaml.
+
+    Includes both canonical Pydantic field names and any declared
+    ``validation_alias`` so YAML written against either spelling validates.
+
+    Returns:
+        set: Recognized top-level keys; anything outside this set triggers
+            an unknown-field warning at load time.
+    """
     known: set = set()
     for name, info in CirronYaml.model_fields.items():
         known.add(name)
@@ -57,7 +66,18 @@ _KNOWN_TOP_LEVEL_FIELDS = _collect_known_fields()
 
 
 def find_cirron_yaml(start: str | Path | None = None) -> Path | None:
-    """Walk upward from *start* (default cwd) looking for a cirron config file."""
+    """Walk upward from *start* (default cwd) looking for a cirron config file.
+
+    Args:
+        start (str | Path | None): Where to begin the upward walk. ``None``
+            uses ``Path.cwd()``. If a file path is passed, the walk begins
+            in that file's parent directory.
+
+    Returns:
+        Path | None: Resolved path to the first ``cirron.yaml`` /
+            ``cirron.yml`` / ``cirron.json`` found, or ``None`` if the walk
+            reaches the filesystem root with no match.
+    """
     current = Path(start).resolve() if start else Path.cwd().resolve()
     if current.is_file():
         current = current.parent
@@ -73,6 +93,19 @@ def find_cirron_yaml(start: str | Path | None = None) -> Path | None:
 
 
 def _parse_file(path: Path) -> dict[str, Any]:
+    """Read and parse a YAML or JSON config file into a top-level mapping.
+
+    Args:
+        path (Path): The file to read; suffix selects the parser
+            (``.json`` uses :mod:`json`, anything else uses YAML).
+
+    Returns:
+        dict[str, Any]: The parsed top-level mapping.
+
+    Raises:
+        CirronYamlError: If the file is unreadable, malformed, empty, or
+            its top level isn't a mapping.
+    """
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as e:
@@ -96,6 +129,13 @@ def _parse_file(path: Path) -> dict[str, Any]:
 
 
 def _warn_on_unknown_fields(data: dict[str, Any], path: Path) -> None:
+    """Emit a forward-compat warning when YAML contains unrecognized top-level keys.
+
+    Args:
+        data (dict[str, Any]): The parsed top-level mapping.
+        path (Path): Source file path; only the basename is included in the
+            warning text.
+    """
     unknown = set(data.keys()) - _KNOWN_TOP_LEVEL_FIELDS
     if unknown:
         fields = ", ".join(sorted(unknown))
@@ -113,6 +153,18 @@ def load_cirron_yaml(path: str | Path | None = None) -> CirronYaml | None:
     Returns a validated ``CirronYaml`` instance, or ``None`` if no file is found
     during an implicit walk. Raises ``CirronYamlError`` on I/O / parse /
     validation failure.
+
+    Args:
+        path (str | Path | None): Explicit config path, or ``None`` to walk
+            upward from cwd via :func:`find_cirron_yaml`.
+
+    Returns:
+        CirronYaml | None: Validated config, or ``None`` only when the
+            implicit walk found nothing.
+
+    Raises:
+        CirronYamlError: On missing explicit path, I/O error, parse error,
+            or Pydantic validation failure.
     """
     if path is not None:
         resolved = Path(path).resolve()
@@ -136,7 +188,21 @@ def load_cirron_yaml(path: str | Path | None = None) -> CirronYaml | None:
 def load_profiling_config(
     path: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Return the profiling section of cirron.yaml as a dict, or ``{}`` on miss."""
+    """Return the profiling section of cirron.yaml as a dict, or ``{}`` on miss.
+
+    Swallows ``CirronYamlError`` so a malformed config doesn't break the
+    layered resolver — the caller treats a missing/broken YAML as "no
+    overrides" and falls through to lower layers.
+
+    Args:
+        path (str | Path | None): Explicit config path, or ``None`` for the
+            implicit upward walk.
+
+    Returns:
+        dict[str, Any]: The validated ``profiling:`` block as a dict
+            (excluding unset fields), or ``{}`` when no profiling section
+            exists or the file is missing/invalid.
+    """
     try:
         model = load_cirron_yaml(path)
     except CirronYamlError:
@@ -187,12 +253,31 @@ _DEFAULTS: dict[str, Any] = {
 
 
 def _coerce_str(value: Any) -> str | None:
+    """Coerce a config value to a non-empty string, else ``None``.
+
+    Args:
+        value (Any): Raw TOML / env value.
+
+    Returns:
+        str | None: ``value`` if it's a non-empty ``str``, else ``None``.
+    """
     if isinstance(value, str) and value:
         return value
     return None
 
 
 def _coerce_float(value: Any) -> float | None:
+    """Coerce a config value to ``float``, else ``None``.
+
+    Booleans are explicitly rejected — Python's ``bool`` is an ``int``
+    subclass and we don't want ``True`` silently becoming ``1.0``.
+
+    Args:
+        value (Any): Raw TOML / env value.
+
+    Returns:
+        float | None: Parsed float, or ``None`` if uncoercible.
+    """
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
@@ -206,6 +291,15 @@ def _coerce_float(value: Any) -> float | None:
 
 
 def _coerce_int(value: Any) -> int | None:
+    """Coerce a config value to ``int``, else ``None``.
+
+    Args:
+        value (Any): Raw TOML / env value. Booleans are rejected to avoid
+            ``True``/``False`` being read as ``1``/``0``.
+
+    Returns:
+        int | None: Parsed int, or ``None`` if uncoercible.
+    """
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
@@ -219,6 +313,15 @@ def _coerce_int(value: Any) -> int | None:
 
 
 def _coerce_snapshots(value: Any) -> str | None:
+    """Validate that a value is one of the allowed ``snapshots`` strings.
+
+    Args:
+        value (Any): Raw TOML / env value.
+
+    Returns:
+        str | None: One of ``"stats"`` / ``"sampled"`` / ``"full"``, else
+            ``None``.
+    """
     if isinstance(value, str) and value in _VALID_SNAPSHOTS:
         return value
     return None
@@ -248,6 +351,15 @@ def _read_home_config_toml(path: Path | None = None) -> dict[str, Any]:
     cleanly (e.g. a string for ``sample_rate``, an unknown value for
     ``snapshots``) are dropped silently — lower layers (env, defaults)
     fill in.
+
+    Args:
+        path (Path | None): Explicit TOML path. ``None`` resolves to
+            ``~/.cirron/config.toml`` (skipping if the home directory
+            isn't accessible).
+
+    Returns:
+        dict[str, Any]: Coerced ``[default]`` table values; empty dict on
+            any I/O / parse / shape failure.
     """
     if path is None:
         try:
@@ -282,6 +394,10 @@ def _read_env_overrides() -> dict[str, Any]:
     We also call :func:`cirron.core.env._load_dotenv_once` defensively
     to cover the test-reset case where ``_dotenv_loaded`` was flipped
     back to ``False`` to re-trigger the load against a different cwd.
+
+    Returns:
+        dict[str, Any]: Coerced overrides for any ``CIRRON_*`` env var that
+            is set and non-empty; empty dict when no env vars apply.
     """
     from cirron.core.env import _load_dotenv_once
 
@@ -309,6 +425,16 @@ def _resolve_config(
     (the only fields whose resolved type is ``str | None``) is
     indistinguishable from "not passed" — that's fine because both cases
     mean "fall back to env / TOML / default (= None)".
+
+    Args:
+        explicit (dict[str, Any]): Constructor kwargs map. ``None`` values
+            are treated as unset.
+        toml_path (Path | None): Override for the home-config TOML path;
+            forwarded to :func:`_read_home_config_toml`.
+
+    Returns:
+        dict[str, Any]: Fully-resolved config map, one entry per supported
+            field.
     """
     merged: dict[str, Any] = dict(_DEFAULTS)
     merged.update(_read_home_config_toml(toml_path))
@@ -329,6 +455,18 @@ class Cirron:
     harnesses. Constructor kwargs resolve through a four-layer stack:
     explicit args > ``CIRRON_*`` env vars > ``~/.cirron/config.toml``
     ``[default]`` table > hardcoded defaults.
+
+    Constructor parameters: ``api_key`` / ``api_endpoint`` / ``workspace_id``
+    select the platform; ``output_dir`` controls the local spool / snapshot
+    root (``./.cirron/`` by default); ``snapshots`` / ``sample_rate`` set
+    the snapshot policy; ``flush_interval`` (seconds) and
+    ``spool_max_bytes`` shape the background flush; ``ingest_path`` is the
+    HTTP path appended to ``api_endpoint`` for span ingestion;
+    ``load_warn_bytes`` / ``load_max_bytes`` configure the size-tier guard
+    used by ``ci.load``; ``output`` selects sinks (``"spool"``, ``"stream"``,
+    ``"both"``); ``trace_buffer_max_spans`` caps the in-memory trace ring
+    used by ``ci.trace`` read-back. All are ``None`` by default and resolve
+    through the layered stack.
     """
 
     def __init__(
@@ -403,6 +541,23 @@ class Cirron:
         ``output_dir``, ``spool_max_bytes``, and ``ingest_path`` drive
         transport selection and spool location. Returns the shared
         ``Profiler`` singleton ; idempotent on repeat calls.
+
+        Args:
+            config (dict[str, Any] | None): Inline profiling-section dict.
+            frameworks (list[str] | None): Subset of frameworks to
+                instrument; ``None`` autodetects.
+            snapshots (Literal["stats", "sampled", "full"] | None):
+                Snapshot policy override.
+            sample_rate (float | None): Per-epoch probability for the
+                ``"sampled"`` policy.
+            flush_interval (float | None): Seconds between background
+                spool flushes.
+            enabled (bool): When ``False``, returns a no-op profiler.
+            path (str | None): Override ``cirron.yaml`` discovery path.
+            output (str | list[str] | None): Sink selection.
+
+        Returns:
+            Profiler: The shared profiler singleton.
         """
         from cirron.core.profiler import profile as _profile
 
@@ -424,6 +579,21 @@ class Cirron:
         name: str | None = None,
         last: int | None = None,
     ) -> Any:
+        """Read back the current session's scope tree.
+
+        Thin delegator to :func:`cirron.core.trace.trace`. The trace ring
+        is process-wide, so reading it through any ``Cirron`` instance
+        returns the same data — the instance method exists for symmetry
+        with the other delegators.
+
+        Args:
+            format (Literal["tree", "dict", "json", "df"]): Output shape.
+            name (str | None): Optional span-name filter.
+            last (int | None): Optional cap on root spans returned.
+
+        Returns:
+            Any: Shape determined by ``format``.
+        """
         from cirron.core.trace import trace as _trace
 
         return _trace(format=format, name=name, last=last)
@@ -446,6 +616,18 @@ class Cirron:
         etc., which themselves flowed through the ``__init__`` resolver).
         Stashes the merged dict on ``self._profile_config`` for the
         profiler orchestrator to read.
+
+        Args:
+            config (dict[str, Any] | None): Inline profiling-section dict.
+            frameworks (list[str] | None): Subset of frameworks to
+                instrument.
+            snapshots (str | None): Snapshot-policy override.
+            sample_rate (float | None): Per-epoch sample probability.
+            flush_interval (float | None): Seconds between flushes.
+            path (str | None): Override ``cirron.yaml`` discovery path.
+
+        Returns:
+            Cirron: ``self``, for chaining.
         """
         resolved: dict[str, Any] = {
             "snapshots": self.snapshots,
@@ -484,6 +666,22 @@ class Cirron:
         index: int | None = None,
         **attrs: Any,
     ) -> Any:
+        """Open a span on the calling thread.
+
+        Thin delegator to :func:`cirron.core.scope.scope`. The scope stack
+        is process-wide, so the result is identical to ``ci.scope(...)``.
+
+        Args:
+            name (str): Span name shown in the trace tree.
+            index (int | None): Optional positional index (e.g. epoch /
+                batch number).
+            **attrs (Any): Arbitrary key/value metadata attached to the
+                span as ``span.attrs[key] = value``.
+
+        Returns:
+            Any: A context manager whose ``__enter__`` returns the
+                ``Scope`` instance.
+        """
         from cirron.core.scope import scope as _scope
 
         return _scope(name, index=index, **attrs)
@@ -494,31 +692,99 @@ class Cirron:
         value: float | int | str | bool,
         **attrs: Any,
     ) -> None:
+        """Record a metric mark on the current scope.
+
+        Thin delegator to :func:`cirron.core.mark.mark`.
+
+        Args:
+            name (str): Metric name (e.g. ``"loss"``, ``"lr"``).
+            value (float | int | str | bool): Metric value; numeric values
+                are preferred for downstream aggregation.
+            **attrs (Any): Optional metadata. The reserved ``kind`` key
+                accepts ``"point"`` (default) or ``"summary"``.
+        """
         from cirron.core.mark import mark as _mark
 
         _mark(name, value, **attrs)
 
     def epochs(self, iterable: Iterable[Any]) -> Iterator[Any]:
+        """Wrap a training iterable so each item runs inside an ``epoch`` scope.
+
+        Args:
+            iterable (Iterable[Any]): Source iterable, typically
+                ``range(n_epochs)`` or an enumerable dataset.
+
+        Yields:
+            Any: Each item from ``iterable`` unchanged; the wrapper opens
+                an ``epoch`` scope before yielding and closes it after.
+        """
         from cirron.core.wrappers import epochs as _epochs
 
         return _epochs(iterable)
 
     def batches(self, iterable: Iterable[Any]) -> Iterator[Any]:
+        """Wrap a batch iterable so each item runs inside a ``batch`` scope.
+
+        Args:
+            iterable (Iterable[Any]): Batch-yielding iterable; DataLoader
+                instances also get ``data_load_ns`` stall attribution.
+
+        Yields:
+            Any: Each batch from ``iterable`` unchanged.
+        """
         from cirron.core.wrappers import batches as _batches
 
         return _batches(iterable)
 
     def env(self, key: str, default: Any = None) -> Any:
+        """Read an environment variable through the SDK's ``.env``-aware loader.
+
+        Args:
+            key (str): Environment variable name.
+            default (Any): Returned when ``key`` is absent or empty.
+
+        Returns:
+            Any: The variable's string value if set, otherwise ``default``.
+        """
         from cirron.core.env import env as _env
 
         return _env(key, default)
 
     def secret(self, name: str) -> str:
+        """Resolve a named secret via the platform secrets API or local fallback.
+
+        Args:
+            name (str): Logical secret name (e.g. ``"openai-api-key"``).
+
+        Returns:
+            str: The resolved secret value.
+
+        Raises:
+            CirronSecretNotFound: If neither the platform credential nor a
+                ``CIRRON_SECRET_<NAME>`` env var resolves.
+        """
         from cirron.secrets.client import secret as _secret
 
         return _secret(name)
 
     def load(self, *args: Any, **kwargs: Any) -> Any:
+        """Load a dataset by name, URI, or list of URIs.
+
+        Sets ``cirron=self`` on the underlying ``ci.load`` call so the
+        instance's ``load_warn_bytes`` / ``load_max_bytes`` thresholds
+        govern the size-tier guard.
+
+        Args:
+            *args (Any): Positional arguments forwarded to
+                :func:`cirron.data.load.load`.
+            **kwargs (Any): Keyword arguments forwarded to
+                :func:`cirron.data.load.load`. ``cirron`` defaults to
+                ``self`` when not provided.
+
+        Returns:
+            Any: The materialized dataset (DataFrame / iterator / handle),
+                shape determined by ``as_=``.
+        """
         from cirron.data.load import load as _load
 
         kwargs.setdefault("cirron", self)
@@ -530,16 +796,57 @@ class Cirron:
         *,
         config: dict[str, Any] | None = None,
     ) -> Callable[..., Any]:
+        """Wrap an inference function so each call records a span and metrics.
+
+        Usable bare (``@ci.inference``) or with config
+        (``@ci.inference(config={...})``).
+
+        Args:
+            fn (Callable[..., Any] | None): The inference function;
+                populated automatically by the bare-decorator form.
+            config (dict[str, Any] | None): Per-call configuration map
+                read by the LLM helper for provider / model overrides.
+
+        Returns:
+            Callable[..., Any]: The wrapped function, or a decorator
+                awaiting ``fn`` when called with ``fn=None``.
+        """
         from cirron.inference.decorator import inference as _inference
 
         return _inference(fn, config=config)
 
     def wrap(self, estimator: Any) -> Any:
+        """Instrument an estimator (currently sklearn-only).
+
+        Args:
+            estimator (Any): An sklearn estimator or pipeline; other
+                objects are returned unchanged.
+
+        Returns:
+            Any: A scope-aware proxy around ``estimator``, or the
+                original object when no instrumentation applies.
+        """
         from cirron.hooks.sklearn import wrap as _wrap
 
         return _wrap(estimator)
 
     def deps(self, *required: str) -> dict[str, str | None]:
+        """Check which optional extras are importable in this process.
+
+        Thin delegator to :func:`cirron.core.deps.deps`.
+
+        Args:
+            *required (str): Optional list of import names or extras
+                names; when empty, returns the full registry.
+
+        Returns:
+            dict[str, str | None]: Mapping of import name to installed
+                version (or ``None`` when not importable).
+
+        Raises:
+            CirronDependencyError: When ``*required`` is non-empty and any
+                listed dependency is missing.
+        """
         from cirron.core.deps import deps as _deps
 
         return _deps(*required)
@@ -564,6 +871,9 @@ def get_default() -> Cirron:
     name read is atomic under the GIL), so hot-path callers like
     ``ci.scope()`` / ``ci.mark()`` don't contend after initialization.
     The lock only gates the one-time construction.
+
+    Returns:
+        Cirron: The process-wide default instance.
     """
     global _default_instance
     instance = _default_instance

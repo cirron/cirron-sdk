@@ -54,6 +54,15 @@ _stats_pool_lock = threading.Lock()
 
 
 def _get_stats_pool() -> ThreadPoolExecutor:
+    """Return the lazily-constructed module-level stats thread pool.
+
+    Double-checked locking ensures concurrent callers don't each build a
+    pool and leak threads / duplicate the ``atexit`` handler.
+
+    Returns:
+        ThreadPoolExecutor: A persistent worker pool sized by
+            ``_PARALLEL_MAX_WORKERS``.
+    """
     global _stats_pool
     pool = _stats_pool
     if pool is not None:
@@ -79,7 +88,14 @@ def _is_torch_tensor(tensor: Any) -> bool:
     """Cheap ``isinstance(tensor, torch.Tensor)`` without importing torch
     when it isn't already loaded. ``type(x).__module__`` is a zero-cost
     attribute lookup — the full isinstance check would force us to have
-    ``torch`` imported."""
+    ``torch`` imported.
+
+    Args:
+        tensor (Any): Object to test.
+
+    Returns:
+        bool: ``True`` when ``tensor`` is a ``torch.Tensor`` (or subclass).
+    """
     mod = type(tensor).__module__
     return mod == "torch" or mod.startswith("torch.")
 
@@ -91,6 +107,13 @@ def _to_numpy(tensor: Any) -> Any:
     :func:`_tensor_stats` skips this to avoid a full host-side copy per
     parameter — on a ResNet50-scale model ``np.histogram`` on the
     numpy view dominated the budget.
+
+    Args:
+        tensor (Any): Tensor-like object (torch / TF / numpy / generic).
+
+    Returns:
+        Any: A ``numpy.ndarray`` view, or ``None`` if every conversion
+            attempt failed.
     """
     import numpy as np  # local import: numpy is a core dep but keep it lazy here
 
@@ -119,6 +142,15 @@ def _to_numpy(tensor: Any) -> Any:
 
 
 def _dtype_str(tensor: Any) -> str:
+    """Return a stable dtype string for ``tensor``.
+
+    Args:
+        tensor (Any): Tensor-like object exposing ``dtype``.
+
+    Returns:
+        str: Dtype name (e.g. ``"float32"``); ``"unknown"`` when no
+            ``dtype`` attribute is present.
+    """
     dtype = getattr(tensor, "dtype", None)
     if dtype is None:
         return "unknown"
@@ -129,6 +161,14 @@ def _dtype_str(tensor: Any) -> str:
 
 
 def _shape_list(tensor: Any) -> list[int]:
+    """Return ``tensor.shape`` as a plain ``list[int]``.
+
+    Args:
+        tensor (Any): Tensor-like object exposing ``shape``.
+
+    Returns:
+        list[int]: Shape; empty list if shape can't be coerced.
+    """
     shape = getattr(tensor, "shape", ())
     try:
         return [int(d) for d in shape]
@@ -137,6 +177,12 @@ def _shape_list(tensor: Any) -> list[int]:
 
 
 def _empty_stats() -> dict[str, Any]:
+    """Zero-valued stats record for empty tensors.
+
+    Returns:
+        dict[str, Any]: A ``{mean, std, min, max, norm, histogram}`` dict
+            with all-zero values and a 16-bin zero histogram.
+    """
     return {
         "mean": 0.0,
         "std": 0.0,
@@ -164,6 +210,18 @@ def _tensor_stats_torch(tensor: Any) -> dict[str, Any]:
     On the ubuntu CI runner the old five-``.item()`` variant ran ~4×
     over the 50 ms ResNet50 budget; the fused variant + persistent
     thread pool brings it inside.
+
+    The L2 ``norm`` is derived algebraically from ``mean`` / ``std`` /
+    ``N`` rather than via a second reduction pass — mathematically
+    identical to the old direct ``vector_norm`` but last-ULP float values
+    will differ.
+
+    Args:
+        tensor (Any): A ``torch.Tensor`` (any dtype, any device).
+
+    Returns:
+        dict[str, Any]: ``{mean, std, min, max, norm, histogram}`` with
+            ``histogram = {bins: list[float] (17), counts: list[int] (16)}``.
     """
     import torch
 
@@ -238,6 +296,14 @@ def _tensor_stats_numpy(arr: Any) -> dict[str, Any]:
     """Shared NumPy reduction kernel. Used by both the direct-numpy path
     (Keras weights, generic array-likes) and the CPU-tensor fast path
     from :func:`_tensor_stats_torch`.
+
+    Args:
+        arr (Any): A ``numpy.ndarray`` (any shape; dtype coerced to
+            float64 if non-float).
+
+    Returns:
+        dict[str, Any]: Same shape as :func:`_tensor_stats_torch` —
+            ``{mean, std, min, max, norm, histogram}``.
     """
     import numpy as np
 
@@ -277,7 +343,14 @@ def _tensor_stats_numpy(arr: Any) -> dict[str, Any]:
 
 def _tensor_stats(arr: Any) -> dict[str, Any]:
     """Compute the six statistics from a numpy array (Keras / generic
-    array-like path). Thin alias over :func:`_tensor_stats_numpy`."""
+    array-like path). Thin alias over :func:`_tensor_stats_numpy`.
+
+    Args:
+        arr (Any): A numpy array (or array-like).
+
+    Returns:
+        dict[str, Any]: ``{mean, std, min, max, norm, histogram}``.
+    """
     return _tensor_stats_numpy(arr)
 
 
@@ -288,6 +361,14 @@ def _iter_named_params(model: Any) -> list[tuple[str, Any]]:
     Keras: ``model.weights`` — each weight exposes ``.name`` and a
     ``.numpy()`` method.
     Anything else: empty list (with a single debug log).
+
+    Args:
+        model (Any): A PyTorch ``nn.Module``, Keras ``Model``, or any
+            object that quacks like one.
+
+    Returns:
+        list[tuple[str, Any]]: ``(name, tensor)`` pairs; empty list when
+            no parameters can be enumerated.
     """
     named_params = getattr(model, "named_parameters", None)
     if callable(named_params):
@@ -320,6 +401,12 @@ def _compute_stats(tensor: Any) -> dict[str, Any] | None:
 
     Returns ``None`` when the tensor cannot be read at all — the caller
     skips the record.
+
+    Args:
+        tensor (Any): Tensor-like object.
+
+    Returns:
+        dict[str, Any] | None: Stats dict, or ``None`` on total failure.
     """
     if _is_torch_tensor(tensor):
         try:
@@ -338,6 +425,17 @@ def _make_record(
     tensor: Any,
     ts_ns: int,
 ) -> TraceSnapshot | None:
+    """Build one ``TraceSnapshot`` record for a single named tensor.
+
+    Args:
+        span_id (str): Span this record attaches to.
+        tensor_name (str): Display name (e.g. ``"layer1.0.weight"``).
+        tensor (Any): The tensor itself.
+        ts_ns (int): Capture timestamp, ``time.time_ns()``.
+
+    Returns:
+        TraceSnapshot | None: A record, or ``None`` on failure.
+    """
     try:
         stats = _compute_stats(tensor)
     except Exception:
@@ -367,7 +465,19 @@ def _make_records_parallel(
     """Compute records across ``items`` in parallel for models large enough
     to amortize the thread-pool setup cost. Torch reductions release the
     GIL inside ``.item()`` / ``.tolist()``, so overlapping the per-tensor
-    work halves wall time on ResNet50-scale models."""
+    work halves wall time on ResNet50-scale models.
+
+    Args:
+        items (list[tuple[str, Any]]): Named tensors.
+        span_id (str): Span this batch of records attaches to.
+        ts_ns (int): Common capture timestamp.
+        name_fmt (str): Format string applied to each name (used to add
+            a ``.grad`` suffix when capturing gradients).
+
+    Returns:
+        list[TraceSnapshot]: Successfully computed records, in input
+            order; failures are dropped.
+    """
     results: list[TraceSnapshot | None] = [None] * len(items)
     pool = _get_stats_pool()
     futs = [
@@ -387,6 +497,13 @@ def capture_weight_stats(model: Any, span_id: str) -> list[TraceSnapshot]:
     the capture still proceeds. The caller owns mode-gating; this
     function unconditionally returns a ``"stats"`` record for every
     readable tensor.
+
+    Args:
+        model (Any): A PyTorch / Keras model (duck-typed).
+        span_id (str): Span the records attach to.
+
+    Returns:
+        list[TraceSnapshot]: One record per readable parameter tensor.
     """
     ts_ns = time.time_ns()
     items = _iter_named_params(model)
@@ -411,6 +528,15 @@ def capture_grad_stats_from_refs(
     nothing left to read off the model. The torch hook works around
     this by stashing the grad tensors at ``opt_post`` — the refs keep
     the tensors alive past ``zero_grad()`` without copying the data.
+
+    Args:
+        grad_refs (list[tuple[str, Any]]): Pre-stashed
+            ``(parameter_name, grad_tensor)`` pairs.
+        span_id (str): Span the records attach to.
+
+    Returns:
+        list[TraceSnapshot]: Records named ``<param>.grad``; tensors
+            already nulled to ``None`` are skipped.
     """
     ts_ns = time.time_ns()
     out: list[TraceSnapshot] = []
@@ -433,6 +559,14 @@ def capture_gradient_stats(model: Any, span_id: str) -> list[TraceSnapshot]:
     function is effectively PyTorch-only today. Keras gradient snapshots
     would need the optimizer's ``tape``, which is a sampled/full-mode
     design problem.
+
+    Args:
+        model (Any): A PyTorch model.
+        span_id (str): Span the records attach to.
+
+    Returns:
+        list[TraceSnapshot]: One record per parameter with a live
+            ``.grad`` tensor.
     """
     ts_ns = time.time_ns()
     out: list[TraceSnapshot] = []
@@ -477,6 +611,19 @@ def capture(
     If the weight pass raises partway through, any records already
     collected are returned — an epoch with 900 of 1000 tensors captured
     is strictly more useful than a dropped epoch.
+
+    Args:
+        cirron (Cirron): The active config — read for ``snapshots`` mode,
+            ``sample_rate``, and ``output_dir``.
+        model (Any | None): Model under capture; ``None`` short-circuits.
+        span_id (str): Span the records attach to.
+        include_grads (bool): When ``False``, skip the gradient pass.
+        grad_refs (list[tuple[str, Any]] | None): Pre-stashed grad refs
+            from the torch hook; falls back to a live read when ``None``.
+
+    Returns:
+        list[TraceSnapshot]: Snapshot records; empty when snapshots are
+            disabled or no model is available.
     """
     mode = getattr(cirron, "snapshots", None)
     if mode not in _ACTIVE_MODES:
@@ -527,6 +674,16 @@ def _maybe_serialize_blobs(
     Failures inside this helper never raise; they log and leave the
     stats records unmodified (``mode`` stays ``"stats"``, ``blob_uri``
     stays ``None``) so the epoch's summary data still reaches the spool.
+
+    Args:
+        cirron (Cirron): Active config (sample-rate / output-dir source).
+        model (Any): Model under capture.
+        span_id (str): Span the records attach to.
+        mode (str): Snapshot mode — ``"sampled"`` or ``"full"``.
+        records (list[TraceSnapshot]): Stats records to upgrade in place
+            with ``blob_uri`` and the new ``mode``.
+        grad_refs (list[tuple[str, Any]] | None): Pre-stashed grad refs.
+        include_grads (bool): Whether to also serialize gradients.
     """
     from cirron.snapshots.sampled import serialize_and_enqueue, should_sample
 
@@ -561,6 +718,14 @@ def _resolve_grad_tensors(
     ``opt_post`` by the torch hook before ``zero_grad`` fired). Fall
     back to a live read off ``model.named_parameters()[i].grad`` for
     Keras or bare-torch loops that didn't stash.
+
+    Args:
+        model (Any): Model to read live grads from when ``grad_refs`` is
+            ``None``.
+        grad_refs (list[tuple[str, Any]] | None): Pre-stashed grads.
+
+    Returns:
+        list[tuple[str, Any]]: Non-``None`` ``(name, grad)`` pairs.
     """
     if grad_refs is not None:
         return [(n, g) for n, g in grad_refs if g is not None]

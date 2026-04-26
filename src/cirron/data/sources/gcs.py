@@ -18,7 +18,22 @@ logger = logging.getLogger(__name__)
 
 
 class GCSDataSource(DataSource):
+    """Reads CSV / Parquet / JSON / raw bytes from a GCS bucket.
+
+    Credentials come from the ``google-cloud-storage`` default chain
+    (``GOOGLE_APPLICATION_CREDENTIALS``, gcloud ADC, etc.).
+    """
+
     def load(self) -> Any:
+        """List or fetch one or more GCS blobs.
+
+        Returns:
+            Any: A single parsed blob's contents, or a list of parsed
+                contents when listing a folder.
+
+        Raises:
+            ImportError: If ``google-cloud-storage`` is not installed.
+        """
         try:
             from google.cloud import storage
         except ImportError as e:
@@ -41,6 +56,15 @@ class GCSDataSource(DataSource):
         return self._parse(blob)
 
     def _parse(self, blob: Any) -> Any:
+        """Download and decode a GCS blob according to the source format.
+
+        Args:
+            blob (Any): A ``google.cloud.storage.Blob`` instance.
+
+        Returns:
+            Any: A pandas DataFrame for csv/parquet, a Python value for
+                json, or the raw bytes otherwise.
+        """
         content = blob.download_as_bytes()
         fmt = self.config.format
         if fmt == "csv":
@@ -62,6 +86,12 @@ class GCSDataSource(DataSource):
         return content
 
     def _columns(self) -> list[str] | None:
+        """Resolve the effective column projection for the current request.
+
+        Returns:
+            list[str] | None: Effective column list, or ``None`` for
+                "all columns".
+        """
         if self.request is None:
             return None
         if self.request.match and self.request.match.columns:
@@ -69,6 +99,12 @@ class GCSDataSource(DataSource):
         return self.request.columns
 
     def validate(self) -> bool:
+        """Return whether the GCS bucket exists.
+
+        Returns:
+            bool: The result of ``bucket.exists()``, or ``False`` on any
+                exception.
+        """
         try:
             from google.cloud import storage
 

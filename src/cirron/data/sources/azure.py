@@ -20,7 +20,24 @@ logger = logging.getLogger(__name__)
 
 
 class AzureDataSource(DataSource):
+    """Reads CSV / Parquet / JSON / raw bytes from an Azure Blob container.
+
+    Credentials come from the ``azure-identity`` default chain via
+    ``BlobServiceClient`` (env vars, managed identity, az CLI).
+    """
+
     def load(self) -> Any:
+        """List or fetch one or more Azure blobs.
+
+        Returns:
+            Any: A single parsed blob's contents, or a list of parsed
+                contents when listing a folder.
+
+        Raises:
+            ImportError: If ``azure-storage-blob`` is not installed.
+            ValueError: If ``container_name`` or ``account_name`` is
+                missing.
+        """
         try:
             from azure.storage.blob import BlobServiceClient
         except ImportError as e:
@@ -52,6 +69,14 @@ class AzureDataSource(DataSource):
         return self._parse(blob_client)
 
     def _account_url(self) -> str:
+        """Return ``https://<account>.blob.core.windows.net``.
+
+        Returns:
+            str: The fully qualified account URL.
+
+        Raises:
+            ValueError: If ``account_name`` is unset.
+        """
         account = self.config.account_name
         if not account:
             raise ValueError(
@@ -61,6 +86,15 @@ class AzureDataSource(DataSource):
         return f"https://{account}.blob.core.windows.net"
 
     def _parse(self, blob_client: Any) -> Any:
+        """Download and decode an Azure blob according to the source format.
+
+        Args:
+            blob_client (Any): A configured ``BlobClient``.
+
+        Returns:
+            Any: A pandas DataFrame for csv/parquet, a Python value for
+                json, or the raw bytes otherwise.
+        """
         content = blob_client.download_blob().readall()
         fmt = self.config.format
         if fmt == "csv":
@@ -82,6 +116,12 @@ class AzureDataSource(DataSource):
         return content
 
     def _columns(self) -> list[str] | None:
+        """Resolve the effective column projection for the current request.
+
+        Returns:
+            list[str] | None: Effective column list, or ``None`` for
+                "all columns".
+        """
         if self.request is None:
             return None
         if self.request.match and self.request.match.columns:
@@ -89,6 +129,12 @@ class AzureDataSource(DataSource):
         return self.request.columns
 
     def validate(self) -> bool:
+        """Return whether the Azure container exists.
+
+        Returns:
+            bool: The result of ``container.exists()``, or ``False`` on
+                any exception or missing config.
+        """
         try:
             from azure.storage.blob import BlobServiceClient
 

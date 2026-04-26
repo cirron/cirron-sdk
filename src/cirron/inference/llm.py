@@ -37,6 +37,14 @@ from cirron.core.scope import _ctx_state, get_current_scope
 
 
 def _safe_mark(name: str, value: float | int, **attrs: Any) -> None:
+    """Emit a summary mark; swallow any exception so detection failures
+    never propagate to user code.
+
+    Args:
+        name (str): Mark name.
+        value (float | int): Mark value.
+        **attrs (Any): Extra attributes attached to the mark.
+    """
     try:
         _mark(name, value, kind=MARK_KIND_SUMMARY, **attrs)
     except Exception:
@@ -46,7 +54,15 @@ def _safe_mark(name: str, value: float | int, **attrs: Any) -> None:
 def _extract_usage(result: Any) -> dict[str, int] | None:
     """Return ``{prompt_tokens, completion_tokens, total_tokens}`` when
     ``result`` exposes them OpenAI-style, else ``None``. Tolerant of
-    attr-style objects and dict payloads."""
+    attr-style objects and dict payloads.
+
+    Args:
+        result (Any): The provider response (dict or object).
+
+    Returns:
+        dict[str, int] | None: Subset of usage fields actually present,
+            or ``None`` if no usage payload is detected.
+    """
     usage = None
     if isinstance(result, dict):
         usage = result.get("usage")
@@ -56,6 +72,15 @@ def _extract_usage(result: Any) -> dict[str, int] | None:
         return None
 
     def _get(key: str) -> int | None:
+        """Read ``key`` off the usage payload as a non-bool ``int``.
+
+        Args:
+            key (str): Field name to read.
+
+        Returns:
+            int | None: The integer value, or ``None`` when missing /
+                non-integer / boolean.
+        """
         if isinstance(usage, dict):
             v = usage.get(key)
         else:
@@ -79,6 +104,9 @@ def maybe_mark_openai_usage(result: Any) -> None:
     ``total_tokens``) so dashboard comparisons across providers don't
     need per-provider name logic. Each mark carries a ``source="openai"``
     attr and normalized aliases carry ``normalized=True``.
+
+    Args:
+        result (Any): The provider response under inspection.
     """
     try:
         usage = _extract_usage(result)
@@ -103,7 +131,14 @@ def maybe_mark_openai_usage(result: Any) -> None:
 
 def _item_token_count(item: Any) -> int | None:
     """Best-effort token count from a single streamed chunk (OpenAI
-    streaming chunks carry ``.usage`` on the terminal event)."""
+    streaming chunks carry ``.usage`` on the terminal event).
+
+    Args:
+        item (Any): One yielded chunk from the stream.
+
+    Returns:
+        int | None: Completion-token count when present, else ``None``.
+    """
     try:
         usage = _extract_usage(item)
         if usage and "completion_tokens" in usage:
@@ -114,6 +149,15 @@ def _item_token_count(item: Any) -> int | None:
 
 
 def _finalize_stream(count: int, start_ns: int, first_ns: int | None) -> None:
+    """Emit terminal stream marks: duration, output tokens, throughput.
+
+    Args:
+        count (int): Total chunk count (or explicit token count if the
+            terminal chunk reported ``.usage``).
+        start_ns (int): Wall-clock start of the request.
+        first_ns (int | None): First-yield timestamp; ``None`` when the
+            stream produced nothing.
+    """
     try:
         end_ns = time.time_ns()
         # ``request_duration_ms`` closes the three-number picture users
@@ -134,6 +178,13 @@ def _finalize_stream(count: int, start_ns: int, first_ns: int | None) -> None:
 
 
 def _point_mark(name: str, value: float | int, **attrs: Any) -> None:
+    """Emit a ``kind="point"`` mark, swallowing exceptions.
+
+    Args:
+        name (str): Mark name.
+        value (float | int): Mark value.
+        **attrs (Any): Extra attributes attached to the mark.
+    """
     try:
         _mark(name, value, kind="point", **attrs)
     except Exception:
@@ -156,6 +207,20 @@ def wrap_stream(
     (or ``None``). When provided, the wrapper re-binds the ContextVar
     around its own mark calls so throughput / TTFT attach to the request
     span even though the decorator's ``with`` block has already exited.
+
+    Args:
+        result (Any): The wrapped function's return value.
+        start_ns (int): Wall-clock start of the request.
+        state (Any): Per-request ``_ScopeState`` to re-bind around mark
+            calls; ``None`` skips re-binding.
+        on_close (Callable[[], None] | None): Closer invoked once when
+            the wrapper is exhausted / closed.
+        chunk_timing (bool): When ``True``, emit a ``chunk_ms`` point
+            mark after every chunk.
+
+    Returns:
+        Any: A wrapped iterator / async iterator, or ``result``
+            unchanged for non-stream values.
     """
     if inspect.isasyncgen(result):
         return _wrap_async(result, start_ns, state, on_close, chunk_timing)
@@ -171,7 +236,14 @@ def wrap_stream(
 def _bind_state(state: Any) -> Any:
     """Return a reset-token for ``_ctx_state`` pointing at ``state``; the
     caller must pass the returned token to ``_ctx_state.reset``. Returns
-    ``None`` when ``state`` is ``None`` or binding fails."""
+    ``None`` when ``state`` is ``None`` or binding fails.
+
+    Args:
+        state (Any): Per-request ``_ScopeState`` to bind, or ``None``.
+
+    Returns:
+        Any: A reset token, or ``None`` when no bind happened.
+    """
     if state is None:
         return None
     try:
@@ -181,6 +253,11 @@ def _bind_state(state: Any) -> Any:
 
 
 def _unbind_state(token: Any) -> None:
+    """Reverse a prior :func:`_bind_state`, swallowing any error.
+
+    Args:
+        token (Any): Reset token previously returned by :func:`_bind_state`.
+    """
     if token is None:
         return
     try:
@@ -196,6 +273,21 @@ def _wrap_sync(
     on_close: Callable[[], None] | None,
     chunk_timing: bool,
 ) -> Iterator[Any]:
+    """Wrap a sync iterator with TTFT / throughput marks and scope-rebind.
+
+    Args:
+        gen (Iterator[Any]): The underlying generator / iterator.
+        start_ns (int): Wall-clock start of the request.
+        state (Any): Per-request ``_ScopeState`` re-bound around each
+            ``next()`` and around final-mark emission.
+        on_close (Callable[[], None] | None): Closer invoked exactly
+            once when the wrapper exits.
+        chunk_timing (bool): When ``True``, emit a ``chunk_ms`` point
+            mark per post-first chunk.
+
+    Yields:
+        Any: Each item from ``gen`` unchanged.
+    """
     # We re-bind ``state`` around every interaction with the underlying
     # generator: advancing it (so user code inside the gen body still sees
     # the request scope) and our own mark calls. The decorator has
@@ -205,6 +297,11 @@ def _wrap_sync(
     iter_gen = iter(gen)
 
     def _runner() -> Iterator[Any]:
+        """Drive ``iter_gen`` with bookkeeping for TTFT and throughput.
+
+        Yields:
+            Any: Each item from the underlying iterator.
+        """
         first_ns: int | None = None
         last_ns: int | None = None
         count = 0
@@ -267,11 +364,32 @@ def _wrap_async(
     on_close: Callable[[], None] | None,
     chunk_timing: bool,
 ) -> AsyncIterator[Any]:
+    """Wrap an async iterator with TTFT / throughput marks and scope-rebind.
+
+    Args:
+        gen (AsyncIterator[Any]): The underlying async generator.
+        start_ns (int): Wall-clock start of the request.
+        state (Any): Per-request ``_ScopeState`` re-bound around each
+            step and around final-mark emission.
+        on_close (Callable[[], None] | None): Closer invoked exactly
+            once when the wrapper exits.
+        chunk_timing (bool): When ``True``, emit a ``chunk_ms`` point
+            mark per post-first chunk.
+
+    Returns:
+        AsyncIterator[Any]: An async iterator yielding ``gen``'s items.
+    """
+
     # Same discipline as ``_wrap_sync``: re-bind ``state`` around each
     # step so user code inside the async generator body sees the request
     # scope, but the caller's task Context is never left polluted
     # between yields.
     async def _runner() -> AsyncIterator[Any]:
+        """Drive ``aiter_gen`` with bookkeeping for TTFT and throughput.
+
+        Yields:
+            Any: Each item from the underlying async iterator.
+        """
         first_ns: int | None = None
         last_ns: int | None = None
         count = 0
@@ -337,7 +455,16 @@ _hf_undo: Callable[[], None] | None = None
 
 
 def _input_length(args: tuple[Any, ...], kwargs: dict[str, Any]) -> int | None:
-    """Best-effort: recover input token length from ``generate`` args."""
+    """Best-effort: recover input token length from ``generate`` args.
+
+    Args:
+        args (tuple[Any, ...]): Positional args passed to ``generate``.
+        kwargs (dict[str, Any]): Keyword args passed to ``generate``.
+
+    Returns:
+        int | None: Sequence length, or ``None`` when nothing usable
+            could be derived.
+    """
     try:
         ids = kwargs.get("input_ids")
         if ids is None:
@@ -366,6 +493,15 @@ def _input_length(args: tuple[Any, ...], kwargs: dict[str, Any]) -> int | None:
 
 
 def _output_length(result: Any) -> int | None:
+    """Best-effort: recover output sequence length from ``generate``'s
+    return value.
+
+    Args:
+        result (Any): Whatever ``GenerationMixin.generate`` returned.
+
+    Returns:
+        int | None: Sequence length, or ``None`` when undetectable.
+    """
     try:
         # ``GenerateOutput`` subclasses expose ``.sequences``
         seqs = getattr(result, "sequences", None)
@@ -400,6 +536,10 @@ def install_hf_generate_patch() -> bool:
     Idempotent: repeated calls are no-ops. Returns ``True`` when the
     patch is active after this call, ``False`` if transformers is not
     importable or patching failed.
+
+    Returns:
+        bool: ``True`` when the patch is installed (or already was);
+            ``False`` when transformers is missing or patching failed.
     """
     global _hf_patched, _hf_undo
     with _hf_lock:
@@ -415,6 +555,18 @@ def install_hf_generate_patch() -> bool:
             return False
 
         def _wrapped(self: Any, *args: Any, **kwargs: Any) -> Any:
+            """Replacement ``GenerationMixin.generate`` that emits token marks.
+
+            Args:
+                self (Any): The model instance bound by descriptor protocol.
+                *args (Any): Positional args forwarded to the original
+                    ``generate``.
+                **kwargs (Any): Keyword args forwarded to the original
+                    ``generate``.
+
+            Returns:
+                Any: Whatever the original ``generate`` returns.
+            """
             # Emit marks whenever *any* scope is open on the current
             # thread. ``_safe_mark`` attaches to the innermost scope, and
             # the dashboard groups marks by their enclosing ``request``
@@ -465,6 +617,7 @@ def install_hf_generate_patch() -> bool:
             return False
 
         def _undo() -> None:
+            """Restore the original ``GenerationMixin.generate``."""
             try:
                 GenerationMixin.generate = original  # type: ignore[assignment]
             except Exception:

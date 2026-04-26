@@ -35,6 +35,14 @@ class TraceSnapshot:
 
 
 def snapshot_to_dict(s: TraceSnapshot) -> dict[str, Any]:
+    """Serialize a ``TraceSnapshot`` to a JSON-friendly dict.
+
+    Args:
+        s (TraceSnapshot): The record to serialize.
+
+    Returns:
+        dict[str, Any]: Plain-data mapping ready for JSON encoding.
+    """
     return {
         "id": s.id,
         "span_id": s.span_id,

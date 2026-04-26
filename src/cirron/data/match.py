@@ -69,6 +69,23 @@ class MatchConfig:
 
         Returns ``None`` when no filter was requested, so sources can
         short-circuit cheaply.
+
+        Args:
+            match (str | Mapping[str, Any] | None): Bare glob string, a
+                dict with ``path`` / ``filename`` / ``extension`` /
+                ``columns`` keys, or ``None``.
+            ext (list[str] | tuple[str, ...] | None): Flat extension
+                list. Overrides ``match["extension"]`` when supplied.
+            columns (list[str] | tuple[str, ...] | None): Flat column
+                projection. Overrides ``match["columns"]``.
+
+        Returns:
+            MatchConfig | None: The normalized config, or ``None`` if
+                every input was empty.
+
+        Raises:
+            TypeError: If ``match`` is not a str, Mapping, or ``None``,
+                or if ``columns`` is a bare string instead of a list.
         """
         if match is None and not ext and not columns:
             return None
@@ -115,6 +132,15 @@ class MatchConfig:
 
 
 def _normalize_extensions(raw: Any) -> tuple[str, ...]:
+    """Lowercase and strip leading dots from a list / single extension.
+
+    Args:
+        raw (Any): A single extension string or an iterable of strings.
+
+    Returns:
+        tuple[str, ...]: Cleaned extensions without leading dots; empty
+            and whitespace-only entries are dropped.
+    """
     if isinstance(raw, str):
         parts: list[str] = [raw]
     else:
@@ -137,7 +163,17 @@ def _normalize_extensions(raw: Any) -> tuple[str, ...]:
 def _normalize_columns(raw: Any) -> tuple[str, ...]:
     """Accept a list/tuple of column names. Reject a bare string — which
     would iterate character-by-character and silently turn ``"abc"`` into
-    three "columns" a/b/c."""
+    three "columns" a/b/c.
+
+    Args:
+        raw (Any): The user-supplied column collection.
+
+    Returns:
+        tuple[str, ...]: Column names as strings.
+
+    Raises:
+        TypeError: If ``raw`` is a bare string.
+    """
     if isinstance(raw, str):
         raise TypeError(
             f"columns must be a list of column names, got a bare string {raw!r}; "
@@ -152,12 +188,31 @@ def apply_match(paths: Iterable[str], cfg: MatchConfig) -> list[str]:
     Paths are treated as forward-slash strings regardless of OS —
     callers that hand in ``pathlib.Path`` should convert with
     ``str(p.as_posix())`` so Windows paths don't slip through the glob.
+
+    Args:
+        paths (Iterable[str]): Candidate paths (relative or absolute,
+            forward-slash form).
+        cfg (MatchConfig): Filter spec.
+
+    Returns:
+        list[str]: Candidates that satisfy every filter on ``cfg``.
     """
     filename_re = re.compile(cfg.filename_regex) if cfg.filename_regex else None
     return [raw for raw in paths if _match_one(raw, cfg, filename_re)]
 
 
 def _match_one(raw: str, cfg: MatchConfig, filename_re: re.Pattern[str] | None) -> bool:
+    """Return ``True`` when a single path satisfies every filter on ``cfg``.
+
+    Args:
+        raw (str): The candidate path.
+        cfg (MatchConfig): Filter spec.
+        filename_re (re.Pattern[str] | None): Pre-compiled
+            ``filename_regex`` (or ``None``).
+
+    Returns:
+        bool: ``True`` if every active filter accepts the path.
+    """
     path = raw.replace("\\", "/")
     basename = path.rsplit("/", 1)[-1]
     parent = path[: -len(basename) - 1] if "/" in path else ""
@@ -174,6 +229,16 @@ def _match_one(raw: str, cfg: MatchConfig, filename_re: re.Pattern[str] | None) 
 
 
 def _match_path(parent: str, pattern: str) -> bool:
+    """Match the directory portion against a glob, allowing trailing-slash forms.
+
+    Args:
+        parent (str): The directory portion of the candidate path.
+        pattern (str): The user-supplied glob.
+
+    Returns:
+        bool: ``True`` if either ``pattern`` or ``pattern.rstrip('/')``
+            matches.
+    """
     # Allow trailing-slash convenience: ``year=2025/*/`` matches what
     # ``year=2025/*`` matches.
     if fnmatch.fnmatchcase(parent, pattern.rstrip("/")):
@@ -182,5 +247,14 @@ def _match_path(parent: str, pattern: str) -> bool:
 
 
 def _match_extension(basename: str, extensions: tuple[str, ...]) -> bool:
+    """Return ``True`` when ``basename`` ends with any of ``extensions``.
+
+    Args:
+        basename (str): Filename without directory.
+        extensions (tuple[str, ...]): Lowercase extensions without dots.
+
+    Returns:
+        bool: Whether the basename matches any allowed extension.
+    """
     lower = basename.lower()
     return any(lower.endswith(f".{ext}") for ext in extensions)

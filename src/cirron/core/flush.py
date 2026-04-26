@@ -60,6 +60,13 @@ DEFAULT_INTERVAL_SEC = 1.0
 
 
 def _sdk_version() -> str:
+    """Resolve the installed ``cirron-sdk`` version string.
+
+    Returns:
+        str: The installed package version, or ``"0.0.0"`` if the
+            distribution metadata isn't reachable (e.g. running from a
+            source tree without an editable install).
+    """
     try:
         from importlib.metadata import PackageNotFoundError, version
 
@@ -82,12 +89,42 @@ class Transport(Protocol):
     the JSON batch that references the blobs.
     """
 
-    def send(self, batch: dict[str, Any]) -> bool: ...
+    def send(self, batch: dict[str, Any]) -> bool:
+        """Forward a JSON batch to the platform.
 
-    def upload_blob(self, local_path: str | Path, remote_key: str) -> str | None: ...
+        Args:
+            batch (dict[str, Any]): The serialized batch (spool format).
+
+        Returns:
+            bool: ``True`` when the batch was accepted; ``False`` to
+                signal the caller that the batch should be retried later.
+        """
+        ...
+
+    def upload_blob(self, local_path: str | Path, remote_key: str) -> str | None:
+        """Upload a safetensors file and return its remote URI.
+
+        Args:
+            local_path (str | Path): Path to the local blob.
+            remote_key (str): Storage-side object key.
+
+        Returns:
+            str | None: The remote URI on success, or ``None`` on
+                failure (the local blob stays on disk for retry).
+        """
+        ...
 
 
 def _scope_to_dict(s: Scope) -> dict[str, Any]:
+    """Serialize a ``Scope`` to its spool-format dict shape.
+
+    Args:
+        s (Scope): The closed scope to serialize.
+
+    Returns:
+        dict[str, Any]: Span dict with ``id`` / ``name`` / ``parent_id`` /
+            timing fields / ``attrs`` / ``mark_ids`` keys.
+    """
     return {
         "id": s.id,
         "name": s.name,
@@ -114,6 +151,11 @@ def _apply_uri_map(snapshots: list[TraceSnapshot], uri_map: dict[str, str]) -> N
     URI — the local safetensors file is always written before the record
     is produced, so the batch remains self-consistent on disk even when
     the network round-trip is deferred.
+
+    Args:
+        snapshots (list[TraceSnapshot]): Records to rewrite in place.
+        uri_map (dict[str, str]): Mapping from ``file://`` URI to the
+            remote URI returned by ``upload_blob``.
     """
     for snap in snapshots:
         if snap.blob_uri is None:
@@ -124,6 +166,15 @@ def _apply_uri_map(snapshots: list[TraceSnapshot], uri_map: dict[str, str]) -> N
 
 
 def _mark_to_dict(m: Mark) -> dict[str, Any]:
+    """Serialize a ``Mark`` to its spool-format dict shape.
+
+    Args:
+        m (Mark): The mark to serialize.
+
+    Returns:
+        dict[str, Any]: Mark dict with ``id`` / ``span_id`` / ``name`` /
+            ``value`` / ``ts_ns`` / ``kind`` keys.
+    """
     return {
         "id": m.id,
         "span_id": m.span_id,
@@ -138,6 +189,12 @@ def _mark_to_dict(m: Mark) -> dict[str, Any]:
 
 @dataclass
 class Batch:
+    """One flush tick's worth of spans, marks, and snapshot records.
+
+    The unit of work the flush thread writes to spool / hands to sinks /
+    forwards through the transport.
+    """
+
     batch_id: str
     created_ns: int
     spans: list[dict[str, Any]]
@@ -145,6 +202,13 @@ class Batch:
     snapshots: list[dict[str, Any]] = dataclass_field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
+        """Serialize to the public spool-format JSON envelope.
+
+        Returns:
+            dict[str, Any]: Dict with ``schema_version`` / ``sdk_version``
+                / ``batch_id`` / ``created_ns`` / ``spans`` / ``marks`` /
+                ``snapshots`` keys.
+        """
         return {
             "schema_version": SPOOL_SCHEMA_VERSION,
             "sdk_version": _sdk_version(),
@@ -174,17 +238,40 @@ class SpoolWriter:
 
     @property
     def spool_dir(self) -> Path:
+        """Resolved spool directory.
+
+        Returns:
+            Path: The directory batches are written to.
+        """
         return self._dir
 
     @property
     def max_bytes(self) -> int:
+        """Total-byte cap before oldest-first eviction kicks in.
+
+        Returns:
+            int: The configured cap in bytes.
+        """
         return self._max_bytes
 
     @property
     def drop_count(self) -> int:
+        """Cumulative number of files evicted by the cap enforcer.
+
+        Returns:
+            int: Count since process start.
+        """
         return self._drop_count
 
     def write(self, batch: Batch) -> Path:
+        """Atomically write one batch as ``<created_ns>-<id>.json``.
+
+        Args:
+            batch (Batch): The batch to serialize.
+
+        Returns:
+            Path: The final path of the written file.
+        """
         filename = f"{batch.created_ns:020d}-{batch.batch_id}.json"
         path = self._dir / filename
         payload = json.dumps(batch.to_json(), separators=(",", ":"))
@@ -196,10 +283,20 @@ class SpoolWriter:
         return path
 
     def enforce_cap(self) -> int:
+        """Run cap enforcement out-of-band.
+
+        Returns:
+            int: Number of files evicted by this call.
+        """
         with self._lock:
             return self._enforce_cap_locked()
 
     def _enforce_cap_locked(self) -> int:
+        """Drop oldest-first until total bytes fit under ``max_bytes``.
+
+        Returns:
+            int: Number of files dropped this pass.
+        """
         files = sorted(p for p in self._dir.glob("*.json") if p.is_file())
         total = sum(p.stat().st_size for p in files)
         dropped = 0
@@ -281,9 +378,16 @@ class FlushThread(threading.Thread):
 
     @property
     def trace_buffer(self) -> _TraceBuffer | None:
+        """Backing buffer for ``ci.trace()`` reads.
+
+        Returns:
+            _TraceBuffer | None: The shared trace buffer, or ``None``
+                when the worker is detached from in-memory read-back.
+        """
         return self._trace_buffer
 
     def run(self) -> None:
+        """Daemon loop. Wakes every ``interval`` seconds (or on signal) and ticks."""
         while not self._stop_event.is_set():
             triggered = self._wake_event.wait(self._interval)
             if triggered:
@@ -295,6 +399,7 @@ class FlushThread(threading.Thread):
             self._tick()
 
     def _tick(self) -> None:
+        """Run one drain-and-emit pass, swallowing exceptions to a WARNING log."""
         # safety net: any bug inside the tick path becomes a logged
         # WARNING instead of a thread death. The supervisor still catches
         # truly fatal failures (OOM, abort) — this just prevents a bad
@@ -305,6 +410,7 @@ class FlushThread(threading.Thread):
             log.warning("cirron flush tick failed: %s", exc, exc_info=True)
 
     def _tick_body(self) -> None:
+        """Drain producer buffers, build a batch, and dispatch to sinks + transport."""
         # Drain snapshots into a local list first so we can rewrite their
         # ``blob_uri`` with the remote URI returned by ``upload_blob``
         # before the batch reaches the transport. Uploading *first* also
@@ -367,6 +473,10 @@ class FlushThread(threading.Thread):
         a blob has exhausted its retries the local file stays on disk —
         the spool record still points at it via the ``file://`` URI, so
         the epoch's data isn't lost for standalone/local replay.
+
+        Returns:
+            dict[str, str]: Mapping ``{local_uri: remote_uri}`` for
+                successful uploads.
         """
         assert self._blob_queue is not None and self._transport is not None
         pending = self._blob_queue.drain()
@@ -407,6 +517,11 @@ class FlushThread(threading.Thread):
             self._spool_only_notified = True
 
     def _handle_upload_failure(self, blob: PendingBlob) -> None:
+        """Re-enqueue a failed upload, or give up after ``MAX_BLOB_ATTEMPTS``.
+
+        Args:
+            blob (PendingBlob): The blob whose upload just failed.
+        """
         assert self._blob_queue is not None
         next_attempts = blob.attempts + 1
         if next_attempts >= MAX_BLOB_ATTEMPTS:
@@ -442,6 +557,10 @@ class FlushThread(threading.Thread):
         Production flows go through :meth:`_tick`. This method preserves
         the pre-blob-upload shape for the unit tests that manually drive
         a flush — they only care about the scope/mark/snapshot plumbing.
+
+        Returns:
+            Batch | None: A new batch if anything was drained, otherwise
+                ``None``.
         """
         scopes = self._scope_stack.drain_closed_all()
         marks = self._mark_buffer.drain_all()
@@ -459,9 +578,16 @@ class FlushThread(threading.Thread):
         )
 
     def wake(self) -> None:
+        """Signal the worker to drain immediately instead of waiting for the next tick."""
         self._wake_event.set()
 
     def stop(self, timeout: float = 5.0) -> None:
+        """Request a clean shutdown and join the worker.
+
+        Args:
+            timeout (float): Seconds to wait for the worker to exit.
+                Default ``5.0``.
+        """
         self._stop_event.set()
         self._wake_event.set()
         if self.is_alive():
@@ -498,22 +624,45 @@ class _Supervisor:
 
     @property
     def mode(self) -> str:
+        """Current operating mode.
+
+        Returns:
+            str: ``"normal"`` while the transport is honoured, or
+                ``"spool_only"`` after the worker has died too often.
+        """
         return self._mode
 
     @property
     def worker(self) -> FlushThread | None:
+        """The currently live worker thread, if any.
+
+        Returns:
+            FlushThread | None: The active worker, or ``None`` between
+                respawns or after :meth:`stop`.
+        """
         return self._worker
 
     @property
     def restart_count(self) -> int:
+        """Number of worker respawns since :meth:`start` was called.
+
+        Returns:
+            int: Cumulative respawn count.
+        """
         return self._restart_count
 
     def start(self) -> None:
+        """Spawn the first worker and the supervising watcher thread."""
         self._spawn()
         self._watcher = threading.Thread(target=self._watch, daemon=True, name="cirron-flush-watch")
         self._watcher.start()
 
     def _spawn(self) -> FlushThread:
+        """Create and start a fresh worker, honouring spool-only latching.
+
+        Returns:
+            FlushThread: The newly started worker.
+        """
         transport = None if self._mode == "spool_only" else self._transport
         worker = self._factory(transport)
         worker.start()
@@ -521,6 +670,7 @@ class _Supervisor:
         return worker
 
     def _watch(self) -> None:
+        """Watcher loop: respawn the worker on death, with backoff."""
         while not self._stop.is_set():
             worker = self._worker
             if worker is None:
@@ -542,6 +692,11 @@ class _Supervisor:
             self._spawn()
 
     def _record_death(self) -> float:
+        """Record a worker death and compute the next respawn backoff.
+
+        Returns:
+            float: Seconds to sleep before the next respawn attempt.
+        """
         with self._lock:
             now = self._monotonic()
             self._deaths.append(now)
@@ -560,6 +715,11 @@ class _Supervisor:
         return backoff
 
     def stop(self, timeout: float = 5.0) -> None:
+        """Stop both worker and watcher threads.
+
+        Args:
+            timeout (float): Seconds to wait per join. Default ``5.0``.
+        """
         self._stop.set()
         worker = self._worker
         if worker is not None:
@@ -602,6 +762,23 @@ def start_flush_thread(
     ``cirron.core.sinks.normalize_output``). ``None`` means "spool only"
     for backwards compatibility with callers that don't yet pass
     ``output=`` (e.g. tests).
+
+    Args:
+        cirron (Cirron | None): Optional ``Cirron`` instance to read
+            defaults from when explicit kwargs aren't provided.
+        output_dir (str | Path | None): Override for the on-disk root
+            (defaults to ``./.cirron/``).
+        spool_max_bytes (int | None): Override for the spool byte cap.
+        interval (float | None): Override for the flush interval in
+            seconds.
+        transport (Transport | None): Optional platform-bound transport.
+        output (list[str] | None): Normalized sink names. ``None`` falls
+            back to ``["spool"]``.
+        trace_buffer (_TraceBuffer | None): Override the in-memory trace
+            buffer (defaults to the process-wide singleton).
+
+    Returns:
+        _Supervisor: The (possibly already-running) supervisor.
     """
     from cirron.core.sinks import build_sinks
 
@@ -644,6 +821,15 @@ def start_flush_thread(
         tb = trace_buffer if trace_buffer is not None else get_default_trace_buffer()
 
         def factory(t: Transport | None) -> FlushThread:
+            """Build a fresh ``FlushThread`` against the captured plumbing.
+
+            Args:
+                t (Transport | None): Transport to wire in (``None`` in
+                    spool-only mode).
+
+            Returns:
+                FlushThread: A new (unstarted) worker.
+            """
             return FlushThread(
                 stack,
                 buf,
@@ -664,7 +850,12 @@ def start_flush_thread(
 
 
 def stop_flush_thread(timeout: float = 5.0) -> None:
-    """Stop the singleton flush thread. No-op if none is running."""
+    """Stop the singleton flush thread. No-op if none is running.
+
+    Args:
+        timeout (float): Seconds to wait for the worker / watcher to
+            join. Default ``5.0``.
+    """
     global _supervisor, _writer, _wake_event
     with _state_lock:
         sup = _supervisor
@@ -696,6 +887,11 @@ def flush_to_trace_buffer() -> int:
       makes ``ci.trace()`` safe on read-only filesystems.
 
     Returns the number of spans drained into the buffer this call.
+
+    Returns:
+        int: Span count drained directly into the trace buffer (always
+            ``0`` when an active profiler handled the flush via
+            :func:`flush_now`).
     """
     if _supervisor is not None:
         flush_now()
@@ -733,6 +929,11 @@ def flush_now() -> Path | None:
     after a sync flush) and dispatches through the active worker's sinks
     when one is running, so a mid-run flush produces the same log/stdout
     lines a tick would have.
+
+    Returns:
+        Path | None: The spool file path if a sink wrote one, otherwise
+            ``None`` (no data drained, ``output="none"``, or every sink
+            was non-spool).
     """
     sup = _supervisor
     worker = sup.worker if sup is not None else None
@@ -783,6 +984,12 @@ def flush_now() -> Path | None:
 
 
 def _register_exit_handlers() -> None:
+    """Install ``atexit`` and best-effort SIGTERM/SIGINT handlers.
+
+    Idempotent — repeat calls are no-ops. Signal installation may fail
+    on restricted runtimes (non-main thread, embedded interpreters);
+    those paths fall back to ``atexit`` alone.
+    """
     global _exit_handlers_registered, _prior_sigterm, _prior_sigint
     if _exit_handlers_registered:
         return
@@ -804,6 +1011,7 @@ def _register_exit_handlers() -> None:
 
 
 def _shutdown() -> None:
+    """Flush trailing data and stop the supervisor; safe at interpreter exit."""
     try:
         flush_now()
     except Exception:
@@ -815,6 +1023,12 @@ def _shutdown() -> None:
 
 
 def _signal_handler(signum: int, frame: Any) -> None:
+    """Run ``_shutdown`` then chain through the prior disposition.
+
+    Args:
+        signum (int): Signal number being handled.
+        frame (Any): Active stack frame (passed through to a chained handler).
+    """
     _shutdown()
     prior = _prior_sigterm if signum == signal.SIGTERM else _prior_sigint
     if prior == signal.SIG_IGN:

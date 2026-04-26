@@ -38,6 +38,11 @@ class SnapshotBuffer:
         self._drop_count = 0
 
     def append(self, snapshot: TraceSnapshot) -> None:
+        """Add one snapshot record (drops + bumps ``drop_count`` past cap).
+
+        Args:
+            snapshot (TraceSnapshot): The record to append.
+        """
         with self._lock:
             if len(self._items) >= self._soft_cap:
                 self._drop_count += 1
@@ -45,6 +50,11 @@ class SnapshotBuffer:
             self._items.append(snapshot)
 
     def extend(self, snapshots: list[TraceSnapshot]) -> None:
+        """Add many records, partially accepting up to the cap.
+
+        Args:
+            snapshots (list[TraceSnapshot]): The records to append.
+        """
         if not snapshots:
             return
         with self._lock:
@@ -59,6 +69,11 @@ class SnapshotBuffer:
             self._items.extend(snapshots)
 
     def drain(self) -> list[TraceSnapshot]:
+        """Atomically remove and return every retained snapshot.
+
+        Returns:
+            list[TraceSnapshot]: The drained records (ordering preserved).
+        """
         with self._lock:
             out = self._items
             self._items = []
@@ -70,6 +85,11 @@ class SnapshotBuffer:
 
     @property
     def drop_count(self) -> int:
+        """Cumulative number of records dropped due to the soft cap.
+
+        Returns:
+            int: Drop count since process start.
+        """
         return self._drop_count
 
 
@@ -78,7 +98,11 @@ _default_lock = threading.Lock()
 
 
 def get_default_snapshot_buffer() -> SnapshotBuffer:
-    """Process-wide default buffer. Mirrors ``get_default_mark_buffer``."""
+    """Process-wide default buffer. Mirrors ``get_default_mark_buffer``.
+
+    Returns:
+        SnapshotBuffer: The singleton.
+    """
     global _default_buffer
     with _default_lock:
         if _default_buffer is None:
@@ -87,6 +111,7 @@ def get_default_snapshot_buffer() -> SnapshotBuffer:
 
 
 def _reset_default_for_tests() -> None:
+    """Clear the singleton (test-only)."""
     global _default_buffer
     with _default_lock:
         _default_buffer = None

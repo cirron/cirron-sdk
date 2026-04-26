@@ -32,11 +32,26 @@ def _env_key(name: str) -> str:
     Names are documented with hyphens (``openai-api-key``) but POSIX env vars
     must be ``[A-Z0-9_]``. Uppercase and replace any other character with
     ``_`` so the call site doesn't have to care.
+
+    Args:
+        name (str): User-facing secret name.
+
+    Returns:
+        str: The matching ``CIRRON_SECRET_<NAME>`` environment variable.
     """
     return "CIRRON_SECRET_" + re.sub(r"[^A-Z0-9_]", "_", name.upper())
 
 
 def _validate_name(name: str) -> None:
+    """Reject names that could escape the ``/etc/cirron/secrets`` mount.
+
+    Args:
+        name (str): The user-supplied secret name.
+
+    Raises:
+        CirronSecretNotFound: When ``name`` is empty, contains a path
+            separator, or refers to ``.`` / ``..``.
+    """
     if not name or _INVALID_NAME_RE.search(name) or name in (".", ".."):
         raise CirronSecretNotFound(
             f"Secret name {name!r} is invalid — names must be a single key "
@@ -45,6 +60,23 @@ def _validate_name(name: str) -> None:
 
 
 def secret(name: str) -> str:
+    """Resolve a named secret via env var, then file-mount fallback.
+
+    Resolution order is ``CIRRON_SECRET_<NAME>`` env var → file under
+    ``/etc/cirron/secrets/<name>`` → raise. The returned value is never
+    logged; callers must not pass it to ``ci.mark()``.
+
+    Args:
+        name (str): Logical secret name (e.g. ``"openai-api-key"``).
+
+    Returns:
+        str: The secret value with any trailing ``\\r``/``\\n`` stripped.
+
+    Raises:
+        CirronSecretNotFound: When the name is invalid, no env var
+            matches, the mount file is missing, or the mount file is
+            present but unreadable.
+    """
     _validate_name(name)
 
     env_key = _env_key(name)

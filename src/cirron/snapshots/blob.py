@@ -48,6 +48,12 @@ def _require_safetensors() -> Any:
     Kept out of module import so the SDK stays importable without
     safetensors installed — the dependency is only needed when a user
     actually opts into ``sampled``/``full``.
+
+    Returns:
+        Any: The imported ``safetensors`` module.
+
+    Raises:
+        CirronDependencyError: When the package is not installed.
     """
     try:
         import safetensors  # noqa: F401
@@ -63,6 +69,14 @@ def _require_safetensors() -> Any:
 
 
 def _is_torch_tensor(t: Any) -> bool:
+    """Cheap torch-tensor check that doesn't import torch.
+
+    Args:
+        t (Any): Object to test.
+
+    Returns:
+        bool: ``True`` when ``t`` is a ``torch.Tensor``.
+    """
     mod = type(t).__module__
     return mod == "torch" or mod.startswith("torch.")
 
@@ -73,6 +87,12 @@ def _dtype_bytes(t: Any) -> int:
     Returns 4 when the dtype is unknown — a conservative float32 guess
     that keeps the warning threshold roughly right on exotic frameworks
     rather than silently under-reporting.
+
+    Args:
+        t (Any): Tensor-like object exposing ``dtype``.
+
+    Returns:
+        int: Bytes per element; ``4`` for unknown dtypes.
     """
     dtype = getattr(t, "dtype", None)
     if dtype is None:
@@ -84,6 +104,15 @@ def _dtype_bytes(t: Any) -> int:
 
 
 def _numel(t: Any) -> int:
+    """Total element count for ``t``.
+
+    Args:
+        t (Any): Tensor-like object; tries ``numel()`` first, falls back
+            to multiplying ``shape``.
+
+    Returns:
+        int: Number of elements; ``0`` when nothing can be derived.
+    """
     fn = getattr(t, "numel", None)
     if callable(fn):
         try:
@@ -103,10 +132,26 @@ def _numel(t: Any) -> int:
 
 
 def _total_bytes(named_tensors: list[tuple[str, Any]]) -> int:
+    """Estimate the on-disk byte cost of a batch of named tensors.
+
+    Args:
+        named_tensors (list[tuple[str, Any]]): Tensors to size.
+
+    Returns:
+        int: Sum of ``numel * dtype_bytes`` across all tensors.
+    """
     return sum(_numel(t) * _dtype_bytes(t) for _, t in named_tensors)
 
 
 def _maybe_warn_size(total_bytes: int, param_count: int, kind: str, span_id: str) -> None:
+    """Log a warning when a single snapshot exceeds ``SIZE_WARN_BYTES``.
+
+    Args:
+        total_bytes (int): Estimated blob size.
+        param_count (int): Number of tensors in the blob.
+        kind (str): ``"weights"`` or ``"gradients"``.
+        span_id (str): Span the blob attaches to (for log context).
+    """
     if total_bytes < SIZE_WARN_BYTES:
         return
     log.warning(
@@ -128,6 +173,12 @@ def _to_serializable_dict(named_tensors: list[tuple[str, Any]]) -> tuple[dict[st
     arbitrary UTF-8 strings as keys. Keeping the name identical to
     ``TraceSnapshot.tensor_name`` means consumers can do
     ``safetensors[record.tensor_name]`` without any extra mapping.
+
+    Args:
+        named_tensors (list[tuple[str, Any]]): Input pairs.
+
+    Returns:
+        tuple[dict[str, Any], bool]: ``(name_to_tensor, all_torch)``.
     """
     all_torch = True
     out: dict[str, Any] = {}
@@ -139,7 +190,14 @@ def _to_serializable_dict(named_tensors: list[tuple[str, Any]]) -> tuple[dict[st
 
 
 def _tensor_to_numpy(tensor: Any) -> Any:
-    """Best-effort single-tensor conversion used by the numpy writer path."""
+    """Best-effort single-tensor conversion used by the numpy writer path.
+
+    Args:
+        tensor (Any): Source tensor (torch / TF / numpy / generic).
+
+    Returns:
+        Any: Contiguous ``numpy.ndarray``, or ``None`` on failure.
+    """
     import numpy as np
 
     detach = getattr(tensor, "detach", None)
@@ -173,6 +231,12 @@ def _to_numpy_dict(named: dict[str, Any]) -> dict[str, Any]:
     already detached, etc.). Individual failures are logged and the
     tensor is skipped — partial capture is strictly more useful than
     dropping the entire epoch.
+
+    Args:
+        named (dict[str, Any]): Source ``{name: tensor}`` map.
+
+    Returns:
+        dict[str, Any]: ``{name: numpy_array}``; failed entries omitted.
     """
     out: dict[str, Any] = {}
     for key, tensor in named.items():
@@ -185,14 +249,30 @@ def _to_numpy_dict(named: dict[str, Any]) -> dict[str, Any]:
 
 
 def snapshot_dir(output_dir: str | Path, span_id: str) -> Path:
-    """``<output_dir>/snapshots/<span_id>/`` — the per-span blob directory."""
+    """``<output_dir>/snapshots/<span_id>/`` — the per-span blob directory.
+
+    Args:
+        output_dir (str | Path): Root output directory.
+        span_id (str): Span the directory is for.
+
+    Returns:
+        Path: ``<output_dir>/snapshots/<span_id>``.
+    """
     return Path(output_dir) / SNAPSHOTS_SUBDIR / span_id
 
 
 def blob_remote_key(span_id: str, filename: str) -> str:
     """Remote object key for the platform blob store. Mirrors the on-disk
     layout under the ``snapshots/`` prefix — the platform worker
-    uses the same path to look up the blob."""
+    uses the same path to look up the blob.
+
+    Args:
+        span_id (str): Span the blob attaches to.
+        filename (str): Blob filename (e.g. ``"weights.safetensors"``).
+
+    Returns:
+        str: ``snapshots/<span_id>/<filename>``.
+    """
     return f"{SNAPSHOTS_SUBDIR}/{span_id}/{filename}"
 
 
@@ -211,6 +291,21 @@ def serialize_tensors(
     callers must use this set (not the input names) when annotating
     records with a ``blob_uri``. ``kind`` must be ``"weights"`` or
     ``"gradients"`` — it selects the filename.
+
+    Args:
+        span_id (str): Span the blob attaches to.
+        kind (str): ``"weights"`` or ``"gradients"``.
+        named_tensors (list[tuple[str, Any]]): Tensors to serialize.
+        output_dir (str | Path): Root output directory.
+
+    Returns:
+        tuple[Path, int, set[str]] | None: ``(path, total_bytes,
+            written_keys)`` on success, or ``None`` when input is empty
+            or serialization fails.
+
+    Raises:
+        CirronDependencyError: When ``safetensors`` is not installed
+            (raised eagerly via :func:`_require_safetensors`).
     """
     if not named_tensors:
         return None

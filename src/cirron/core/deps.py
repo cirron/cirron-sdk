@@ -66,6 +66,13 @@ def probe(import_name: str) -> str | None:
     Uses ``find_spec`` rather than ``__import__`` so the module is not
     actually loaded — important for torch/tensorflow/transformers, which
     are expensive to import.
+
+    Args:
+        import_name (str): Module import name (e.g. ``"torch"``).
+
+    Returns:
+        str | None: Installed version, ``"unknown"`` if importable but
+            metadata is missing, or ``None`` when not installed.
     """
     try:
         spec = _util.find_spec(import_name)
@@ -89,6 +96,13 @@ def install_hint(extras: Iterable[str]) -> str:
     ``extras`` may be pyproject extras names (``"hf"``) or import names
     (``"datasets"``) — both are normalized to the extras names that pip
     understands. Output is sorted and deduped for stable error messages.
+
+    Args:
+        extras (Iterable[str]): Pyproject extras names or import names.
+
+    Returns:
+        str: ``pip install 'cirron-sdk[a,b,c]'`` (or ``'cirron-sdk'``
+            when ``extras`` is empty).
     """
     import_to_extra = EXTRAS
     extra_set: set[str] = set()
@@ -105,7 +119,17 @@ def install_hint(extras: Iterable[str]) -> str:
 
 
 def _resolve_to_import_name(name: str) -> str:
-    """Normalize ``name`` (import-name or extras-name) to the import name."""
+    """Normalize ``name`` (import-name or extras-name) to the import name.
+
+    Args:
+        name (str): Either an import name or a pyproject extras name.
+
+    Returns:
+        str: The canonical import name.
+
+    Raises:
+        ValueError: When ``name`` matches neither registry side.
+    """
     if name in EXTRAS:
         return name
     # Reverse lookup: extras name → import name.
@@ -124,14 +148,15 @@ def deps(*required: str) -> dict[str, str | None]:
     ``CirronDependencyError`` listing all missing ones if any are missing.
 
     Args:
-        *required: Import names (``"torch"``, ``"datasets"``) or extras
-            names (``"hf"``). Unknown names raise ``ValueError`` — that's a
-            caller bug, not a missing dep.
+        *required (str): Import names (``"torch"``, ``"datasets"``) or
+            extras names (``"hf"``). Unknown names raise ``ValueError``
+            — that's a caller bug, not a missing dep.
 
     Returns:
-        Dict keyed by import name. In the no-arg form, includes every
-        known extra. In the required-args form, includes only the requested
-        ones (all present — missing ones would have raised).
+        dict[str, str | None]: Dict keyed by import name. In the no-arg
+            form, includes every known extra. In the required-args form,
+            includes only the requested ones (all present — missing ones
+            would have raised).
 
     Raises:
         CirronDependencyError: When ``required`` is non-empty and any of

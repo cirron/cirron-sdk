@@ -38,13 +38,23 @@ def set_fallback_span_id(span_id: str | None) -> None:
     """Set (or clear with ``None``) the span id that ``mark()`` uses when
     no scope is open on the current thread. Called by ``ci.profile()``
     with the session root scope's id at startup, and with ``None`` at
-    shutdown."""
+    shutdown.
+
+    Args:
+        span_id (str | None): Session root scope id, or ``None`` to
+            restore the legacy ``"root"`` sentinel fallback.
+    """
     global _fallback_span_id
     _fallback_span_id = span_id
 
 
 def get_fallback_span_id() -> str | None:
-    """Accessor for the current fallback span id. Exists for tests."""
+    """Accessor for the current fallback span id. Exists for tests.
+
+    Returns:
+        str | None: The current fallback id, or ``None`` when no
+            profiler is attached.
+    """
     return _fallback_span_id
 
 
@@ -69,6 +79,14 @@ class Mark:
     ``Scope``: a positional ``__init__`` + ``__slots__`` shaves a few
     hundred ns per call off of ``ci.mark()``, which matters against the
     3 μs budget on slow CI cores.
+
+    Constructor parameters: ``id`` is a 32-char hex string;
+    ``span_id`` is the owning span's id (or the session-root fallback);
+    ``name`` is the metric name; ``value_type`` is one of ``"float"`` /
+    ``"int"`` / ``"string"`` / ``"bool"``; ``value`` is the coerced
+    scalar; ``attrs`` is an optional metadata dict (``None`` is replaced
+    with a fresh empty dict for backwards-compat); ``ts_ns`` is wall
+    time from ``time.time_ns``; ``kind`` is ``"point"`` or ``"summary"``.
     """
 
     __slots__ = ("id", "span_id", "name", "value_type", "value", "attrs", "ts_ns", "kind")
@@ -101,7 +119,11 @@ class Mark:
 class _MarkState:
     """Per-thread mark state. One distinct instance per thread, held both
     in a ``threading.local`` fast-path cache and in the owning buffer's
-    registry so cross-thread draining can enumerate every producer."""
+    registry so cross-thread draining can enumerate every producer.
+
+    Constructor parameter ``capacity`` is the ``deque`` ``maxlen`` so
+    overflow drops oldest in O(1).
+    """
 
     __slots__ = ("buffer", "drop_count", "warned_overflow", "__weakref__")
 
@@ -118,6 +140,10 @@ class MarkBuffer:
     drop-oldest when full. A shadow dict of every thread's state lets a
     consumer (the flush thread) enumerate all producers via
     ``drain_all()``.
+
+    Constructor parameters: ``capacity`` (``int``) sets the per-thread
+    ring depth; ``wake_event`` (``threading.Event | None``) is poked
+    on overflow so the flush thread can drain ahead of its interval.
     """
 
     def __init__(
@@ -136,6 +162,15 @@ class MarkBuffer:
         self._states: dict[int, _MarkState] = {}
 
     def _get_state(self) -> _MarkState:
+        """Return the calling thread's ``_MarkState``, allocating on first touch.
+
+        Cold path lazily creates the state and registers it under the
+        thread id so cross-thread draining can find it. Hot path is a
+        single attribute read.
+
+        Returns:
+            _MarkState: Per-thread state.
+        """
         try:
             return self._local.state  # type: ignore[no-any-return]
         except AttributeError:
@@ -149,9 +184,24 @@ class MarkBuffer:
 
     @property
     def _state(self) -> _MarkState:
+        """Property alias for :meth:`_get_state`.
+
+        Returns:
+            _MarkState: Same as :meth:`_get_state`.
+        """
         return self._get_state()
 
     def append(self, mark: Mark) -> None:
+        """Append a mark to the calling thread's ring buffer.
+
+        Drops oldest on overflow (``deque(maxlen=...)`` semantics) and
+        increments the per-thread drop counter. The first overflow on a
+        thread emits a single ``UserWarning`` and pokes the wake event
+        so the flush thread can drain ahead of its interval.
+
+        Args:
+            mark (Mark): The mark to enqueue. Adopted directly — no copy.
+        """
         state = self._state
         buf = state.buffer
         if len(buf) == self._capacity:
@@ -172,7 +222,13 @@ class MarkBuffer:
         buf.append(mark)
 
     def drain(self) -> list[Mark]:
-        """Drain *this thread's* marks (producer thread only)."""
+        """Drain *this thread's* marks (producer thread only).
+
+        Returns:
+            list[Mark]: Snapshot of the per-thread ring; the underlying
+                deque is replaced with a fresh empty one of the same
+                capacity.
+        """
         state = self._state
         old = state.buffer
         state.buffer = deque(maxlen=self._capacity)
@@ -182,7 +238,11 @@ class MarkBuffer:
         """Drain marks across every producer thread. Safe from any thread —
         ``deque.popleft`` is atomic under the GIL, so a concurrent producer
         append is not lost (it lands in the same deque and is picked up on
-        the next call)."""
+        the next call).
+
+        Returns:
+            list[Mark]: All marks drained from every producer thread.
+        """
         out: list[Mark] = []
         with self._states_lock:
             states = list(self._states.values())
@@ -196,23 +256,48 @@ class MarkBuffer:
         return out
 
     def set_wake_event(self, event: threading.Event | None) -> None:
+        """Install (or clear) the cross-thread wake event used on overflow.
+
+        Args:
+            event (threading.Event | None): Event the buffer ``set()``s
+                when a per-thread ring fills, or ``None`` to disable.
+        """
         self._wake_event = event
 
     def drop_count(self) -> int:
+        """Drops on the calling thread's ring buffer.
+
+        Returns:
+            int: Per-thread drop count.
+        """
         return self._state.drop_count
 
     def drop_count_all(self) -> int:
         """Sum drop counts across every producer thread. See
-        ``ScopeStack.drop_count_all`` for rationale."""
+        ``ScopeStack.drop_count_all`` for rationale.
+
+        Returns:
+            int: Process-wide cumulative mark drops.
+        """
         with self._states_lock:
             states = list(self._states.values())
         return sum(s.drop_count for s in states)
 
     def depth(self) -> int:
+        """Number of marks currently held in the calling thread's buffer.
+
+        Returns:
+            int: Per-thread queue depth.
+        """
         return len(self._state.buffer)
 
     @property
     def capacity(self) -> int:
+        """Per-thread ring capacity.
+
+        Returns:
+            int: The ``maxlen`` set at construction.
+        """
         return self._capacity
 
 
@@ -233,7 +318,12 @@ _default_buffer_capacity = _default_buffer._capacity
 def _get_default_mark_state() -> _MarkState:
     """Cold path for the inlined ``mark()`` append — called once per
     producer thread to create and register a ``_MarkState``. Kept out
-    of ``mark()`` so the hot path stays small."""
+    of ``mark()`` so the hot path stays small.
+
+    Returns:
+        _MarkState: The newly-created (or already-cached) per-thread
+            state for the default mark buffer.
+    """
     return _default_buffer._get_state()
 
 
@@ -253,6 +343,9 @@ def get_default_mark_buffer() -> MarkBuffer:
     """Accessor for the process-wide default mark buffer. The flush
     thread uses this to drain marks; tests use it to inspect state
     without going through the module-level ``mark()`` API.
+
+    Returns:
+        MarkBuffer: The module-level ``_default_buffer``.
     """
     return _default_buffer
 
@@ -277,6 +370,19 @@ def mark(
     session root id set by ``ci.profile()``. With no active profiler
     (tests, pre-profile imports) it falls back to the legacy ``"root"``
     sentinel.
+
+    Args:
+        name (str): Metric name (e.g. ``"loss"``, ``"lr"``).
+        value (float | int | str | bool): Coerced scalar value. String
+            values longer than ``MAX_STRING_BYTES`` are truncated at the
+            nearest valid UTF-8 boundary.
+        kind (str): ``"point"`` (default) or ``"summary"``.
+        **attrs (Any): Optional metadata stored as ``mark.attrs``.
+
+    Raises:
+        ValueError: If ``kind`` is neither ``"point"`` nor ``"summary"``.
+        TypeError: If ``value`` isn't a ``float``, ``int``, ``str``, or
+            ``bool`` (or a subclass thereof).
     """
     if kind not in _VALID_KINDS:
         raise ValueError(

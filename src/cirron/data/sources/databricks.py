@@ -41,9 +41,27 @@ class DatabricksDataSource(DataSource):
         self.cirron = cirron
 
     def validate(self) -> bool:
+        """Always ``True`` — connection probes are deferred to ``load``.
+
+        Returns:
+            bool: ``True``.
+        """
         return True
 
     def load(self) -> Any:
+        """Open a Databricks SQL connection, run the composed ``SELECT``,
+        return a DataFrame.
+
+        Returns:
+            Any: A pandas DataFrame produced by :func:`execute_to_pandas`.
+
+        Raises:
+            CirronDependencyError: If ``databricks-sql-connector`` is not
+                installed.
+            CirronPlatformRequired: If the HTTP path can't be resolved
+                from the platform integration or ``DATABRICKS_HTTP_PATH``,
+                or if credential resolution fails.
+        """
         databricks_sql = require_driver("databricks.sql", "databricks")
         creds = CredentialResolver(self.cirron, self.uri).resolve()
 
@@ -76,4 +94,15 @@ class DatabricksDataSource(DataSource):
 
 
 def build_source(uri_str: str, cirron: Cirron, request: LoadRequest | None) -> DatabricksDataSource:
+    """Factory used by the load dispatcher.
+
+    Args:
+        uri_str (str): The raw ``databricks://...`` URI.
+        cirron (Cirron): Active Cirron instance for credential
+            resolution.
+        request (LoadRequest | None): Per-call request.
+
+    Returns:
+        DatabricksDataSource: A source ready to ``load()``.
+    """
     return DatabricksDataSource(parse_sql_uri(uri_str), cirron, request)

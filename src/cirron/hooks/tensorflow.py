@@ -20,7 +20,22 @@ log = logging.getLogger("cirron.hooks.tensorflow")
 
 
 def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> HookHandle:
-    """Install the Keras ``Model.fit`` auto-attach callback."""
+    """Install the Keras ``Model.fit`` auto-attach callback.
+
+    Defers to :func:`cirron.hooks._tf_impl.install`. Both the import and
+    the install body are wrapped — any failure logs a WARNING and
+    returns a :class:`NoopHookHandle` so a broken Keras / TensorFlow
+    environment never crashes ``ci.profile()``.
+
+    Args:
+        scope_stack (ScopeStack): Per-process scope stack.
+        cirron (Cirron): The owning :class:`Cirron` instance.
+        context (HookContext): Shared install context tracking
+            ``owned_scopes`` across co-installed frameworks.
+
+    Returns:
+        HookHandle: The real tensorflow handle on success, otherwise a no-op.
+    """
     try:
         from cirron.hooks._tf_impl import install as _install
     except Exception:

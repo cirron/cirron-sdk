@@ -20,7 +20,22 @@ log = logging.getLogger("cirron.hooks.torch")
 
 
 def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> HookHandle:
-    """Install PyTorch forward/backward/optimizer/DataLoader hooks."""
+    """Install PyTorch forward/backward/optimizer/DataLoader hooks.
+
+    Defers to :func:`cirron.hooks._torch_impl.install`. Both the import
+    and the install body are wrapped — any failure logs a WARNING and
+    returns a :class:`NoopHookHandle` so a broken torch environment never
+    crashes ``ci.profile()``.
+
+    Args:
+        scope_stack (ScopeStack): Per-process scope stack.
+        cirron (Cirron): The owning :class:`Cirron` instance.
+        context (HookContext): Shared install context tracking
+            ``owned_scopes`` across co-installed frameworks.
+
+    Returns:
+        HookHandle: The real torch handle on success, otherwise a no-op.
+    """
     try:
         from cirron.hooks._torch_impl import install as _install
     except Exception:

@@ -27,6 +27,17 @@ DEFAULT_EPOCH_STEPS = 1000
 
 
 def _catch(label: str, fn: Any, *args: Any, **kwargs: Any) -> Any:
+    """Call ``fn(*args, **kwargs)``; log + swallow exceptions.
+
+    Args:
+        label (str): Diagnostic label included in the log line.
+        fn (Any): Callable to invoke under the guard.
+        *args (Any): Positional args forwarded to ``fn``.
+        **kwargs (Any): Keyword args forwarded to ``fn``.
+
+    Returns:
+        Any: ``fn``'s return value, or ``None`` if it raised.
+    """
     try:
         return fn(*args, **kwargs)
     except Exception:
@@ -61,12 +72,29 @@ class TorchHookHandle:
         self._installed = False
 
     def add_undo(self, label: str, fn: Any) -> None:
+        """Record a labeled undo callback to fire in ``uninstall``.
+
+        Args:
+            label (str): Diagnostic label logged on undo failure.
+            fn (Any): Zero-arg callable that reverses one patch.
+        """
         self._undos.append((label, fn))
 
     def add_hook(self, h: Any) -> None:
+        """Record a torch hook handle so ``uninstall`` can call ``.remove()``.
+
+        Args:
+            h (Any): The handle returned by ``register_*_hook``.
+        """
         self._hook_handles.append(h)
 
     def uninstall(self) -> None:
+        """Reverse every recorded patch and registered hook.
+
+        Drains pending CUDA event pairs (best-effort, with a device sync)
+        before releasing references, then removes torch hooks and runs
+        undo callbacks in LIFO order so layered patches unwind cleanly.
+        """
         if not self._installed:
             return
         self._installed = False
@@ -93,6 +121,11 @@ def _drain_cuda(pending: _CudaPending, *, force: bool = False) -> None:
 
     ``force=True`` synchronizes the device first so every pending pair
     resolves — used on shutdown/uninstall.
+
+    Args:
+        pending (_CudaPending): Bookkeeping for in-flight event pairs.
+        force (bool): When ``True``, sync the device and drain everything;
+            when ``False``, only drain pairs whose end event has completed.
     """
     if not pending.items:
         return
@@ -126,6 +159,15 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
     skips its own epoch rotation path — otherwise HF ``Trainer``, which
     drives the patched ``DataLoader.__iter__`` itself, would cause two
     ``epoch`` spans per epoch.
+
+    Args:
+        scope_stack (ScopeStack): Per-process scope stack.
+        cirron (Cirron): The owning :class:`Cirron` instance.
+        context (HookContext): Shared install context — see
+            ``hooks/_registry.py``.
+
+    Returns:
+        TorchHookHandle: Handle whose ``uninstall()`` reverses every patch.
     """
     import torch
     from torch.utils.data import DataLoader
@@ -145,9 +187,19 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
     # vanilla torch loop with transformers importable but unused still
     # gets its own epoch/step spans.
     def _skip_epoch() -> bool:
+        """Return ``True`` when another framework owns the ``epoch`` scope.
+
+        Returns:
+            bool: Whether torch should yield its own epoch rotation.
+        """
         return "epoch" in context.owned_scopes
 
     def _skip_step() -> bool:
+        """Return ``True`` when another framework owns the ``step`` scope.
+
+        Returns:
+            bool: Whether torch should yield its own implicit step span.
+        """
         return "step" in context.owned_scopes
 
     epoch_steps = _resolve_epoch_steps(cirron)
@@ -171,6 +223,15 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
     }
 
     def _open(name: str, **attrs: Any) -> Scope | None:
+        """Push a scope, swallowing exceptions.
+
+        Args:
+            name (str): Span name.
+            **attrs (Any): Attrs attached to the new scope.
+
+        Returns:
+            Scope | None: The pushed scope, or ``None`` on failure.
+        """
         try:
             return scope_stack.push(name, **attrs)
         except Exception:
@@ -178,6 +239,11 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
             return None
 
     def _close(scope_obj: Scope | None) -> None:
+        """Close ``scope_obj``, falling back to ``close_scope`` if it isn't on top.
+
+        Args:
+            scope_obj (Scope | None): The scope to close. ``None`` is a no-op.
+        """
         if scope_obj is None:
             return
         try:
@@ -195,6 +261,14 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
             log.warning("cirron.hooks.torch: scope close failed", exc_info=True)
 
     def _maybe_start_cuda(scope_obj: Scope | None) -> Any:
+        """Record a CUDA start event for ``scope_obj`` when CUDA is available.
+
+        Args:
+            scope_obj (Scope | None): The span being timed; ``None`` skips.
+
+        Returns:
+            Any: A recorded ``torch.cuda.Event`` or ``None``.
+        """
         if scope_obj is None or pending_cuda is None:
             return None
         try:
@@ -206,6 +280,13 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
             return None
 
     def _maybe_end_cuda(scope_obj: Scope | None, start_ev: Any) -> None:
+        """Record the CUDA end event paired with ``start_ev`` and reap finished pairs.
+
+        Args:
+            scope_obj (Scope | None): The span being timed.
+            start_ev (Any): The matching start event from
+                :func:`_maybe_start_cuda`.
+        """
         if scope_obj is None or start_ev is None or pending_cuda is None:
             return
         try:
@@ -225,6 +306,15 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
     fwd_cuda_stack = threading.local()
 
     def _fwd_pre(module: Any, _inputs: Any) -> None:
+        """Forward pre-hook: open a ``forward`` scope only at outermost depth.
+
+        Records ``mode=train|eval`` based on ``module.training`` and starts
+        a CUDA timing event when CUDA is available.
+
+        Args:
+            module (Any): The torch module about to run forward.
+            _inputs (Any): Forward inputs (unused).
+        """
         fwd_depth.n += 1
         if fwd_depth.n != 1:
             return
@@ -244,6 +334,13 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
         fwd_cuda_stack.ev.append(start_ev)
 
     def _fwd_post(_module: Any, _inputs: Any, _output: Any) -> None:
+        """Forward post-hook: close the ``forward`` scope opened by the pre-hook.
+
+        Args:
+            _module (Any): The torch module (unused).
+            _inputs (Any): Forward inputs (unused).
+            _output (Any): Forward output (unused).
+        """
         try:
             if fwd_depth.n == 1:
                 scope_obj = fwd_depth.scope
@@ -259,9 +356,27 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
                 fwd_depth.n -= 1
 
     def _fwd_pre_safe(*a: Any, **kw: Any) -> Any:
+        """Exception-swallowing wrapper around :func:`_fwd_pre`.
+
+        Args:
+            *a (Any): Positional args from the torch hook dispatcher.
+            **kw (Any): Keyword args from the torch hook dispatcher.
+
+        Returns:
+            Any: Whatever :func:`_fwd_pre` returns (always ``None``).
+        """
         return _catch("forward_pre", _fwd_pre, *a, **kw)
 
     def _fwd_post_safe(*a: Any, **kw: Any) -> Any:
+        """Exception-swallowing wrapper around :func:`_fwd_post`.
+
+        Args:
+            *a (Any): Positional args from the torch hook dispatcher.
+            **kw (Any): Keyword args from the torch hook dispatcher.
+
+        Returns:
+            Any: Whatever :func:`_fwd_post` returns (always ``None``).
+        """
         return _catch("forward_post", _fwd_post, *a, **kw)
 
     try:
@@ -280,6 +395,18 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
     orig_tensor_backward = torch.Tensor.backward
 
     def _tensor_backward(self: Any, *a: Any, **kw: Any) -> Any:
+        """Patched ``Tensor.backward``: open a ``backward`` scope around the call.
+
+        Args:
+            self (Any): The tensor whose ``.backward()`` was invoked.
+            *a (Any): Positional args forwarded to the original
+                ``Tensor.backward``.
+            **kw (Any): Keyword args forwarded to the original
+                ``Tensor.backward``.
+
+        Returns:
+            Any: Whatever the original ``Tensor.backward`` returns.
+        """
         scope_obj = _open("backward")
         start_ev = _maybe_start_cuda(scope_obj)
         try:
@@ -300,8 +427,21 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
     orig_autograd_backward = torch.autograd.backward
 
     def _autograd_backward(*a: Any, **kw: Any) -> Any:
-        # Only open a scope if one isn't already (Tensor.backward delegates
-        # to autograd.backward internally).
+        """Patched ``torch.autograd.backward``: open a ``backward`` scope when fresh.
+
+        Only opens a scope if one isn't already on top — ``Tensor.backward``
+        delegates to ``autograd.backward`` internally, and we don't want
+        double spans.
+
+        Args:
+            *a (Any): Positional args forwarded to the original
+                ``autograd.backward``.
+            **kw (Any): Keyword args forwarded to the original
+                ``autograd.backward``.
+
+        Returns:
+            Any: Whatever ``torch.autograd.backward`` returns.
+        """
         already = _current_name(scope_stack) == "backward"
         scope_obj = None if already else _open("backward")
         start_ev = None if already else _maybe_start_cuda(scope_obj)
@@ -330,6 +470,13 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
     opt_cuda_stack = threading.local()
 
     def _opt_pre(_optimizer: Any, _args: Any, _kwargs: Any) -> None:
+        """Optimizer pre-hook: open ``optimizer_step`` and start CUDA timing.
+
+        Args:
+            _optimizer (Any): The optimizer instance (unused).
+            _args (Any): Optimizer step args (unused).
+            _kwargs (Any): Optimizer step kwargs (unused).
+        """
         scope_obj = _open("optimizer_step")
         start_ev = _maybe_start_cuda(scope_obj)
         if not hasattr(opt_cuda_stack, "entries"):
@@ -337,6 +484,17 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
         opt_cuda_stack.entries.append((scope_obj, start_ev))
 
     def _opt_post(_optimizer: Any, _args: Any, _kwargs: Any) -> None:
+        """Optimizer post-hook: close ``optimizer_step`` and rotate epoch state.
+
+        Stashes grad refs (so the epoch-boundary snapshot can read them
+        after ``zero_grad``), closes the implicit ``step`` scope, and
+        triggers an epoch rotation when the step-count fallback fires.
+
+        Args:
+            _optimizer (Any): The optimizer instance (unused).
+            _args (Any): Optimizer step args (unused).
+            _kwargs (Any): Optimizer step kwargs (unused).
+        """
         entries = getattr(opt_cuda_stack, "entries", None)
         scope_obj = None
         start_ev = None
@@ -370,9 +528,27 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
             _rotate_epoch()
 
     def _opt_pre_safe(*a: Any, **kw: Any) -> Any:
+        """Exception-swallowing wrapper around :func:`_opt_pre`.
+
+        Args:
+            *a (Any): Positional args from the optimizer hook dispatcher.
+            **kw (Any): Keyword args from the optimizer hook dispatcher.
+
+        Returns:
+            Any: Whatever :func:`_opt_pre` returns (always ``None``).
+        """
         return _catch("optimizer_pre", _opt_pre, *a, **kw)
 
     def _opt_post_safe(*a: Any, **kw: Any) -> Any:
+        """Exception-swallowing wrapper around :func:`_opt_post`.
+
+        Args:
+            *a (Any): Positional args from the optimizer hook dispatcher.
+            **kw (Any): Keyword args from the optimizer hook dispatcher.
+
+        Returns:
+            Any: Whatever :func:`_opt_post` returns (always ``None``).
+        """
         return _catch("optimizer_post", _opt_post, *a, **kw)
 
     try:
@@ -401,6 +577,13 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
     grad_refs_state: dict[str, list[tuple[str, Any]]] = {"refs": []}
 
     def _stash_grad_refs() -> None:
+        """Capture ``(name, .grad)`` pairs for the watched model post-step.
+
+        Runs at the end of each optimizer step so the epoch-boundary
+        snapshot can serialize grads even after the user's
+        ``opt.zero_grad(set_to_none=True)`` has nulled ``Parameter.grad``.
+        Silently no-ops when snapshots are off or no model is registered.
+        """
         from cirron.core.profiler import get_watched_model
 
         if cirron.snapshots not in ("stats", "sampled", "full"):
@@ -431,6 +614,9 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
         by now. The refs are handed through to ``capture`` so the
         sampled/full blob path serializes the stashed grads instead of
         trying (and failing) to re-read them off the live parameters.
+
+        Args:
+            span_id (str): Id of the epoch span the snapshot records link to.
         """
         from cirron.core.profiler import get_watched_model
         from cirron.core.snapshot_buffer import get_default_snapshot_buffer
@@ -452,6 +638,9 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
         ``ScopeStack.close_and_remove`` means user scopes (and other
         hooks' scopes) sitting above the epoch stay open across the
         rotation, instead of being popped as collateral.
+
+        Args:
+            scope_obj (Scope): The (long-lived) epoch scope to remove.
         """
         try:
             scope_stack.close_and_remove(scope_obj)
@@ -459,6 +648,13 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
             log.warning("cirron.hooks.torch: unwind epoch failed", exc_info=True)
 
     def _rotate_epoch() -> None:
+        """Close the outgoing epoch span (after snapshot) and open a new one.
+
+        Drains any lingering implicit ``step`` span first so it lands as
+        a sibling of its epoch parent rather than nested into the new
+        one. Captures snapshots against the outgoing span id before the
+        unwind, since the span id is what records link to.
+        """
         # Close any step span still open from an eval-only pass through
         # the loader (no optimizer.step to close it), so new epochs don't
         # nest inside a stale step.
@@ -484,15 +680,36 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
     orig_dl_iter = DataLoader.__iter__
 
     def _dl_iter(self: Any) -> Any:
+        """Patched ``DataLoader.__iter__``: rotate the epoch and wrap the iterator.
+
+        Args:
+            self (Any): The :class:`DataLoader` instance.
+
+        Returns:
+            Any: An iterator wrapper that opens ``data_load`` (and
+                implicit ``step``) spans on each ``__next__``.
+        """
         if not _skip_epoch():
             _catch("epoch_rotate", _rotate_epoch)
         base_iter = orig_dl_iter(self)
         return _wrap_iter(base_iter)
 
     def _wrap_iter(base_iter: Any) -> Any:
+        """Wrap ``base_iter`` so each fetched item produces a ``data_load`` span.
+
+        Args:
+            base_iter (Any): The iterator returned by the original
+                ``DataLoader.__iter__``.
+
+        Returns:
+            Any: An iterator that delegates to ``base_iter`` and emits a
+                ``data_load`` span (with ``data_load_ns`` attr) per item.
+        """
         import time as _t
 
         class _CirronDLIter:
+            """Iterator proxy emitting a ``data_load`` span on each ``__next__``."""
+
             def __iter__(self) -> Any:
                 return self
 
@@ -521,6 +738,14 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
                 return item
 
             def __getattr__(self, name: str) -> Any:
+                """Forward unknown attribute reads to the wrapped iterator.
+
+                Args:
+                    name (str): Attribute name on the underlying iterator.
+
+                Returns:
+                    Any: The underlying attribute.
+                """
                 return getattr(base_iter, name)
 
         return _CirronDLIter()
@@ -537,6 +762,12 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
     # --- close-open-epoch on uninstall -------------------------------------
 
     def _close_open_epoch() -> None:
+        """Drain any open step + epoch spans on uninstall, snapshotting the final epoch.
+
+        Without this the last epoch in the run would miss its weight /
+        gradient record because ``_rotate_epoch`` only fires on the next
+        ``DataLoader.__iter__``.
+        """
         # Drain any step span first so it lands before its epoch parent.
         step_scope = step_state["scope"]
         if step_scope is not None:
@@ -557,6 +788,14 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
 
 
 def _current_name(scope_stack: ScopeStack) -> str | None:
+    """Return the name of the currently-open scope, or ``None`` on failure.
+
+    Args:
+        scope_stack (ScopeStack): Scope stack to query.
+
+    Returns:
+        str | None: The top-of-stack span name, or ``None``.
+    """
     try:
         cur = scope_stack.current()
         return cur.name if cur is not None else None
@@ -565,6 +804,16 @@ def _current_name(scope_stack: ScopeStack) -> str | None:
 
 
 def _resolve_epoch_steps(cirron: Cirron) -> int:
+    """Read the optional ``torch.epoch_steps`` config, falling back to the default.
+
+    Args:
+        cirron (Cirron): The owning :class:`Cirron` instance whose
+            resolved profiling config supplies the override.
+
+    Returns:
+        int: Steps-per-epoch threshold for the fallback rotation path
+            (defaults to :data:`DEFAULT_EPOCH_STEPS`).
+    """
     try:
         cfg = getattr(cirron, "_profile_config", None) or {}
         value = cfg.get("torch", {}).get("epoch_steps") if isinstance(cfg, dict) else None
