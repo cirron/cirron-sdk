@@ -116,7 +116,7 @@ We ship a minimal core install (`pip install cirron-sdk` with no extras) and gat
 6. **Document it in the PR.** The PR template has a "New dependencies" section. List each new dep as `name >= version (runtime/dev/extra): reason`. Example:
    ```
    - pyarrow >= 17.0.0 (runtime, optional extra [arrow]): needed for Parquet column pushdown in ci.load().
-   - httpx == 0.27.2 (dev): replaces requests in test fixtures for HTTP/2 support.
+   - httpx >= 0.27.2 (dev): replaces requests in test fixtures for HTTP/2 support.
    ```
 
 If you're adding a new optional extra, also update the README install table.

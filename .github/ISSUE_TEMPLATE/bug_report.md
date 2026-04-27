@@ -21,7 +21,7 @@ ci.profile()
 ```
 
 **Environment**
-Paste the output that captures your environment. Ether of the following works. 
+Paste the output that captures your environment. Either of the following works. 
 
 Option A: `ci.deps()`:
 
