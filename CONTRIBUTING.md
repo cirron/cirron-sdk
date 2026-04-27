@@ -16,7 +16,7 @@ Before opening a bug report, search the [issue tracker](https://github.com/cirro
 
 - A clear, descriptive title.
 - A minimal Python reproducer (the smallest `import cirron as ci; ...` snippet that triggers it).
-- The output of `uv run python -c "import cirron as ci, sys; print('python', sys.version); print(ci.deps())"`.
+- Your environment (Python version, Cirron SDK version, and relevant frameworks installed). Either `uv run python -c "import cirron as ci, sys; print('python', sys.version); print(ci.deps())"` or a plain `pip list 2>/dev/null | grep -iE 'cirron|torch|tensorflow|transformers|pandas|polars|numpy'` works.
 - OS, hardware (CPU only / NVIDIA GPU + CUDA version / Apple Silicon / TPU), and any framework versions involved.
 
 ### Suggesting enhancements

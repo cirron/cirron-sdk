@@ -58,10 +58,10 @@ In scope:
 - Vulnerabilities in the SDK's interaction with the local spool / snapshot directories (`./.cirron/`).
 - Vulnerabilities in the SDK's network transports (HTTP / kernel event stream) when configured against the Cirron platform.
 
-Out of scope (please report to the upstream project, not us):
+Out of scope:
 
-- Vulnerabilities in third-party dependencies (`torch`, `tensorflow`, `pandas`, etc.).
-- Vulnerabilities in the Cirron platform backend (email `security@cirron.com` separately and mark the subject "platform").
+- Vulnerabilities in third-party dependencies (`torch`, `tensorflow`, `pandas`, etc.) where the SDK is not in the exploit path. Report those to the upstream project. **Exception**: if a dependency vulnerability is exploitable *through* `cirron-sdk` (e.g. a torch interaction that an attacker can reach via the SDK's hooks or transports), still report it to us. We will coordinate with upstream and ship a mitigation in our own release if warranted.
+- Vulnerabilities in the Cirron platform backend. Send these to `security@cirron.com` with the subject prefixed `[platform]` so we route them correctly.
 - Issues that require a malicious local user with filesystem write access. The SDK trusts its own spool directory by design.
 
 ## Transparency
