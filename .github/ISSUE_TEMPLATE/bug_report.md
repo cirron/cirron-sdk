@@ -21,15 +21,22 @@ ci.profile()
 ```
 
 **Environment**
-Preferred: paste the output of `ci.deps()`, which captures Python version and every relevant framework in one go:
+Paste the output that captures your environment. Ether of the following works. 
+
+Option A: `ci.deps()`:
 
 ```bash
 uv run python -c "import cirron as ci, sys; print('python', sys.version); print(ci.deps())"
 ```
 
-If `ci.deps()` itself crashes (it might, depending on the bug), paste this fallback instead:
+Option B: plain `pip list` :
 
 ```bash
+# uv project:
+uv run python --version
+uv run pip list 2>/dev/null | grep -iE 'cirron|torch|tensorflow|transformers|pandas|polars|numpy'
+
+# plain venv / system Python (activate the venv first):
 python --version
 pip list 2>/dev/null | grep -iE 'cirron|torch|tensorflow|transformers|pandas|polars|numpy'
 ```
