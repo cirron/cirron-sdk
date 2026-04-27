@@ -401,6 +401,13 @@ Platform follow-up (not SDK work):
 
 - `GET /v1/datasets/resolve` and `GET /api/integrations/resolve` endpoints — the SDK clients are in place and fail with a clear fallback message until the backend ships
 
+## Community
+
+- Questions, design discussions, "is this the right approach": [GitHub Discussions](https://github.com/cirron/cirron-sdk/discussions)
+- Bugs and feature requests: [GitHub Issues](https://github.com/cirron/cirron-sdk/issues)
+- Contributing: see [CONTRIBUTING.md](CONTRIBUTING.md)
+- Security: see [SECURITY.md](SECURITY.md)
+
 ## Further reading
 
 - Platform documentation: [docs.cirron.dev](https://docs.cirron.dev)
