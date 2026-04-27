@@ -35,11 +35,11 @@ For small fixes (typos, doc clarifications, obvious one-line bugs), feel free to
 
 A maintainer will triage within a week. Review velocity beyond triage depends on scope and current load.
 
-### Issue labels
+### PR and issue labels
 
 Most labels (`bug`, `enhancement`, `documentation`, etc.) are self-describing and documented in GitHub's label description field. The labels below have rules around *when* they may be applied, so they're documented here too:
 
-- **`skip-ci`** (PRs only): bypasses the CI workflow. Use it **only** on PRs that touch zero source code: README typos, doc-only changes under `docs/` (excluding formats/specs), or, comment-only/docstring fixes that don't change the build. **Not allowed** on anything under `src/` or `tests/`, including renames, refactors, "obviously safe" one-line changes, dependency bumps, or anything that touches `pyproject.toml`. 
+- **`skip-ci`** (PRs only): bypasses the CI workflow. Use it **only** on PRs that touch zero source code: README typos, doc-only changes under `docs/` (excluding formats/specs), or comment-only/docstring fixes that don't change the build. **Not allowed** on anything under `src/` or `tests/`, including renames, refactors, "obviously safe" one-line changes, dependency bumps, or anything that touches `pyproject.toml`.
 
 > **Note**
 > A CI run is always cheaper than a green-merged regression. 
@@ -131,7 +131,7 @@ A complete framework integration touches roughly six places:
 2. **Coexistence**: claim ownership of higher-level scopes (`epoch`, `step`) via `HookContext.owned_scopes` so lower-level hooks defer when they overlap (e.g. JAX-on-XLA running underneath HuggingFace `Trainer`). Install priority lives in `_registry.py`.
 3. **Snapshot integration**: implement a `_tensor_stats_<framework>(param) -> dict` in `src/cirron/snapshots/stats.py` that returns `{mean, std, min, max, norm, histogram[16]}` and fuses reductions wherever possible (the torch path does a single `aminmax` + algebraic norm to avoid extra device syncs; aim for the same). Add the `sampled` and `full` paths in `snapshots/sampled.py` and `snapshots/full.py`, serializing parameters to safetensors.
 4. **Watch hook**: if the framework can't expose the model object through a callback (the way Keras and HF `Trainer` do), users will need an explicit `ci.watch(model)` call to register parameters for snapshot capture. Wire that path through.
-5. **Dependencies**: add `<framework> = ["<framework>>=X.Y.Z"]` to `[project.optional-dependencies]` in `pyproject.toml`, register the install hint in `src/cirron/core/deps.py::EXTRAS`, and add a row to the install table in the README. Also document the new dependencies following the proper new dependency format.
+5. **Dependencies**: add `<framework> = ["<framework>>=X.Y.Z"]` to `[project.optional-dependencies]` in `pyproject.toml`, register the install hint in `src/cirron/core/deps.py::EXTRAS`, and add a row to the install table in the README. Document the new dep in the PR per the [Dependency policy](#dependency-policy) above.
 6. **Tests**: `tests/unit/test_hooks_<framework>.py` covering hook install / uninstall, scope tree shape, snapshot capture under each `snapshots=` mode, and graceful behavior when the framework isn't installed (`find_spec` should not import it). For frameworks with non-trivial setup, add an end-to-end demo under `/tmp/cirron_demo_<framework>.py` and mirror its sealed spool into `.cirron/spool/demo/<framework>/` for reference diffing.
 
 Update the framework support table in the README in the same PR. Move the framework from "planned" to its real status (Profiling: ✓, Snapshots: ✓ or partial, Notes: anything quirky).
