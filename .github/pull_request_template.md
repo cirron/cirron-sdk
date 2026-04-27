@@ -17,7 +17,7 @@ Closes #<issue_number>
 
 <!-- Delete this section if no new deps. Otherwise list them:
 - `pyarrow >= 17.0.0` (runtime, optional extra `[arrow]`): needed for Parquet column pushdown in `ci.load()`.
-- `httpx == 0.27.2` (dev): replaces `requests` in test fixtures for HTTP/2 support.
+- `httpx >= 0.27.2` (dev): replaces `requests` in test fixtures for HTTP/2 support.
 -->
 
 ## Trace / output sample (if applicable)

@@ -10,7 +10,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-ci') }}
+    if: ${{ github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'skip-ci') }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -24,7 +24,7 @@ jobs:
   typecheck:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-ci') }}
+    if: ${{ github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'skip-ci') }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -37,7 +37,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-ci') }}
+    if: ${{ github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'skip-ci') }}
     strategy:
       matrix:
         python-version: ['3.11', '3.13']
@@ -53,7 +53,7 @@ jobs:
   framework-torch:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-ci') }}
+    if: ${{ github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'skip-ci') }}
     strategy:
       fail-fast: false
       matrix:
@@ -88,7 +88,7 @@ jobs:
   framework-tensorflow:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-ci') }}
+    if: ${{ github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'skip-ci') }}
     strategy:
       fail-fast: false
       matrix:
@@ -117,7 +117,7 @@ jobs:
   framework-transformers:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-ci') }}
+    if: ${{ github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'skip-ci') }}
     strategy:
       fail-fast: false
       matrix:
@@ -152,7 +152,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: test
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-ci') }}
+    if: ${{ github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'skip-ci') }}
     env:
       CIRRON_RUN_OVERHEAD_TESTS: '1'
       CIRRON_OVERHEAD_RESULTS: tests/overhead/results/ci.json
