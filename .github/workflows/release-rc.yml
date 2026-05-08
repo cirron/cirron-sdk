@@ -26,11 +26,13 @@ jobs:
         env:
           HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
-          # Only inspect the commit subject (first line). Bodies often
-          # mention "[skip release]" as documentation and shouldn't trip
-          # the gate.
+          # Only inspect the commit subject (first line). The phrase
+          # "skip-release" (without brackets) is too easy to false-match
+          # against subjects that describe skip-release functionality, so
+          # we only honor the bracketed convention "[skip release]" here.
+          # PR-label skip-release is handled by auto's own logic.
           subject="$(printf '%s' "$HEAD_COMMIT_MESSAGE" | head -n1)"
-          if printf '%s' "$subject" | grep -qE '\[skip release\]|skip-release'; then
+          if printf '%s' "$subject" | grep -qF '[skip release]'; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
