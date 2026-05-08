@@ -73,4 +73,6 @@ jobs:
         if: steps.skip.outputs.skip == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx auto next
+        # --prerelease-id rc overrides auto's default of using the branch
+        # name ("next") as the suffix. Tags become vX.Y.Z-rc.N.
+        run: npx auto next --prerelease-id rc
