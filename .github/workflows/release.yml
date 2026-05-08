@@ -15,65 +15,52 @@ jobs:
   release:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Auto-release bot's own version-bump commit must not re-trigger
-    # shipit. [skip ci] is intentionally NOT honored — it gates
-    # ci.yml, not releases.
-    if: github.actor != 'github-actions[bot]'
+    # Skip when the head commit was authored by the auto-bump bot.
+    # auto_bump.sh sets author email to actions@github.com — no human
+    # commit will have that address, and matching on author email is
+    # immune to false positives from commit-subject content (commit
+    # messages that describe skip-release behavior, etc.).
+    # PR-label skip-release is handled by auto's own logic, not here.
+    if: >-
+      github.event.head_commit.author.email != 'actions@github.com'
     permissions:
       contents: write
       issues: write
       pull-requests: write
     steps:
-      - name: Check skip-release opt-out
-        id: skip
-        env:
-          HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
-        run: |
-          if printf '%s' "$HEAD_COMMIT_MESSAGE" | grep -qE '\[skip release\]|skip-release'; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Checkout
-        if: steps.skip.outputs.skip == 'false'
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.RELEASE_TOKEN }}
 
       - name: Set up Python
-        if: steps.skip.outputs.skip == 'false'
         uses: actions/setup-python@v6
         with:
           python-version: '3.13'
 
       - name: Set up uv
-        if: steps.skip.outputs.skip == 'false'
         uses: astral-sh/setup-uv@v7
 
       - name: Install Python deps
-        if: steps.skip.outputs.skip == 'false'
         run: uv sync
 
       - name: Set up Node.js
-        if: steps.skip.outputs.skip == 'false'
         uses: actions/setup-node@v6
         with:
           node-version: 22.x
 
       - name: Install auto
-        if: steps.skip.outputs.skip == 'false'
         run: |
           npm install -g \
             auto \
+            @auto-it/git-tag \
             @auto-it/exec \
             @auto-it/released \
             @auto-it/first-time-contributor \
             @auto-it/all-contributors
 
       - name: Run auto shipit
-        if: steps.skip.outputs.skip == 'false'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: npx auto shipit

@@ -455,7 +455,6 @@ wheels = [
 
 [[package]]
 name = "cirron-sdk"
-version = "0.0.1"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic" },
@@ -566,35 +565,58 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "accelerate", marker = "extra == 'all'", specifier = ">=1.1.0" },
     { name = "accelerate", marker = "extra == 'transformers'", specifier = ">=1.1.0" },
+    { name = "azure-storage-blob", marker = "extra == 'all'", specifier = ">=12.19" },
     { name = "azure-storage-blob", marker = "extra == 'azure'", specifier = ">=12.19" },
+    { name = "boto3", marker = "extra == 'all'", specifier = ">=1.28" },
     { name = "boto3", marker = "extra == 's3'", specifier = ">=1.28" },
-    { name = "cirron-sdk", extras = ["pandas", "polars", "arrow", "torch", "tensorflow", "transformers", "sklearn", "hf", "image", "s3", "gcs", "azure", "postgres", "mysql", "databricks", "snowflake", "dotenv", "safetensors"], marker = "extra == 'all'" },
-    { name = "cirron-sdk", extras = ["postgres", "mysql", "databricks", "snowflake"], marker = "extra == 'sql'" },
+    { name = "databricks-sql-connector", marker = "extra == 'all'", specifier = ">=3.0" },
     { name = "databricks-sql-connector", marker = "extra == 'databricks'", specifier = ">=3.0" },
+    { name = "databricks-sql-connector", marker = "extra == 'sql'", specifier = ">=3.0" },
+    { name = "datasets", marker = "extra == 'all'", specifier = ">=2.14" },
     { name = "datasets", marker = "extra == 'hf'", specifier = ">=2.14" },
+    { name = "google-cloud-storage", marker = "extra == 'all'", specifier = ">=2.10" },
     { name = "google-cloud-storage", marker = "extra == 'gcs'", specifier = ">=2.10" },
+    { name = "keras", marker = "extra == 'all'", specifier = ">=3" },
     { name = "keras", marker = "extra == 'tensorflow'", specifier = ">=3" },
+    { name = "pandas", marker = "extra == 'all'", specifier = ">=2.0" },
     { name = "pandas", marker = "extra == 'pandas'", specifier = ">=2.0" },
+    { name = "pillow", marker = "extra == 'all'", specifier = ">=10.0" },
     { name = "pillow", marker = "extra == 'image'", specifier = ">=10.0" },
+    { name = "polars", marker = "extra == 'all'", specifier = ">=0.20" },
     { name = "polars", marker = "extra == 'polars'", specifier = ">=0.20" },
+    { name = "psycopg", extras = ["binary"], marker = "extra == 'all'", specifier = ">=3.1" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.1" },
+    { name = "psycopg", extras = ["binary"], marker = "extra == 'sql'", specifier = ">=3.1" },
+    { name = "pyarrow", marker = "extra == 'all'", specifier = ">=14.0" },
     { name = "pyarrow", marker = "extra == 'arrow'", specifier = ">=14.0" },
     { name = "pydantic", specifier = ">=2.0" },
+    { name = "pymysql", marker = "extra == 'all'", specifier = ">=1.1" },
     { name = "pymysql", marker = "extra == 'mysql'", specifier = ">=1.1" },
+    { name = "pymysql", marker = "extra == 'sql'", specifier = ">=1.1" },
+    { name = "python-dotenv", marker = "extra == 'all'", specifier = ">=1.0" },
     { name = "python-dotenv", marker = "extra == 'dotenv'", specifier = ">=1.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "requests", specifier = ">=2.31" },
+    { name = "safetensors", marker = "extra == 'all'", specifier = ">=0.4" },
     { name = "safetensors", marker = "extra == 'safetensors'", specifier = ">=0.4" },
+    { name = "scikit-learn", marker = "extra == 'all'", specifier = ">=1.3" },
     { name = "scikit-learn", marker = "extra == 'sklearn'", specifier = ">=1.3" },
+    { name = "snowflake-connector-python", marker = "extra == 'all'", specifier = ">=3.0" },
     { name = "snowflake-connector-python", marker = "extra == 'snowflake'", specifier = ">=3.0" },
+    { name = "snowflake-connector-python", marker = "extra == 'sql'", specifier = ">=3.0" },
+    { name = "tensorflow", marker = "extra == 'all'", specifier = ">=2.14" },
     { name = "tensorflow", marker = "extra == 'tensorflow'", specifier = ">=2.14" },
+    { name = "tf-keras", marker = "extra == 'all'", specifier = ">=2.21.0" },
     { name = "tf-keras", marker = "extra == 'tensorflow'", specifier = ">=2.21.0" },
+    { name = "torch", marker = "extra == 'all'", specifier = ">=2.0" },
     { name = "torch", marker = "extra == 'torch'", specifier = ">=2.0" },
     { name = "torchvision", marker = "extra == 'overhead'", specifier = ">=0.15" },
+    { name = "transformers", marker = "extra == 'all'", specifier = ">=4.41" },
     { name = "transformers", marker = "extra == 'transformers'", specifier = ">=4.41" },
 ]
-provides-extras = ["pandas", "polars", "arrow", "torch", "overhead", "tensorflow", "transformers", "sklearn", "hf", "image", "s3", "gcs", "azure", "postgres", "mysql", "databricks", "snowflake", "sql", "dotenv", "safetensors", "all"]
+provides-extras = ["all", "arrow", "azure", "databricks", "dotenv", "gcs", "hf", "image", "mysql", "overhead", "pandas", "polars", "postgres", "s3", "safetensors", "sklearn", "snowflake", "sql", "tensorflow", "torch", "transformers"]
 
 [package.metadata.requires-dev]
 dev = [

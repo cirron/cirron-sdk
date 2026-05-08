@@ -1,6 +1,6 @@
 [project]
 name = "cirron-sdk"
-version = "0.0.1"
+dynamic = ["version"]
 description = "Deep profiling for ML training and inference"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -88,8 +88,21 @@ dev = [
 ]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+# Version is derived from the git tag at build time. Tags follow vX.Y.Z
+# (stable) or vX.Y.Z-rc.N (prerelease, from the rc branch) and are
+# created by `auto`. PEP 440 normalization happens automatically:
+# v0.1.0-rc.0 → 0.1.0rc0. Untagged dev installs get a vcs-derived
+# pseudo-version like 0.1.0.dev3+g<sha>.
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+# Write the resolved version to a generated module so `cirron.__version__`
+# works in editable installs without needing a wheel rebuild.
+version-file = "src/cirron/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cirron"]

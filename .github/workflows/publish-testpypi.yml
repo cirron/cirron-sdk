@@ -3,10 +3,6 @@ name: Publish to TestPyPI
 on:
   push:
     tags:
-      # GitHub Actions tag filters use glob, not regex — `+` is literal.
-      # Match prerelease tags only: v<digits>.<digits>.<digits>-<suffix>
-      # (e.g. v0.1.0-rc.0). The `-*` requires a hyphen, so this can't
-      # accidentally match stable tags.
       - 'v[0-9]*.[0-9]*.[0-9]*-*'
 
 permissions:
@@ -39,6 +35,10 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
+        with:
+          # hatch-vcs reads `git describe` to derive the version from
+          # the tag — needs full history, not just the tagged commit.
+          fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
