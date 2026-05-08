@@ -42,15 +42,15 @@ def _clear_cirron_env(monkeypatch) -> None:
 
 def test_explicit_endpoint_is_used(monkeypatch):
     _clear_cirron_env(monkeypatch)
-    c = Cirron(api_endpoint="https://cirron.internal.mil")
-    assert c.api_endpoint == "https://cirron.internal.mil"
+    c = Cirron(api_endpoint="https://cirron.internal.example.com")
+    assert c.api_endpoint == "https://cirron.internal.example.com"
 
 
 def test_all_explicit_kwargs_are_used(monkeypatch):
     _clear_cirron_env(monkeypatch)
     c = Cirron(
         api_key="k",
-        api_endpoint="https://cirron.internal.mil",
+        api_endpoint="https://cirron.internal.example.com",
         workspace_id="ws-1",
         output_dir="/tmp/cx/",
         snapshots="full",
@@ -60,7 +60,7 @@ def test_all_explicit_kwargs_are_used(monkeypatch):
         ingest_path="/v2/traces",
     )
     assert c.api_key == "k"
-    assert c.api_endpoint == "https://cirron.internal.mil"
+    assert c.api_endpoint == "https://cirron.internal.example.com"
     assert c.workspace_id == "ws-1"
     assert c.output_dir == "/tmp/cx/"
     assert c.snapshots == "full"
@@ -115,10 +115,10 @@ def test_explicit_cirron_drives_profiler(monkeypatch, tmp_path):
     _clear_cirron_env(monkeypatch)
     monkeypatch.chdir(tmp_path)
 
-    custom = Cirron(api_endpoint="https://cirron.internal.mil", output_dir=str(tmp_path))
+    custom = Cirron(api_endpoint="https://cirron.internal.example.com", output_dir=str(tmp_path))
     prof = custom.profile()
     assert prof.cirron is custom
-    assert prof.cirron.api_endpoint == "https://cirron.internal.mil"
+    assert prof.cirron.api_endpoint == "https://cirron.internal.example.com"
 
 
 # -- acceptance: config.toml -------------------------------------------------
