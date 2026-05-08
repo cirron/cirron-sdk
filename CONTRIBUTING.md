@@ -31,6 +31,8 @@ Feature requests go in the issue tracker too, via the [feature request template]
 4. **Test**: `uv run pytest tests/unit -v` and `uv run ruff check src tests && uv run ruff format --check src tests && uv run mypy src` must all pass locally before you push.
 5. **Submit** a PR against `main` using the [PR template](.github/pull_request_template.md). Fill out every section, especially **New dependencies**.
 
+A maintainer will apply the appropriate release label (`major` / `minor` / `patch` / `internal` / `documentation`) during review — see [Releases](#releases) for what they mean. You don't need to label the PR yourself.
+
 For small fixes (typos, doc clarifications, obvious one-line bugs), feel free to skip the issue and go straight to a PR. For non-trivial changes, open an issue first; it saves rework if the design needs iteration.
 
 A maintainer will triage within a week. Review velocity beyond triage depends on scope and current load.
