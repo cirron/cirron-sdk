@@ -1,4 +1,8 @@
-"""Cirron SDK — Python-side profiler and data loader for the Cirron platform.
+"""Cirron SDK — deep profiling and data loading for ML training and inference.
+
+Standalone-usable: produces the same open artifacts (JSON span records,
+safetensors snapshots) on a disconnected laptop, in an air-gapped
+cluster, or connected to the Cirron platform for cross-run aggregation.
 
 Surface area is defined in ``docs/spec.md``. Module-level ``ci.*``
 functions are thin delegators over the process-wide default ``Cirron``
