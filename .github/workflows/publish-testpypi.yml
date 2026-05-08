@@ -1,0 +1,67 @@
+name: Publish to TestPyPI
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-testpypi-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --all-extras
+      - run: uv run ruff check src tests
+      - run: uv run mypy src
+      - run: uv run pytest tests/unit -v
+
+  build:
+    name: Build distributions
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - uses: astral-sh/setup-uv@v7
+      - run: uv build
+      - run: uv tool run twine check dist/*
+      - uses: actions/upload-artifact@v5
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
+
+  publish:
+    name: Publish to TestPyPI
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/cirron-sdk
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
