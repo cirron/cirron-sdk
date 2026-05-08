@@ -1,8 +1,7 @@
 """Platform-resolved bucket source — ``ci.load(name, source='platform')``.
 
 Replaces the legacy ``/v1/datasets/resolve`` flow with a bucket-
-oriented contract served by the platform monorepo under
-``apps/app/app/api/data/``:
+oriented HTTP contract served by the platform:
 
     GET {api_endpoint}/api/data/{bucket}/objects?limit=<n>&prefix=<p>
     GET {api_endpoint}/api/data/{bucket}/objects/{key}
