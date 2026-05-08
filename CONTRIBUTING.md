@@ -42,8 +42,33 @@ Most labels (`bug`, `enhancement`, `documentation`, etc.) are self-describing an
 - **`skip-ci`** (PRs only): bypasses the CI workflow. Use it **only** on PRs that touch zero source code: README typos, doc-only changes under `docs/` (excluding formats/specs), or comment-only/docstring fixes that don't change the build. **Not allowed** on anything under `src/` or `tests/`, including renames, refactors, "obviously safe" one-line changes, dependency bumps, or anything that touches `pyproject.toml`.
 
 > **Note**
-> A CI run is always cheaper than a green-merged regression. 
-> If you're at all unsure, leave the label off. 
+> A CI run is always cheaper than a green-merged regression.
+> If you're at all unsure, leave the label off.
+
+## Releases
+
+Releases are driven by [`auto`](https://intuit.github.io/auto/) and triggered on merge to `main` (stable) or `next` (release candidates). The version bump is computed from PR labels — **you never hand-edit the version in `pyproject.toml`**.
+
+### Release-type labels (apply exactly one per PR)
+
+- **`major`**: breaking change. Bumps `X.y.z`.
+- **`minor`**: backwards-compatible feature. Bumps `x.Y.z`.
+- **`patch`**: backwards-compatible fix. Bumps `x.y.Z`.
+- **`internal`**: tooling / CI / dev-workflow change. No version bump, included in changelog under "Internal".
+- **`documentation`**: docs-only. No version bump.
+
+### Release-control labels
+
+- **`skip-release`** (PRs only): merging this PR will not produce a release, even if it has a release-type label. Use for metadata-only changes or stacks where another PR carries the bump. Equivalent commit-message marker: `[skip release]`.
+- **`release`**: force a release on merge even when nothing else would qualify. Rarely needed.
+
+### How prereleases work
+
+To cut a release candidate, merge PRs to the `next` branch. Auto computes the next stable version from the bump label, appends `-rc.N` (auto-incrementing), and ships to TestPyPI. Example: `main` is at `0.1.0`, you open a PR to `next` labeled `major` — auto produces `v1.0.0-rc.0`. When the RC is solid, merge `next` → `main` and auto ships the stable `v1.0.0` to PyPI.
+
+### `skip-ci` vs `skip-release`
+
+These are independent. `skip-ci` controls only the lint/test/typecheck CI on `ci.yml`; `skip-release` controls only the release workflow. Skipping CI does not skip releases, and vice versa.
 
 ## Getting set up
 
