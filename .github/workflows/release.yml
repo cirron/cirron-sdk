@@ -67,6 +67,7 @@ jobs:
         run: |
           npm install -g \
             auto \
+            @auto-it/git-tag \
             @auto-it/exec \
             @auto-it/released \
             @auto-it/first-time-contributor \

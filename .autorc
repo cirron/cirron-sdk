@@ -7,12 +7,11 @@
   "prereleaseBranches": ["rc"],
   "noVersionPrefix": false,
   "plugins": [
+    "git-tag",
     [
       "exec",
       {
-        "version": "python3 scripts/bump_version.py $ARG_0",
-        "publish": "echo 'PyPI publish handled by publish-pypi.yml on tag push'",
-        "canary": "echo 'no canary publish'"
+        "version": "python3 scripts/bump_version.py $ARG_0"
       }
     ],
     "released",
