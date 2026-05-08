@@ -1,0 +1,36 @@
+{
+  "name": "Cirron",
+  "email": "dx@cirron.com",
+  "owner": "cirron",
+  "repo": "cirron-sdk",
+  "baseBranch": "main",
+  "prereleaseBranches": [
+    {
+      "name": "next",
+      "prereleaseIdentifier": "rc"
+    }
+  ],
+  "noVersionPrefix": false,
+  "plugins": [
+    [
+      "exec",
+      {
+        "version": "uv run python scripts/bump_version.py $ARG_0",
+        "publish": "echo 'PyPI publish handled by publish-pypi.yml on tag push'",
+        "canary": "echo 'no canary publish'"
+      }
+    ],
+    "released",
+    "first-time-contributor",
+    "all-contributors"
+  ],
+  "labels": [
+    { "name": "major", "changelogTitle": "💥 Breaking Change", "description": "Increment the major version when merged", "releaseType": "major" },
+    { "name": "minor", "changelogTitle": "🚀 Enhancement", "description": "Increment the minor version when merged", "releaseType": "minor" },
+    { "name": "patch", "changelogTitle": "🐛 Bug Fix", "description": "Increment the patch version when merged", "releaseType": "patch" },
+    { "name": "skip-release", "description": "Skip the release for this PR", "releaseType": "skip" },
+    { "name": "release", "description": "Force a release for this PR", "releaseType": "release" },
+    { "name": "internal", "changelogTitle": "🏠 Internal", "description": "Changes that affect tooling or development workflow", "releaseType": "none" },
+    { "name": "documentation", "changelogTitle": "📝 Documentation", "description": "Changes to documentation only", "releaseType": "none" }
+  ]
+}
