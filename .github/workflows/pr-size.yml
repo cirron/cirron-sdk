@@ -1,0 +1,86 @@
+name: PR Size
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  label:
+    name: Label PR Size
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              per_page: 100,
+            });
+
+            const isExcluded = (f) =>
+              f === "uv.lock" ||
+              f.endsWith("/uv.lock") ||
+              f.startsWith("tests/overhead/results/");
+
+            const counted = files.filter((f) => !isExcluded(f.filename));
+            const linesChanged = counted.reduce(
+              (sum, f) => sum + f.additions + f.deletions,
+              0,
+            );
+
+            const sizes = [
+              { label: 'XS', max: 10, color: '3CBF00' },
+              { label: 'S', max: 50, color: '5D9801' },
+              { label: 'M', max: 200, color: 'FBCA04' },
+              { label: 'L', max: 500, color: 'E67409' },
+              { label: 'XL', max: Infinity, color: 'D93F0B' },
+            ];
+
+            const size = sizes.find(s => linesChanged < s.max) || sizes[sizes.length - 1];
+            const labelName = `size/${size.label}`;
+
+            for (const existing of pr.labels) {
+              if (existing.name.startsWith('size/') && existing.name !== labelName) {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  name: existing.name,
+                });
+              }
+            }
+
+            try {
+              await github.rest.issues.getLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: labelName,
+              });
+            } catch {
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: labelName,
+                color: size.color,
+              });
+            }
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: [labelName],
+            });
+
+            core.info(`PR #${context.issue.number}: ${linesChanged} lines changed -> ${labelName}`);

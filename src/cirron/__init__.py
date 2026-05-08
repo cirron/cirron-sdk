@@ -1,17 +1,21 @@
-"""Cirron SDK — Python-side profiler and data loader for the Cirron platform.
+"""Cirron SDK — deep profiling and data loading for ML training and inference.
 
-Surface area is defined in ``docs/spec.md``. Module-level ``ci.*``
-functions are thin delegators over the process-wide default ``Cirron``
-instance. Constructing ``Cirron(api_endpoint=...)``
-explicitly gives you a separate instance — methods on that instance use
-its config, without disturbing the default. This is the path for
-self-hosted endpoints, multi-workspace scenarios, and test harnesses.
+Standalone-usable: produces the same open artifacts (JSON span records,
+safetensors snapshots) on a disconnected laptop, in an air-gapped
+cluster, or connected to the Cirron platform for cross-run aggregation.
 
-The full surface — ``profile`` / ``scope`` / ``mark`` / ``epochs`` /
+The full public surface — ``profile`` / ``scope`` / ``mark`` / ``epochs`` /
 ``batches`` / hooks / snapshots / ``inference`` / ``load`` / ``env`` /
-``secret`` / ``Cirron`` — is live. A handful of ``load()`` parameters
-(``search=`` / ``top_k=``) accept input but raise ``NotImplementedError``
-until the platform vector index ships.
+``secret`` / ``Cirron`` — is documented in the project README. Module-level
+``ci.*`` functions are thin delegators over the process-wide default
+``Cirron`` instance. Constructing ``Cirron(api_endpoint=...)`` explicitly
+gives you a separate instance whose methods use its own config without
+disturbing the default — the path for self-hosted endpoints,
+multi-workspace scenarios, and test harnesses.
+
+A handful of ``load()`` parameters (``search=`` / ``top_k=``) accept
+input but raise ``NotImplementedError`` until the platform vector index
+ships.
 """
 
 from __future__ import annotations

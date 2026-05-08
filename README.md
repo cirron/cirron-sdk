@@ -1,64 +1,33 @@
 # Cirron SDK
 
-Deep instrumentation for ML training and inference workloads.
+Deep profiling for ML training and inference.
 
-The SDK attaches to your code and records what's happening inside it — per-epoch compute time, weight and gradient statistics, data loader stalls, GPU memory, cost attribution. It produces the same open artifacts whether it's running on your laptop with no network, in an air-gapped cluster, or connected to the Cirron platform.
+`cirron-sdk` attaches to your training or inference code with a single function call and records per-epoch and per-batch timing, weight and gradient statistics, DataLoader stalls, GPU utilization, and cost attribution. Output is structured JSON span records (`./.cirron/spool/`) plus optional safetensors snapshots — both versioned, both documented, both consumable by any tool that reads those formats.
 
-It is not a model framework. It is not a tracking dashboard. It is a profiler. When connected to the Cirron platform, it gains aggregation across runs, epoch-over-epoch diffing, cost attribution, live streaming, and team visibility — but the SDK itself is standalone-usable.
+The SDK is standalone-usable: it works on a disconnected laptop, in an air-gapped cluster, or connected to the [Cirron platform](https://cirron.com) for cross-run aggregation, dashboards, and team visibility. Setting `CIRRON_API_KEY` is the only difference between modes.
 
-> The SDK works standalone. The platform makes it powerful. (Same relationship as `git` to GitHub — the repo is portable; the collaboration is where the value is.)
-
-## The wedge
-
-You're 10 epochs into a training run. Loss spikes. Throughput halves. You want to know why, and you want to know it against every other run you've done.
+## Quick start
 
 ```python
 import cirron as ci
 
-ci.profile()  # attaches to the process, detects torch, installs hooks
+ci.profile()  # auto-detects torch / tensorflow / transformers and installs hooks
 
 for epoch in range(20):
-    for batch in loader:          # DataLoader iteration → batch scopes, automatically
-        loss = train_step(batch)  # forward / backward / optimizer_step → scopes, automatically
+    for batch in loader:
+        loss = train_step(batch)
         ci.mark("loss", loss.item())
 ```
 
-One line of setup. No scope wrapping, no callbacks, no manual instrumentation. Framework hooks detect epoch and batch boundaries, wrap the forward/backward/optimizer passes, and time the DataLoader — all from `ci.profile()` alone. The same zero-touch experience works for `Trainer.train()` (transformers) and `model.fit()` (Keras).
+`ci.profile()` installs framework-appropriate hooks: forward / backward / optimizer scopes and CUDA events for PyTorch, a `Callback` for Keras, a `TrainerCallback` for HuggingFace `transformers`. Per-epoch weight and gradient statistics are captured by default. See [`profile()`](#profile) below for the full surface.
 
-With no other changes, you now get:
-
-- Wall time, GPU seconds, and memory peak attributed to every epoch and batch
-- Weight and gradient statistics (mean, std, norm, histogram) per epoch by default
-- Data loader stall time vs. compute time, broken out
-- Cost in dollars, computed from the instance type Cirron already knows about
-- Epoch-over-epoch diffs against prior runs of the same pipeline
-
-When epoch 10 goes sideways, you see where the time went, what the weights looked like compared to epoch 9, and whether the same thing happened last Tuesday.
-
-## Standalone or platform
-
-The SDK is useful on its own. `ci.profile()` with no credentials writes traces to `./.cirron/` as structured JSON span records and safetensors snapshots (both open formats — documented, versioned, consumable by any tool). Inspect them from inside Python:
+Read traces back from Python:
 
 ```python
-import cirron as ci
-
 ci.trace()                       # pretty text tree of the current session
 ci.trace(format="df")            # pandas DataFrame, one row per span
 ci.trace(name="epoch")           # only `epoch` spans + descendants
 ```
-
-No lock-in. Your traces are yours. The `./.cirron/` directory is JSON + safetensors — readable by any tool that handles those formats.
-
-Connect to the platform when you want aggregation across runs, epoch diffing, cost attribution, live dashboards, and team visibility:
-
-```bash
-export CIRRON_API_KEY=...                # traces now flow to the platform as well
-```
-```python
-ci.profile()
-```
-
-Both modes produce the same artifacts — the platform just adds features that only make sense across many runs and many users.
 
 ## Install
 
@@ -99,7 +68,7 @@ export CIRRON_API_KEY=...
 
 When running inside a Cirron pipeline or deployment, the pipeline/deployment/run context is injected automatically. When running locally with credentials, the SDK writes to `./.cirron/` and syncs on next platform contact. When running locally *without* credentials, the SDK writes the same artifacts to `./.cirron/` — they stay there, fully usable, and you can read them back in-process with `ci.trace()` or hand the JSON / safetensors files to any tool that consumes those formats.
 
-## `profile()` — the 80% case
+## `profile()` 
 
 ```python
 import cirron as ci
@@ -126,7 +95,7 @@ ci.profile(
 
 For bare PyTorch loops where the framework hooks can't see the model object (no `Trainer`, no Keras callback), call `ci.watch(model)` once before training so snapshot capture knows which parameters to traverse. Keras and HuggingFace Trainer discover the model from the callback automatically.
 
-## `epochs()` and `batches()` — custom loops
+## `epochs()` and `batches()` 
 
 Framework hooks cover Keras, transformers, and any PyTorch loop that iterates a `DataLoader`. If you're writing a custom PyTorch loop where the hooks can't detect epoch/batch boundaries (generator-based iteration, custom samplers, training-step counters), wrap the iterables:
 
@@ -139,7 +108,7 @@ for epoch in ci.epochs(range(20)):
 
 `ci.epochs()` and `ci.batches()` are transparent iterators — `ci.epochs(range(20))` yields `0..19` exactly, opening and closing `epoch` / `batch` scopes indexed automatically around each iteration. Per-iteration overhead is a few microseconds (~4.8 μs on x86_64, ~2.8 μs on arm64).
 
-## `scope` and `mark` — power-user attribution
+## `scope` and `mark` 
 
 `scope` and `mark` are the escape hatches for regions the hooks and wrappers don't cover — custom preprocessing, postprocessing passes, beam search, alternative schedulers. Most users never need them.
 
@@ -154,7 +123,7 @@ with ci.scope("postprocess", variant="beam-search"):
 
 Scopes nest arbitrarily (max depth 64) and attach as children of whatever scope is already open — so the hooks' `epoch` / `batch` / `forward` tree stays intact and your custom scope slots in at the right level. Marks attach to the innermost open scope. Both are cheap: scope open/close runs a few microseconds (~4.4 μs on x86_64, ~2.7 μs on arm64), and the overhead is itself tracked and reported as a mark so you can see the instrumentation tax.
 
-## `trace` — read the scope tree from inside Python
+## `trace` 
 
 `ci.trace()` returns the current session's scope tree without touching the spool files. In a Jupyter cell it renders the tree inline; in a script it prints to stdout. It triggers a synchronous drain first so spans closed since the last flush tick are visible.
 
@@ -174,7 +143,7 @@ ci.trace(last=5)                   # 5 most recently closed spans
 
 `format="df"` requires pandas (`pip install 'cirron-sdk[pandas]'`); the other formats have no extra dependencies. `ci.trace()` is read-only — it never writes spool files, so it's safe in notebooks and on read-only filesystems.
 
-## `@inference` — instrumenting served models
+## `@inference` 
 
 ```python
 @ci.inference
@@ -191,7 +160,7 @@ def predict(request):
 
 Works the same inside FastAPI, Flask, or any serving framework. The decorator does not change the function signature.
 
-## `load()` — unified data access
+## `load()` 
 
 One function, flat kwargs, local-first. `source=` picks the backend explicitly (`"local"` default, `"platform"` for Cirron-managed storage). A scheme in the string (`s3://`, `gs://`, `postgres://`, ...) overrides `source=` and routes to the right driver.
 
@@ -353,6 +322,19 @@ The same pattern applies for running against multiple workspaces or control plan
 | scikit-learn         | ✓         | —         | Wrap estimators with `ci.wrap()`     |
 | JAX                  | planned   | planned   | —                                    |
 
+## Python version support
+
+`cirron-sdk` supports Python 3.11, 3.12, 3.13, and 3.14. The core SDK is pure Python and works on all four. Optional extras follow upstream wheel availability:
+
+| Extra | 3.11 | 3.12 | 3.13 | 3.14 |
+|-------|:----:|:----:|:----:|:----:|
+| `pandas`, `polars`, `arrow`, `torch`, `transformers`, `sklearn`, `hf`, `image`, `safetensors`, `dotenv`, `s3`, `gcs`, `azure`, `postgres`, `mysql` | ✓ | ✓ | ✓ | ✓ |
+| `tensorflow` | ✓ | ✓ | ✓ | ✗ |
+| `databricks` | ✓ | ✓ | ✓ | ✗ |
+| `snowflake` | ✓ | ✓ | ✓ | ✗ |
+
+The `tensorflow`, `databricks`, and `snowflake` extras pin to upstream packages whose wheels lag the latest Python release cycle. If you need any of these, pin your interpreter to Python 3.13 or earlier (e.g. via `.python-version` or `pyenv local 3.13`). Once upstream ships 3.14 wheels, this table will move; check the extra's PyPI page (`pypi.org/project/tensorflow/`, etc.) for the canonical compatibility matrix.
+
 ## Development
 
 The SDK uses `uv` for dependency management (mirroring `cirron-kernels` and `cirron-runtimes`).
@@ -410,7 +392,7 @@ Platform follow-up (not SDK work):
 
 ## Further reading
 
-- Platform documentation: [docs.cirron.dev](https://docs.cirron.dev)
+- Platform documentation: [docs.cirron.com](https://docs.cirron.com)
 - Pipelines: how `ci.profile()` context is injected
 - Deployments: how `@ci.inference` binds to deployment records
 - Self-hosted and air-gapped installations

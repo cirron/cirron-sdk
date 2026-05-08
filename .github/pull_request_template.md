@@ -13,6 +13,8 @@ Closes #<issue_number>
 - [ ] `docs/spool-format.md` bumped if the local spool format changed (it's public API).
 - [ ] New dependencies (if any) listed below with name, version, and reason. See `CONTRIBUTING.md`.
 
+> Maintainers will apply the release label (`major` / `minor` / `patch` / `internal` / `documentation` / `skip-release`) during review. No need to set it yourself — but if you have a strong opinion on the impact, mention it in the description.
+
 ## New dependencies
 
 <!-- Delete this section if no new deps. Otherwise list them:
