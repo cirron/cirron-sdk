@@ -291,7 +291,7 @@ ci.deps("torch", "pandas", "transformers")
 
 Accepts either the import name (`"datasets"`, `"sklearn"`) or the extras/install name (`"hf"`, `"sklearn"`). Unknown names raise `ValueError` — that's a caller bug, not a missing dep.
 
-The in-process equivalent of the `cirron doctor` CLI (which ships in the sibling `cirron-cli` repo and inspects the installed `cirron-sdk` METADATA from outside Python). Both use the same dependency names and install extras, but `ci.deps()` resolves them inside the SDK from a hard-coded `EXTRAS` registry, while `cirron doctor` inspects the installed package from outside Python.
+`ci.deps()` resolves extras from a hard-coded `EXTRAS` registry inside the SDK, so it can be called at the top of a script before any framework is imported. Heavy frameworks (torch, tensorflow, transformers) are never actually loaded — the check uses `importlib.util.find_spec` + `importlib.metadata.version`.
 
 ## Configuration
 
@@ -337,7 +337,7 @@ The `tensorflow`, `databricks`, and `snowflake` extras pin to upstream packages 
 
 ## Development
 
-The SDK uses `uv` for dependency management (mirroring `cirron-kernels` and `cirron-runtimes`).
+The SDK uses `uv` for dependency management.
 
 ```bash
 uv sync                          # core + dev deps
