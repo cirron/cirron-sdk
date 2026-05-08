@@ -41,13 +41,19 @@ You may not use names or marks that are too similar to ours:
 
 Redistribution of unmodified `cirron-sdk` releases (source or built artifacts from PyPI) is allowed. You may retain the Word Marks and Logos we placed on the software when distributing an official, unchanged version.
 
-### Distribution of modified source code or artifacts packaged by you
+### Distribution of artifacts you built
 
-If you compile and distribute bitwise-identical artifacts from our unmodified source, you may retain the Marks.
+If you compile and distribute bitwise-identical artifacts from our unmodified source (for example, a Linux distribution repackaging `cirron-sdk` from the PyPI sdist) you may retain the Marks.
 
-For modifications (e.g. bug fixes that preserve compatibility), label your artifacts to indicate they were built by you.
+If you make any modifications to the source (i.e. bug fixes, dependency pins, build-flag changes, vendored patches) your distribution must:
 
-Substantive changes should be treated as a fork, requiring a different package name (not `cirron-sdk` or any variant). Avoid using the Logos. You may truthfully state that "this software is derived from cirron-sdk version X.Y."
+- Use a name that does not include any of the Marks (treat the result as a fork; e.g. `myorg-cirron-sdk` is **not** acceptable, but `myorg-profiler` is).
+- Not use the Logos.
+- Optionally state truthfully: "this software is derived from cirron-sdk version X.Y."
+
+This applies even to modifications you believe preserve compatibility. We retain the Marks; you retain full rights under [Apache 2.0](LICENSE.md) to fork, modify, and redistribute the code itself under a different name.
+
+If your situation doesn't fit cleanly into the above (e.g. you're a downstream packager with a specific compatibility requirement and want to discuss), email `legal@cirron.com` before publishing.
 
 ### Compatibility, interoperability, and derivation statements
 
