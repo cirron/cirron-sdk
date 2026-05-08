@@ -1,15 +1,20 @@
 name: Publish to TestPyPI
 
+# Triggered by GitHub Release publication. Auto's `auto next` flow on
+# the rc branch creates a Pre-release. We listen to the `release` event
+# rather than `push: tags:` because auto's changelog commit carries the
+# literal "[skip ci]" directive (hardcoded in auto-core), which blocks
+# all push-triggered workflows for the tag push. The `release` event is
+# not gated by that directive.
 on:
-  push:
-    tags:
-      - 'v[0-9]*.[0-9]*.[0-9]*-*'
+  release:
+    types: [prereleased]
 
 permissions:
   contents: read
 
 concurrency:
-  group: publish-testpypi-${{ github.ref }}
+  group: publish-testpypi-${{ github.event.release.tag_name }}
   cancel-in-progress: false
 
 jobs:
@@ -19,6 +24,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
@@ -36,8 +44,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          # hatch-vcs reads `git describe` to derive the version from
-          # the tag — needs full history, not just the tagged commit.
+          ref: ${{ github.event.release.tag_name }}
           fetch-depth: 0
       - uses: actions/setup-python@v6
         with:

@@ -1,21 +1,33 @@
 name: Publish to PyPI
 
+# Triggered by GitHub Release publication (auto creates the Release as
+# part of `auto shipit` on main). We listen for the `release` event
+# instead of `push: tags:` because auto's changelog commit carries the
+# literal "[skip ci]" directive (hardcoded in auto-core), which blocks
+# all push-triggered workflows for the tag push. The `release` event is
+# not gated by that directive.
 on:
-  push:
-    tags:
-      - 'v[0-9]*.[0-9]*.[0-9]*'
-      - '!v[0-9]*.[0-9]*.[0-9]*-*'
+  release:
+    types: [published]
 
 permissions:
   contents: read
 
 concurrency:
-  group: publish-pypi-${{ github.ref }}
+  group: publish-pypi-${{ github.event.release.tag_name }}
   cancel-in-progress: false
 
 jobs:
+  filter:
+    name: Stable releases only
+    runs-on: ubuntu-latest
+    if: github.event.release.prerelease == false
+    steps:
+      - run: echo "publishing ${{ github.event.release.tag_name }} to PyPI"
+
   test:
     name: Test
+    needs: filter
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -55,8 +67,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          # hatch-vcs reads `git describe` to derive the version from
-          # the tag — needs full history, not just the tagged commit.
+          ref: ${{ github.event.release.tag_name }}
           fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
@@ -101,6 +112,6 @@ jobs:
           path: dist/
       - env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REF_NAME: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
           GITHUB_REPO: ${{ github.repository }}
-        run: gh release upload "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPO" --clobber
+        run: gh release upload "$RELEASE_TAG" dist/* --repo "$GITHUB_REPO" --clobber
