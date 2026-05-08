@@ -9,11 +9,9 @@ bare ``match="*.parquet"`` string — both are normalized to
 The filter runs client-side for the filesystem backends
 (``LocalDataSource``, ``S3DataSource``, ``GCSDataSource``,
 ``AzureDataSource``). For ``source='platform'`` the glob + extension are
-forwarded to the platform listing route, which already filters
-server-side via minimatch (see ``registered.py`` and platform route
-``apps/app/app/api/data/[bucket]/objects/route.ts``); a regex
-``filename`` can't be pushed that far, so it's re-applied here after the
-platform listing.
+forwarded to the platform listing endpoint, which filters server-side
+via minimatch (see ``registered.py``); a regex ``filename`` can't be
+pushed that far, so it's re-applied here after the platform listing.
 """
 
 from __future__ import annotations
