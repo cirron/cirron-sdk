@@ -7,17 +7,9 @@
   "prereleaseBranches": ["rc"],
   "noVersionPrefix": false,
   "plugins": [
-    [
-      "exec",
-      {
-        "version": "bash scripts/auto_bump.sh $ARG_0",
-        "next": "bash scripts/auto_bump.sh $ARG_0"
-      }
-    ],
     "git-tag",
     "released",
-    "first-time-contributor",
-    "all-contributors"
+    "first-time-contributor"
   ],
   "labels": [
     { "name": "major", "changelogTitle": "💥 Breaking Change", "description": "Increment the major version when merged", "releaseType": "major" },

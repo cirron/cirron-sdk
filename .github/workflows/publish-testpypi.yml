@@ -35,6 +35,10 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
+        with:
+          # hatch-vcs reads `git describe` to derive the version from
+          # the tag — needs full history, not just the tagged commit.
+          fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
