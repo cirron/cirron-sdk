@@ -1,64 +1,33 @@
 # Cirron SDK
 
-Deep instrumentation for ML training and inference workloads.
+Deep profiling for ML training and inference.
 
-The SDK attaches to your code and records what's happening inside it — per-epoch compute time, weight and gradient statistics, data loader stalls, GPU memory, cost attribution. It produces the same open artifacts whether it's running on your laptop with no network, in an air-gapped cluster, or connected to the Cirron platform.
+`cirron-sdk` attaches to your training or inference code with a single function call and records per-epoch and per-batch timing, weight and gradient statistics, DataLoader stalls, GPU utilization, and cost attribution. Output is structured JSON span records (`./.cirron/spool/`) plus optional safetensors snapshots — both versioned, both documented, both consumable by any tool that reads those formats.
 
-It is not a model framework. It is not a tracking dashboard. It is a profiler. When connected to the Cirron platform, it gains aggregation across runs, epoch-over-epoch diffing, cost attribution, live streaming, and team visibility — but the SDK itself is standalone-usable.
+The SDK is standalone-usable: it works on a disconnected laptop, in an air-gapped cluster, or connected to the [Cirron platform](https://cirron.com) for cross-run aggregation, dashboards, and team visibility. Setting `CIRRON_API_KEY` is the only difference between modes.
 
-> The SDK works standalone. The platform makes it powerful. (Same relationship as `git` to GitHub — the repo is portable; the collaboration is where the value is.)
-
-## The wedge
-
-You're 10 epochs into a training run. Loss spikes. Throughput halves. You want to know why, and you want to know it against every other run you've done.
+## Quick start
 
 ```python
 import cirron as ci
 
-ci.profile()  # attaches to the process, detects torch, installs hooks
+ci.profile()  # auto-detects torch / tensorflow / transformers and installs hooks
 
 for epoch in range(20):
-    for batch in loader:          # DataLoader iteration → batch scopes, automatically
-        loss = train_step(batch)  # forward / backward / optimizer_step → scopes, automatically
+    for batch in loader:
+        loss = train_step(batch)
         ci.mark("loss", loss.item())
 ```
 
-One line of setup. No scope wrapping, no callbacks, no manual instrumentation. Framework hooks detect epoch and batch boundaries, wrap the forward/backward/optimizer passes, and time the DataLoader — all from `ci.profile()` alone. The same zero-touch experience works for `Trainer.train()` (transformers) and `model.fit()` (Keras).
+`ci.profile()` installs framework-appropriate hooks: forward / backward / optimizer scopes and CUDA events for PyTorch, a `Callback` for Keras, a `TrainerCallback` for HuggingFace `transformers`. Per-epoch weight and gradient statistics are captured by default. See [`profile()`](#profile) below for the full surface.
 
-With no other changes, you now get:
-
-- Wall time, GPU seconds, and memory peak attributed to every epoch and batch
-- Weight and gradient statistics (mean, std, norm, histogram) per epoch by default
-- Data loader stall time vs. compute time, broken out
-- Cost in dollars, computed from the instance type Cirron already knows about
-- Epoch-over-epoch diffs against prior runs of the same pipeline
-
-When epoch 10 goes sideways, you see where the time went, what the weights looked like compared to epoch 9, and whether the same thing happened last Tuesday.
-
-## Standalone or platform
-
-The SDK is useful on its own. `ci.profile()` with no credentials writes traces to `./.cirron/` as structured JSON span records and safetensors snapshots (both open formats — documented, versioned, consumable by any tool). Inspect them from inside Python:
+Read traces back from Python:
 
 ```python
-import cirron as ci
-
 ci.trace()                       # pretty text tree of the current session
 ci.trace(format="df")            # pandas DataFrame, one row per span
 ci.trace(name="epoch")           # only `epoch` spans + descendants
 ```
-
-No lock-in. Your traces are yours. The `./.cirron/` directory is JSON + safetensors — readable by any tool that handles those formats.
-
-Connect to the platform when you want aggregation across runs, epoch diffing, cost attribution, live dashboards, and team visibility:
-
-```bash
-export CIRRON_API_KEY=...                # traces now flow to the platform as well
-```
-```python
-ci.profile()
-```
-
-Both modes produce the same artifacts — the platform just adds features that only make sense across many runs and many users.
 
 ## Install
 
