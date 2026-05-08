@@ -24,6 +24,14 @@ from cirron.core.errors import CirronDependencyError
 #
 # The ``overhead`` extra is intentionally omitted — it's a dev/CI-only
 # harness dep (torchvision), not user-facing surface.
+#
+# Python version compatibility: ``tensorflow``, ``databricks``, and
+# ``snowflake`` ship upstream wheels that lag the latest Python release
+# cycle (no Python 3.14 wheels at the time of writing). On a brand-new
+# Python release, ``pip install 'cirron-sdk[<lagging>]'`` will fail with
+# "no matching distribution"; pin the interpreter to Python 3.13 or
+# earlier if any of those extras is required. See the README's
+# "Python version support" section for the current compatibility table.
 EXTRAS: dict[str, str] = {
     "pandas": "pandas",
     "polars": "polars",

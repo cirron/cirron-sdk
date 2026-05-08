@@ -39,15 +39,33 @@ jobs:
     timeout-minutes: 10
     if: ${{ github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'skip-ci') }}
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ['3.11', '3.13']
+        include:
+          - python-version: '3.11'
+            extras_args: '--all-extras'
+          - python-version: '3.12'
+            extras_args: '--all-extras'
+          - python-version: '3.13'
+            extras_args: '--all-extras'
+          # Python 3.14: tensorflow, databricks-sql-connector, and
+          # snowflake-connector-python lag the latest Python release
+          # cycle and don't yet ship 3.14 wheels. Skip those extras here;
+          # the framework-tensorflow job covers TF on stable Python.
+          - python-version: '3.14'
+            extras_args: >-
+              --extra pandas --extra polars --extra arrow
+              --extra torch --extra transformers --extra sklearn
+              --extra hf --extra image --extra safetensors --extra dotenv
+              --extra s3 --extra gcs --extra azure
+              --extra postgres --extra mysql
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
       - uses: astral-sh/setup-uv@v7
-      - run: uv sync --all-extras
+      - run: uv sync ${{ matrix.extras_args }}
       - run: uv run pytest tests/unit tests/integration -v
 
   framework-torch:
