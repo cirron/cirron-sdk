@@ -26,7 +26,11 @@ jobs:
         env:
           HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
-          if printf '%s' "$HEAD_COMMIT_MESSAGE" | grep -qE '\[skip release\]|skip-release'; then
+          # Only inspect the commit subject (first line). Bodies often
+          # mention "[skip release]" as documentation and shouldn't trip
+          # the gate.
+          subject="$(printf '%s' "$HEAD_COMMIT_MESSAGE" | head -n1)"
+          if printf '%s' "$subject" | grep -qE '\[skip release\]|skip-release'; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
