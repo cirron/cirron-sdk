@@ -7,13 +7,14 @@
   "prereleaseBranches": ["rc"],
   "noVersionPrefix": false,
   "plugins": [
-    "git-tag",
     [
       "exec",
       {
-        "version": "python3 scripts/bump_version.py $ARG_0 && git add pyproject.toml && git -c user.email=actions@github.com -c 'user.name=github-actions[bot]' commit -m 'Bump version to $ARG_0 [skip release]'"
+        "version": "bash scripts/auto_bump.sh $ARG_0",
+        "next": "bash scripts/auto_bump.sh $ARG_0"
       }
     ],
+    "git-tag",
     "released",
     "first-time-contributor",
     "all-contributors"
