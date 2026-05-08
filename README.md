@@ -410,7 +410,7 @@ Platform follow-up (not SDK work):
 
 ## Further reading
 
-- Platform documentation: [docs.cirron.dev](https://docs.cirron.dev)
+- Platform documentation: [docs.cirron.com](https://docs.cirron.com)
 - Pipelines: how `ci.profile()` context is injected
 - Deployments: how `@ci.inference` binds to deployment records
 - Self-hosted and air-gapped installations
