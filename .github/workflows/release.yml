@@ -40,7 +40,12 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # RELEASE_TOKEN is a PAT (or GitHub App token) — not GITHUB_TOKEN.
+          # Tags pushed under GITHUB_TOKEN do NOT fire downstream workflows
+          # (GitHub's anti-recursion guard), so publish-pypi.yml would never
+          # run. The PAT push appears as a normal user push and triggers
+          # the tag-listening publish workflows correctly.
+          token: ${{ secrets.RELEASE_TOKEN }}
 
       - name: Set up Python
         if: steps.skip.outputs.skip == 'false'
@@ -76,5 +81,5 @@ jobs:
       - name: Run auto shipit
         if: steps.skip.outputs.skip == 'false'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: npx auto shipit
