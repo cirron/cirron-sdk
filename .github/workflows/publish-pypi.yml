@@ -3,7 +3,11 @@ name: Publish to PyPI
 on:
   push:
     tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
+      # GitHub Actions tag filters use glob, not regex — `+` is literal.
+      # Match v<digits>.<digits>.<digits> stable tags; exclude prereleases
+      # (which carry a `-suffix`) so they only trigger publish-testpypi.yml.
+      - 'v[0-9]*.[0-9]*.[0-9]*'
+      - '!v[0-9]*.[0-9]*.[0-9]*-*'
 
 permissions:
   contents: read
