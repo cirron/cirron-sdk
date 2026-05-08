@@ -49,7 +49,7 @@ Most labels (`bug`, `enhancement`, `documentation`, etc.) are self-describing an
 
 ## Releases
 
-Releases are driven by [`auto`](https://intuit.github.io/auto/) and triggered on merge to `main` (stable) or `next` (release candidates). The version bump is computed from PR labels — **you never hand-edit the version in `pyproject.toml`**.
+Releases are driven by [`auto`](https://intuit.github.io/auto/) and triggered on merge to `main` (stable) or `rc` (release candidates). The version bump is computed from PR labels — **you never hand-edit the version in `pyproject.toml`**.
 
 ### Release-type labels (apply exactly one per PR)
 
@@ -66,7 +66,7 @@ Releases are driven by [`auto`](https://intuit.github.io/auto/) and triggered on
 
 ### How prereleases work
 
-To cut a release candidate, merge PRs to the `next` branch. Auto computes the next stable version from the bump label, appends `-rc.N` (auto-incrementing), and ships to TestPyPI. Example: `main` is at `0.1.0`, you open a PR to `next` labeled `major` — auto produces `v1.0.0-rc.0`. When the RC is solid, merge `next` → `main` and auto ships the stable `v1.0.0` to PyPI.
+To cut a release candidate, merge PRs to the `rc` branch. Auto computes the next stable version from the bump label, appends `-rc.N` (auto-incrementing), and ships to TestPyPI. Example: `main` is at `0.1.0`, you open a PR to `rc` labeled `major` — auto produces `v1.0.0-rc.0`. When the RC is solid, merge `rc` → `main` and auto ships the stable `v1.0.0` to PyPI. The `rc` suffix matters for Python: PEP 440 only normalizes a fixed set of prerelease tokens (`a`, `b`, `rc`, `dev`, `post`), so `v0.1.0-rc.0` becomes the standard `0.1.0rc0` on PyPI.
 
 ### `skip-ci` vs `skip-release`
 

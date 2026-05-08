@@ -4,12 +4,7 @@
   "owner": "cirron",
   "repo": "cirron-sdk",
   "baseBranch": "main",
-  "prereleaseBranches": [
-    {
-      "name": "next",
-      "prereleaseIdentifier": "rc"
-    }
-  ],
+  "prereleaseBranches": ["rc"],
   "noVersionPrefix": false,
   "plugins": [
     [
