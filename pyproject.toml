@@ -84,7 +84,6 @@ dev = [
     "mypy>=1.0",
     "types-PyYAML>=6.0",
     "types-requests>=2.31",
-    "tomli-w>=1.0",
 ]
 
 [build-system]

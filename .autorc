@@ -15,7 +15,7 @@
     [
       "exec",
       {
-        "version": "uv run python scripts/bump_version.py $ARG_0",
+        "version": "python3 scripts/bump_version.py $ARG_0",
         "publish": "echo 'PyPI publish handled by publish-pypi.yml on tag push'",
         "canary": "echo 'no canary publish'"
       }
