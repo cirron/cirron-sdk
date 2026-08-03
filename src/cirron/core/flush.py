@@ -416,20 +416,23 @@ class SpoolWriter:
         """
         return self._total_bytes
 
-    def _scan_locked(self) -> tuple[list[Path], int]:
+    def _scan_locked(self) -> tuple[list[tuple[Path, int]], int]:
         """Stat every spool file. Caller holds ``self._lock`` (or is ``__init__``).
 
         Returns:
-            tuple[list[Path], int]: Spool files sorted oldest-first — the
-                zero-padded ``created_ns`` filename prefix makes the
-                lexicographic sort chronological — and their total size.
-                Entries that vanish or aren't regular files are skipped: a
-                second process sharing the spool dir can evict between the
-                ``glob`` and the ``stat``, and an unguarded ``stat`` there
-                would raise out of ``write()`` and cost a whole batch that
-                is already safely on disk.
+            tuple[list[tuple[Path, int]], int]: ``(path, size)`` pairs sorted
+                oldest-first — the zero-padded ``created_ns`` filename prefix
+                makes the lexicographic sort chronological — and their total
+                size. Sizes are returned alongside the paths so the eviction
+                loop never has to re-``stat``, which both halves the syscalls
+                and lets it correct ``total`` by a known size when a file
+                turns out to be already gone. Entries that vanish or aren't
+                regular files are skipped: a second process sharing the spool
+                dir can evict between the ``glob`` and the ``stat``, and an
+                unguarded ``stat`` there would raise out of ``write()`` and
+                cost a whole batch that is already safely on disk.
         """
-        files: list[Path] = []
+        entries: list[tuple[Path, int]] = []
         total = 0
         for p in sorted(self._dir.glob("*.json")):
             try:
@@ -438,9 +441,9 @@ class SpoolWriter:
                 continue
             if not S_ISREG(st.st_mode):
                 continue
-            files.append(p)
+            entries.append((p, st.st_size))
             total += st.st_size
-        return files, total
+        return entries, total
 
     def write(self, batch: Batch) -> Path:
         """Atomically write one batch as ``<created_ns>-<id>.json``.
@@ -493,18 +496,25 @@ class SpoolWriter:
         Returns:
             int: Number of files dropped this pass.
         """
-        files, total = self._scan_locked()
+        entries, total = self._scan_locked()
         dropped = 0
-        for f in files:
+        for f, size in entries:
             if total <= self._max_bytes:
                 break
             try:
-                size = f.stat().st_size
                 f.unlink()
+            except FileNotFoundError:
+                # Raced with another rank's eviction between our scan and
+                # now. The bytes are off disk either way, so ``total`` must
+                # come down or we over-count and evict more files than the
+                # cap actually requires. Not counted in ``dropped``: we
+                # didn't evict it, and ``drop_count`` reports *our* evictions.
+                total -= size
+                continue
             except OSError:
-                # Vanished under us (another rank evicted it) or is locked
-                # by a reader — skip it and keep going rather than
-                # abandoning the pass while still over cap.
+                # Still on disk (e.g. PermissionError, or a reader holding
+                # it open on Windows). Leave ``total`` alone and try the
+                # next file rather than abandoning the pass while over cap.
                 continue
             total -= size
             dropped += 1

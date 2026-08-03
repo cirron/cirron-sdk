@@ -248,6 +248,57 @@ def test_spool_total_tracking_survives_external_deletion(tmp_path):
     assert writer.total_bytes == on_disk
 
 
+def test_spool_eviction_race_does_not_overcount_or_overevict(tmp_path, monkeypatch):
+    """A file deleted by another writer between our scan and our unlink is
+    still off disk, so it must come off the running total. Otherwise the
+    pass over-counts and evicts more files than the cap requires."""
+    writer = _make_writer(tmp_path, max_bytes=3_000)
+    for i in range(2):
+        writer.write(_big_batch(i))
+
+    real_unlink = Path.unlink
+    raised: list[str] = []
+
+    def racing_unlink(self, *args, **kwargs):
+        # Simulate a peer rank evicting this exact file a moment before us:
+        # remove it for real, then report it as already gone.
+        if not raised:
+            raised.append(self.name)
+            real_unlink(self, *args, **kwargs)
+            raise FileNotFoundError(self.name)
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", racing_unlink)
+    writer.write(_big_batch(2))  # pushes over cap, triggering eviction
+
+    assert raised, "the racing unlink never fired; test would be vacuous"
+    on_disk = _on_disk(writer)
+    assert writer.total_bytes == on_disk, "race left the running total over-counting"
+    # The racing file's bytes were reclaimed, so one eviction sufficed: a
+    # third batch must survive rather than being evicted to cover the gap.
+    assert len(list(writer.spool_dir.glob("*.json"))) == 2
+    # We did not evict the raced file, so it must not inflate our drop count.
+    assert writer.drop_count == 0
+
+
+def test_spool_eviction_keeps_total_when_file_still_present(tmp_path, monkeypatch):
+    """A non-FileNotFoundError unlink failure means the file is still on
+    disk, so its bytes must stay in the total."""
+    writer = _make_writer(tmp_path, max_bytes=3_000)
+    for i in range(2):
+        writer.write(_big_batch(i))
+
+    def denied_unlink(self, *args, **kwargs):
+        raise PermissionError(self.name)
+
+    monkeypatch.setattr(Path, "unlink", denied_unlink)
+    writer.write(_big_batch(2))
+
+    assert writer.drop_count == 0
+    assert writer.total_bytes == _on_disk(writer)
+    assert len(list(writer.spool_dir.glob("*.json"))) == 3  # nothing removed
+
+
 def test_spool_periodic_rescan_reconciles_counter(tmp_path, monkeypatch):
     """Under-cap drift is corrected by the forced periodic rescan — the
     guard that keeps the cap honest when several ranks share a spool dir."""

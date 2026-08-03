@@ -72,7 +72,7 @@ populated today.
 keyword arguments were passed to `ci.scope()` (or `ci.mark()`, for a mark's
 own `attrs`). Values are JSON scalars, arrays, or objects. Because those
 keyword arguments are adopted without validation (the check would sit on the
-training hot path) a value may be any Python object. Anything not
+training hot path), a value may be any Python object. Anything not
 JSON-serializable is converted to its `str()` form when the batch is written,
 and nested keys are coerced to strings. Self-referential and very deeply
 nested values degrade to a string at that point rather than recursing. A
@@ -99,12 +99,12 @@ itself.
 ```
 
 Mark ids are 32-char hex strings generated via `os.urandom(16).hex()`,
-matching the span-id format. Ids must be globally unique. The
-platform uses this value as the mark row's primary key, so a
-per-process counter would collide across concurrent runs, and stable
-under retry, so the SDK generates the id once and re-sends the exact
-same bytes on flush retries to stay idempotent against the ingestion
-worker's dedup gate.
+matching the span-id format. Ids must be both globally unique and stable
+under retry. Uniqueness matters because the platform uses this value as
+the mark row's primary key, so a per-process counter would collide across
+concurrent runs. Stability matters because the SDK generates the id once
+and re-sends the exact same bytes on flush retries, staying idempotent
+against the ingestion worker's dedup gate.
 
 A mark attaches to the innermost open scope on the producing thread. When
 no scope is open, it attaches to the `cirron.session` scope opened by
@@ -199,7 +199,7 @@ cirron.session
 Epoch spans are **siblings** of each other under the session, never
 nested. When multiple framework hooks coexist (e.g. HuggingFace
 `Trainer` over a PyTorch `DataLoader`), only the highest-priority hook
-owns the `epoch` and `step` scope (`transformers` > `tensorflow` >
+owns the `epoch` and `step` scopes (`transformers` > `tensorflow` >
 `torch`) and the others yield, so no semantic scope is duplicated.
 
 ## Completeness
