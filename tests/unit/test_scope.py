@@ -301,3 +301,70 @@ def test_drop_count_all_aggregates_across_threads():
 
     # Each thread dropped 3 scopes past MAX_DEPTH → 9 total.
     assert stack.drop_count_all() == 9
+
+
+def test_closed_buffer_bounded_and_counts_drops(monkeypatch):
+    """The closed-scope deque is a bounded ring: it drops oldest, counts
+    every drop, and warns exactly once per state."""
+    from cirron.core import scope as scope_mod
+
+    # The cap is read when ``_ScopeState`` is constructed, so the stack must
+    # be built *after* the patch. Patching once a state already exists would
+    # desync the length check from the deque's real ``maxlen``.
+    monkeypatch.setattr(scope_mod, "CLOSED_BUFFER_CAP", 8)
+    stack = ScopeStack()
+
+    for i in range(8):
+        stack.push("s", index=i)
+        stack.pop()
+    state = stack._state
+    assert len(state.closed) == 8
+    assert state.drop_count == 0
+
+    with pytest.warns(UserWarning, match="closed-scope buffer full"):
+        stack.push("s", index=8)
+        stack.pop()
+
+    import warnings as _w
+
+    with _w.catch_warnings(record=True) as caught:
+        _w.simplefilter("always")
+        for i in range(9, 18):
+            stack.push("s", index=i)
+            stack.pop()
+    assert caught == []  # one warning per state, not one per drop
+
+    assert len(state.closed) == 8
+    assert state.drop_count == 10
+    assert stack.drop_count() == 10
+    # Drop-oldest: the ten newest survive minus the two the cap can't hold.
+    assert [s.index for s in state.closed] == list(range(10, 18))
+
+    # Regression guard: ``drain_closed`` must not swap in an unbounded deque.
+    drained = stack.drain_closed()
+    assert len(drained) == 8
+    assert stack._state.closed.maxlen == 8
+
+
+def test_closed_buffer_bound_applies_to_close_scope(monkeypatch):
+    """The cross-thread ``close_scope`` append is bounded and accounted for
+    too, not just the same-thread ``pop`` path."""
+    from cirron.core import scope as scope_mod
+
+    monkeypatch.setattr(scope_mod, "CLOSED_BUFFER_CAP", 4)
+    stack = ScopeStack()
+    opened: list[Scope] = []
+
+    def producer() -> None:
+        for _ in range(4):
+            stack.push("s")
+            stack.pop()
+        opened.append(stack.push("still-open"))  # type: ignore[arg-type]
+
+    t = threading.Thread(target=producer)
+    t.start()
+    t.join()
+
+    with pytest.warns(UserWarning, match="closed-scope buffer full"):
+        stack.close_scope(opened[0])
+    assert stack.drop_count_all() == 1

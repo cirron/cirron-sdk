@@ -520,7 +520,7 @@ class Cirron:
         self.trace_buffer_max_spans: int | None = trace_buffer_max_spans
         self._profile_config: dict[str, Any] = {}
 
-    # -- profile orchestration ----------------------------------------------
+    # profile orchestration
 
     def profile(
         self,
@@ -658,7 +658,7 @@ class Cirron:
         self.flush_interval = self._profile_config["flush_interval"]
         return self
 
-    # -- delegators to module-level primitives ------------------------------
+    # delegators to module-level primitives
 
     def scope(
         self,

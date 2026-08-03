@@ -34,6 +34,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from pathlib import Path
+from stat import S_ISREG
 from typing import TYPE_CHECKING, Any, Protocol
 
 from cirron.core.blob_queue import (
@@ -58,9 +59,28 @@ SPOOL_SCHEMA_VERSION = 1
 DEFAULT_SPOOL_MAX_BYTES = 1_000_000_000  # 1 GB
 DEFAULT_INTERVAL_SEC = 1.0
 
+# ``SpoolWriter`` tracks a running byte total so the common (under-cap)
+# write costs O(1) syscalls instead of stat-ing every file in the spool.
+# That counter only sees *this* process's writes, though, and the spool
+# directory carries no rank or pid (``start_flush_thread`` builds
+# ``<output_dir>/spool``), so every rank of a distributed run shares one
+# directory. Forcing a full reconciliation scan every N writes bounds how
+# far the counter can undercount what is actually on disk, keeping the cap
+# a property of the directory rather than of a single process. At the
+# default ~1 write/sec that is one scan per few minutes instead of one per
+# write.
+SPOOL_RESCAN_EVERY_WRITES = 256
 
-def _sdk_version() -> str:
-    """Resolve the installed ``cirron-sdk`` version string.
+
+# Resolved at most once per process. ``Batch.to_json`` runs at least twice
+# per tick (spool write, then ``transport.send``) and the distribution
+# metadata lookup walks ``sys.path`` on every call for a value that cannot
+# change while the process is alive.
+_SDK_VERSION: str | None = None
+
+
+def _resolve_sdk_version() -> str:
+    """Read the installed ``cirron-sdk`` version from distribution metadata.
 
     Returns:
         str: The installed package version, or ``"0.0.0"`` if the
@@ -76,6 +96,24 @@ def _sdk_version() -> str:
             return "0.0.0"
     except Exception:
         return "0.0.0"
+
+
+def _sdk_version() -> str:
+    """Return the process-cached ``cirron-sdk`` version string.
+
+    Thread-safe by construction: a race can only make two threads compute
+    the same string and assign it twice, and reading the global once into
+    a local means no caller can observe a half-populated value.
+
+    Returns:
+        str: The installed package version, or ``"0.0.0"``.
+    """
+    global _SDK_VERSION
+    cached = _SDK_VERSION
+    if cached is None:
+        cached = _resolve_sdk_version()
+        _SDK_VERSION = cached
+    return cached
 
 
 class Transport(Protocol):
@@ -115,6 +153,95 @@ class Transport(Protocol):
         ...
 
 
+_JSON_SCALARS = (str, int, float, bool, type(None))
+
+# Bounds recursion so a deeply nested attr can't raise RecursionError out of
+# ``_scope_to_dict`` and cost the whole tick — the failure this sanitizer
+# exists to prevent. Cycles are caught separately, by the ``_seen`` path memo.
+_MAX_JSON_DEPTH = 32
+
+
+def _to_str(value: Any) -> str:
+    """Best-effort ``str()`` that never raises.
+
+    Args:
+        value (Any): Object with a possibly hostile ``__str__``.
+
+    Returns:
+        str: ``str(value)``, or ``"<unserializable>"`` if that raised.
+    """
+    try:
+        return str(value)
+    except Exception:
+        return "<unserializable>"
+
+
+def _json_safe(value: Any, _depth: int = 0, _seen: frozenset[int] = frozenset()) -> Any:
+    """Coerce one attr value into something ``json.dumps`` accepts.
+
+    JSON-native scalars pass through by reference; ``dict`` / ``list`` /
+    ``tuple`` are rebuilt element-wise with keys coerced to ``str``;
+    everything else — and anything past ``_MAX_JSON_DEPTH`` or already on
+    the current reference path — degrades to its ``str()``. Never raises.
+
+    Args:
+        value (Any): The attr value to coerce.
+        _depth (int): Current recursion depth. Internal.
+        _seen (frozenset[int]): ``id()``s of the containers on the path from
+            the root to ``value``, for cycle detection. Internal.
+
+    Returns:
+        Any: A value built only from ``str`` / ``int`` / ``float`` / ``bool`` /
+            ``None`` / ``list`` / ``dict``.
+    """
+    if isinstance(value, _JSON_SCALARS):
+        return value
+    if isinstance(value, (dict, list, tuple)):
+        if _depth >= _MAX_JSON_DEPTH or id(value) in _seen:
+            return _to_str(value)
+        _depth += 1
+        _seen = _seen | {id(value)}
+        if isinstance(value, dict):
+            return {_to_str(k): _json_safe(v, _depth, _seen) for k, v in value.items()}
+        return [_json_safe(v, _depth, _seen) for v in value]
+    return _to_str(value)
+
+
+def _safe_attrs(attrs: dict[str, Any]) -> dict[str, Any]:
+    """Return ``attrs`` with every value guaranteed JSON-serializable.
+
+    ``ci.scope`` / ``ci.mark`` adopt ``**attrs`` without validation — that
+    check is deliberately off the hot path — so numpy arrays, sets, tensors
+    and datetimes all land here. By the time a batch is serialized the
+    producer buffers are already drained, so a value ``json.dumps`` rejects
+    would take the whole tick's spans and marks with it. Sanitizing here
+    makes span and mark ``attrs`` safe at all three serialization sites
+    (spool, event stream, HTTP ingest). Other batch fields are *not*
+    covered: ``SpoolWriter.write`` passes ``default=str`` as a last resort,
+    but the transports do not, so anything bypassing this helper — snapshot
+    records — must be JSON-native on its own.
+
+    Fast path: attr dicts whose values are all JSON scalars — the
+    overwhelmingly common case — are returned by reference, uncopied.
+
+    Args:
+        attrs (dict[str, Any]): Attrs dict adopted from the hot path.
+
+    Returns:
+        dict[str, Any]: ``attrs`` itself, or a sanitized copy. Empty if a
+            nested container mutated underneath us mid-iteration — losing the
+            attrs beats losing the batch.
+    """
+    try:
+        for value in attrs.values():
+            if not isinstance(value, _JSON_SCALARS):
+                return {_to_str(k): _json_safe(v) for k, v in attrs.items()}
+    except Exception:
+        log.warning("cirron: attrs sanitization failed; dropping attrs", exc_info=True)
+        return {}
+    return attrs
+
+
 def _scope_to_dict(s: Scope) -> dict[str, Any]:
     """Serialize a ``Scope`` to its spool-format dict shape.
 
@@ -123,7 +250,8 @@ def _scope_to_dict(s: Scope) -> dict[str, Any]:
 
     Returns:
         dict[str, Any]: Span dict with ``id`` / ``name`` / ``parent_id`` /
-            timing fields / ``attrs`` / ``mark_ids`` keys.
+            timing fields / ``attrs`` / ``mark_ids`` keys. ``attrs`` is
+            sanitized (see :func:`_safe_attrs`).
     """
     return {
         "id": s.id,
@@ -138,7 +266,7 @@ def _scope_to_dict(s: Scope) -> dict[str, Any]:
         "thread_id": s.thread_id,
         "pid": s.pid,
         "rank": s.rank,
-        "attrs": s.attrs,
+        "attrs": _safe_attrs(s.attrs),
         "mark_ids": list(s.marks),
     }
 
@@ -173,7 +301,12 @@ def _mark_to_dict(m: Mark) -> dict[str, Any]:
 
     Returns:
         dict[str, Any]: Mark dict with ``id`` / ``span_id`` / ``name`` /
-            ``value`` / ``ts_ns`` / ``kind`` keys.
+            ``value_type`` / ``value`` / ``attrs`` / ``ts_ns`` / ``kind``
+            keys. ``attrs`` is sanitized (see :func:`_safe_attrs`); ``value``
+            is not — ``ci.mark`` already rejects anything but ``float`` /
+            ``int`` / ``str`` / ``bool``, and platform ingest cross-checks it
+            against ``value_type``, so coercing it here could only turn a
+            good batch into a rejected one.
     """
     return {
         "id": m.id,
@@ -181,7 +314,7 @@ def _mark_to_dict(m: Mark) -> dict[str, Any]:
         "name": m.name,
         "value_type": m.value_type,
         "value": m.value,
-        "attrs": m.attrs,
+        "attrs": _safe_attrs(m.attrs),
         "ts_ns": m.ts_ns,
         "kind": m.kind,
     }
@@ -235,6 +368,12 @@ class SpoolWriter:
         self._max_bytes = max_bytes
         self._drop_count = 0
         self._lock = threading.Lock()
+        # Running byte total so an under-cap write costs O(1) syscalls
+        # rather than O(files). Seeded once here and re-derived from real
+        # ``stat`` data by every cap-enforcement pass. This only *seeds* —
+        # constructing a writer must never evict anyone's spool files.
+        self._writes_since_scan = 0
+        self._total_bytes = self._scan_locked()[1]
 
     @property
     def spool_dir(self) -> Path:
@@ -263,6 +402,49 @@ class SpoolWriter:
         """
         return self._drop_count
 
+    @property
+    def total_bytes(self) -> int:
+        """Running byte total of ``*.json`` in the spool directory.
+
+        Exact immediately after any cap-enforcement pass. Between passes it
+        may over-count files deleted out of band and under-count files
+        written by another process sharing the directory; both are
+        corrected by the next scan.
+
+        Returns:
+            int: The writer's running byte total.
+        """
+        return self._total_bytes
+
+    def _scan_locked(self) -> tuple[list[tuple[Path, int]], int]:
+        """Stat every spool file. Caller holds ``self._lock`` (or is ``__init__``).
+
+        Returns:
+            tuple[list[tuple[Path, int]], int]: ``(path, size)`` pairs sorted
+                oldest-first — the zero-padded ``created_ns`` filename prefix
+                makes the lexicographic sort chronological — and their total
+                size. Sizes are returned alongside the paths so the eviction
+                loop never has to re-``stat``, which both halves the syscalls
+                and lets it correct ``total`` by a known size when a file
+                turns out to be already gone. Entries that vanish or aren't
+                regular files are skipped: a second process sharing the spool
+                dir can evict between the ``glob`` and the ``stat``, and an
+                unguarded ``stat`` there would raise out of ``write()`` and
+                cost a whole batch that is already safely on disk.
+        """
+        entries: list[tuple[Path, int]] = []
+        total = 0
+        for p in sorted(self._dir.glob("*.json")):
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            if not S_ISREG(st.st_mode):
+                continue
+            entries.append((p, st.st_size))
+            total += st.st_size
+        return entries, total
+
     def write(self, batch: Batch) -> Path:
         """Atomically write one batch as ``<created_ns>-<id>.json``.
 
@@ -274,16 +456,30 @@ class SpoolWriter:
         """
         filename = f"{batch.created_ns:020d}-{batch.batch_id}.json"
         path = self._dir / filename
-        payload = json.dumps(batch.to_json(), separators=(",", ":"))
+        # Encode once: ``write_bytes`` skips the re-encode ``write_text``
+        # would do internally, hands us the exact on-disk size for the
+        # running total, and sidesteps text-mode newline translation.
+        data = json.dumps(batch.to_json(), separators=(",", ":"), default=str).encode("utf-8")
         with self._lock:
             tmp = path.with_suffix(".json.tmp")
-            tmp.write_text(payload, encoding="utf-8")
+            tmp.write_bytes(data)
             os.replace(tmp, path)
-            self._enforce_cap_locked()
+            # Credited only once the file is actually in place: a raising
+            # write or replace leaves the counter untouched.
+            self._total_bytes += len(data)
+            self._writes_since_scan += 1
+            if (
+                self._total_bytes > self._max_bytes
+                or self._writes_since_scan >= SPOOL_RESCAN_EVERY_WRITES
+            ):
+                self._enforce_cap_locked()
         return path
 
     def enforce_cap(self) -> int:
         """Run cap enforcement out-of-band.
+
+        Also the manual reconciliation entry point: the pass re-derives
+        ``total_bytes`` from real ``stat`` data even when it evicts nothing.
 
         Returns:
             int: Number of files evicted by this call.
@@ -294,22 +490,38 @@ class SpoolWriter:
     def _enforce_cap_locked(self) -> int:
         """Drop oldest-first until total bytes fit under ``max_bytes``.
 
+        Also reconciles ``_total_bytes`` from real ``stat`` data, correcting
+        whatever drift the running counter accumulated since the last pass.
+
         Returns:
             int: Number of files dropped this pass.
         """
-        files = sorted(p for p in self._dir.glob("*.json") if p.is_file())
-        total = sum(p.stat().st_size for p in files)
+        entries, total = self._scan_locked()
         dropped = 0
-        for f in files:
+        for f, size in entries:
             if total <= self._max_bytes:
                 break
             try:
-                size = f.stat().st_size
                 f.unlink()
-                total -= size
-                dropped += 1
             except FileNotFoundError:
+                # Raced with another rank's eviction between our scan and
+                # now. The bytes are off disk either way, so ``total`` must
+                # come down or we over-count and evict more files than the
+                # cap actually requires. Not counted in ``dropped``: we
+                # didn't evict it, and ``drop_count`` reports *our* evictions.
+                total -= size
                 continue
+            except OSError:
+                # Still on disk (e.g. PermissionError, or a reader holding
+                # it open on Windows). Leave ``total`` alone and try the
+                # next file rather than abandoning the pass while over cap.
+                continue
+            total -= size
+            dropped += 1
+        # Unconditional, including when nothing was dropped: the no-eviction
+        # case is exactly what corrects drift from out-of-band deletion.
+        self._total_bytes = total
+        self._writes_since_scan = 0
         self._drop_count += dropped
         if dropped:
             log.warning(

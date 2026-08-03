@@ -26,6 +26,7 @@ from cirron.core.flush import (
     Batch,
     FlushThread,
     SpoolWriter,
+    _safe_attrs,
     _Supervisor,
 )
 from cirron.core.mark import MarkBuffer, get_default_mark_buffer
@@ -60,7 +61,7 @@ def _make_thread(tmp_path: Path, **kwargs) -> FlushThread:
     )
 
 
-# --- drain_once & batch shape ------------------------------------------------
+# drain_once & batch shape
 
 
 def test_drain_once_empties_buffers_and_returns_batch(tmp_path):
@@ -104,7 +105,38 @@ def test_empty_drain_is_noop(tmp_path):
     assert thread.drain_once() is None
 
 
-# --- SpoolWriter -------------------------------------------------------------
+# _sdk_version
+
+
+def test_sdk_version_resolved_once_per_process(monkeypatch):
+    from cirron.core import flush as flush_mod
+
+    # Reset through monkeypatch (not a bare assignment) so the real cached
+    # value is restored at teardown and the fake can't leak into later tests.
+    monkeypatch.setattr(flush_mod, "_SDK_VERSION", None)
+
+    calls = {"n": 0}
+
+    def fake_version(name: str) -> str:
+        calls["n"] += 1
+        return "9.9.9"
+
+    monkeypatch.setattr("importlib.metadata.version", fake_version)
+    assert flush_mod._sdk_version() == "9.9.9"
+    assert calls["n"] == 1
+
+    def boom(name: str) -> str:
+        raise RuntimeError("distribution metadata must not be read twice")
+
+    monkeypatch.setattr("importlib.metadata.version", boom)
+    # Assert on the returned value, not merely the absence of an exception:
+    # ``_resolve_sdk_version`` swallows every Exception, so a second lookup
+    # would quietly return "0.0.0" rather than raising.
+    assert flush_mod._sdk_version() == "9.9.9"
+    assert calls["n"] == 1
+
+
+# SpoolWriter
 
 
 def test_spool_writer_writes_parseable_file_matching_schema(tmp_path):
@@ -152,6 +184,137 @@ def test_spool_cap_drops_oldest_and_counts(tmp_path):
     assert total <= 3_000
 
 
+def _on_disk(writer: SpoolWriter) -> int:
+    return sum(p.stat().st_size for p in writer.spool_dir.glob("*.json"))
+
+
+def _big_batch(i: int) -> Batch:
+    return Batch(
+        batch_id=f"batch{i:02d}",
+        created_ns=1_700_000_000_000_000_000 + i,
+        spans=[{"id": "a", "name": "x" * 1_200}],
+        marks=[],
+    )
+
+
+def test_spool_write_does_not_rescan_under_cap(tmp_path, monkeypatch):
+    """The whole point of the running total: an under-cap write must not
+    touch the directory listing."""
+    writer = _make_writer(tmp_path)
+    calls = {"n": 0}
+    real = writer._scan_locked
+
+    def counting():
+        calls["n"] += 1
+        return real()
+
+    # Patched after construction, so the __init__ seed scan isn't counted.
+    monkeypatch.setattr(writer, "_scan_locked", counting)
+    for i in range(5):
+        writer.write(Batch(batch_id=f"b{i}", created_ns=i + 1, spans=[], marks=[]))
+
+    assert calls["n"] == 0
+    assert writer.total_bytes == _on_disk(writer)
+
+
+def test_spool_seed_scan_counts_preexisting_files_without_evicting(tmp_path):
+    """A fresh writer over a populated directory adopts the real total and
+    deletes nothing on construction."""
+    first = _make_writer(tmp_path, max_bytes=3_000)
+    for i in range(2):
+        first.write(_big_batch(i))
+    before = sorted(p.name for p in first.spool_dir.glob("*.json"))
+
+    second = SpoolWriter(first.spool_dir, max_bytes=3_000)
+
+    assert sorted(p.name for p in second.spool_dir.glob("*.json")) == before
+    assert second.drop_count == 0
+    assert second.total_bytes == _on_disk(second)
+
+
+def test_spool_total_tracking_survives_external_deletion(tmp_path):
+    """Out-of-band deletion leaves the counter over-counting; the next
+    eviction pass re-derives it from real stat data and converges."""
+    writer = _make_writer(tmp_path, max_bytes=3_000)
+    first = writer.write(_big_batch(0))
+    writer.write(_big_batch(1))
+
+    first.unlink()
+    for i in range(2, 8):
+        writer.write(_big_batch(i))
+
+    on_disk = _on_disk(writer)
+    assert on_disk <= 3_000
+    assert writer.total_bytes == on_disk
+
+
+def test_spool_eviction_race_does_not_overcount_or_overevict(tmp_path, monkeypatch):
+    """A file deleted by another writer between our scan and our unlink is
+    still off disk, so it must come off the running total. Otherwise the
+    pass over-counts and evicts more files than the cap requires."""
+    writer = _make_writer(tmp_path, max_bytes=3_000)
+    for i in range(2):
+        writer.write(_big_batch(i))
+
+    real_unlink = Path.unlink
+    raised: list[str] = []
+
+    def racing_unlink(self, *args, **kwargs):
+        # Simulate a peer rank evicting this exact file a moment before us:
+        # remove it for real, then report it as already gone.
+        if not raised:
+            raised.append(self.name)
+            real_unlink(self, *args, **kwargs)
+            raise FileNotFoundError(self.name)
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", racing_unlink)
+    writer.write(_big_batch(2))  # pushes over cap, triggering eviction
+
+    assert raised, "the racing unlink never fired; test would be vacuous"
+    on_disk = _on_disk(writer)
+    assert writer.total_bytes == on_disk, "race left the running total over-counting"
+    # The racing file's bytes were reclaimed, so one eviction sufficed: a
+    # third batch must survive rather than being evicted to cover the gap.
+    assert len(list(writer.spool_dir.glob("*.json"))) == 2
+    # We did not evict the raced file, so it must not inflate our drop count.
+    assert writer.drop_count == 0
+
+
+def test_spool_eviction_keeps_total_when_file_still_present(tmp_path, monkeypatch):
+    """A non-FileNotFoundError unlink failure means the file is still on
+    disk, so its bytes must stay in the total."""
+    writer = _make_writer(tmp_path, max_bytes=3_000)
+    for i in range(2):
+        writer.write(_big_batch(i))
+
+    def denied_unlink(self, *args, **kwargs):
+        raise PermissionError(self.name)
+
+    monkeypatch.setattr(Path, "unlink", denied_unlink)
+    writer.write(_big_batch(2))
+
+    assert writer.drop_count == 0
+    assert writer.total_bytes == _on_disk(writer)
+    assert len(list(writer.spool_dir.glob("*.json"))) == 3  # nothing removed
+
+
+def test_spool_periodic_rescan_reconciles_counter(tmp_path, monkeypatch):
+    """Under-cap drift is corrected by the forced periodic rescan — the
+    guard that keeps the cap honest when several ranks share a spool dir."""
+    from cirron.core import flush as flush_mod
+
+    monkeypatch.setattr(flush_mod, "SPOOL_RESCAN_EVERY_WRITES", 2)
+    writer = _make_writer(tmp_path)
+
+    p0 = writer.write(Batch(batch_id="b0", created_ns=1, spans=[], marks=[]))
+    p0.unlink()
+    assert writer.total_bytes > _on_disk(writer)  # drifted
+
+    writer.write(Batch(batch_id="b1", created_ns=2, spans=[], marks=[]))
+    assert writer.total_bytes == _on_disk(writer)  # reconciled
+
+
 def test_spool_files_sort_chronologically(tmp_path):
     writer = _make_writer(tmp_path)
     for i in range(5):
@@ -162,7 +325,7 @@ def test_spool_files_sort_chronologically(tmp_path):
     assert extracted == sorted(extracted)
 
 
-# --- FlushThread lifecycle ---------------------------------------------------
+# FlushThread lifecycle
 
 
 def test_tick_writes_spool_and_invokes_transport(tmp_path):
@@ -257,7 +420,7 @@ def test_buffer_full_event_wakes_thread_before_interval(tmp_path):
         thread.stop(timeout=2.0)
 
 
-# --- Supervisor --------------------------------------------------------------
+# Supervisor
 
 
 @pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
@@ -349,3 +512,104 @@ def test_deaths_outside_window_do_not_latch(tmp_path):
     clock[0] += 120
     sup._record_death()
     assert sup.mode == "normal"
+
+
+# attr sanitization
+
+
+def test_tick_survives_unserializable_scope_attr(tmp_path):
+    # A non-JSON attr used to raise inside SpoolSink.emit *after* the producer
+    # buffers were drained, so the whole tick's spans and marks were lost with
+    # nothing but a WARNING to show for it.
+    writer = _make_writer(tmp_path)
+    thread = _make_thread(tmp_path, writer=writer)
+    with ci.scope("epoch", index=0, tags={"a", "b"}):
+        ci.mark("loss", 0.5)
+    thread._tick()
+
+    files = list(writer.spool_dir.glob("*.json"))
+    assert len(files) == 1, "batch was dropped instead of sanitized"
+    payload = json.loads(files[0].read_text())
+    assert payload["spans"][0]["name"] == "epoch"
+    # Set ordering is not stable — assert the degradation, not the text.
+    assert isinstance(payload["spans"][0]["attrs"]["tags"], str)
+    assert payload["marks"][0]["name"] == "loss"
+
+
+def test_tick_survives_self_referential_attr(tmp_path):
+    # A cycle raises ValueError in json.dumps and RecursionError in a naive
+    # recursive sanitizer; the path memo must degrade the back-reference to a
+    # string and keep the rest of the batch.
+    writer = _make_writer(tmp_path)
+    thread = _make_thread(tmp_path, writer=writer)
+    cycle: list[Any] = []
+    cycle.append(cycle)
+    with ci.scope("epoch", cycle=cycle):
+        ci.mark("loss", 0.5)
+    thread._tick()
+
+    files = list(writer.spool_dir.glob("*.json"))
+    assert len(files) == 1, "cycle killed the tick"
+    payload = json.loads(files[0].read_text())
+    # Outer list is rebuilt; the back-reference degrades to its repr.
+    assert payload["spans"][0]["attrs"]["cycle"] == ["[[...]]"]
+    assert payload["marks"][0]["name"] == "loss"
+
+
+def test_numpy_attr_sanitized_but_mark_value_left_alone(tmp_path):
+    # np.float64 subclasses float, so ci.mark accepts it and json.dumps already
+    # emits it as a JSON number. Sanitizing must not stringify it: the platform
+    # cross-checks ``value`` against ``value_type`` and would reject the entire
+    # batch on a mismatch.
+    np = pytest.importorskip("numpy")
+    writer = _make_writer(tmp_path)
+    thread = _make_thread(tmp_path, writer=writer)
+    with ci.scope("epoch"):
+        ci.mark("loss", np.float64(0.5), grad=np.zeros(3))
+    thread._tick()
+
+    files = list(writer.spool_dir.glob("*.json"))
+    assert len(files) == 1
+    m = json.loads(files[0].read_text())["marks"][0]
+    assert m["value_type"] == "float"
+    assert isinstance(m["value"], float)
+    assert m["value"] == 0.5
+    assert isinstance(m["attrs"]["grad"], str)
+
+
+def test_safe_attrs_preserves_structure_and_skips_copy_for_scalars():
+    # Sanitization must not flatten legitimately JSON-shaped attrs, and the
+    # all-scalar case (the common one) must not allocate a copy.
+    scalars = {"lr": 0.1, "step": 3, "ok": True, "note": "x", "none": None}
+    assert _safe_attrs(scalars) is scalars
+
+    nested = {"cfg": {"layers": [1, 2], "opt": ("adam", 0.9)}, "bad": {1, 2}}
+    out = _safe_attrs(nested)
+    assert out is not nested
+    assert out["cfg"] == {"layers": [1, 2], "opt": ["adam", 0.9]}
+    assert isinstance(out["bad"], str)
+    json.dumps(out)  # must not raise
+
+
+def test_transport_receives_sanitized_batch(tmp_path):
+    # The transport path serializes independently of the spool sink and has no
+    # ``default=`` fallback, so it must be handed an already-clean dict.
+    sent: list[dict] = []
+
+    class FakeTransport:
+        def send(self, payload: dict) -> bool:
+            json.dumps(payload)  # raises on a dirty batch
+            sent.append(payload)
+            return True
+
+        def close(self) -> None:
+            return None
+
+    thread = _make_thread(tmp_path, transport=FakeTransport())
+    with ci.scope("epoch", tags={"a", "b"}):
+        ci.mark("loss", 0.5, grad=object())
+    thread._tick()
+
+    assert len(sent) == 1, "transport.send failed on an unsanitized batch"
+    assert isinstance(sent[0]["spans"][0]["attrs"]["tags"], str)
+    assert isinstance(sent[0]["marks"][0]["attrs"]["grad"], str)
