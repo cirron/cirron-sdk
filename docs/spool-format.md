@@ -202,6 +202,27 @@ nested. When multiple framework hooks coexist (e.g. HuggingFace
 owns the `epoch` and `step` scopes — `transformers` > `tensorflow` >
 `torch` — and the others yield, so no semantic scope is duplicated.
 
+## Completeness
+
+A batch is **not** guaranteed to be span-complete. The SDK's in-memory
+buffers are bounded ring buffers that drop oldest when the flush thread
+can't keep up, so under sustained back-pressure a reader may see:
+
+- a mark whose `span_id` names a span that never ships, and
+- a span whose `parent_id` names a span that never ships.
+
+Readers MUST tolerate both rather than treating a dangling reference as
+corruption. The SDK's own per-span sinks skip marks whose span isn't
+present in the batch. Dropped records are counted and surfaced via
+`ci.health()` (`scope_drop_count`, `mark_drop_count`, `spool_drop_count`).
+The first in-memory drop on a thread also emits a `UserWarning`. A
+non-zero count means the producing run was under-instrumented, not that
+the file is malformed.
+
+Whole batch files can also disappear from the spool directory: it is
+capped (`spool_max_bytes`, 1 GB by default) and evicts oldest-first,
+logging to the `cirron.flush` logger each time it does.
+
 ## Forward compatibility
 
 Readers MUST tolerate unknown top-level keys and unknown per-span / per-mark
