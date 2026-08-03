@@ -26,6 +26,7 @@ from cirron.core.flush import (
     Batch,
     FlushThread,
     SpoolWriter,
+    _safe_attrs,
     _Supervisor,
 )
 from cirron.core.mark import MarkBuffer, get_default_mark_buffer
@@ -60,7 +61,7 @@ def _make_thread(tmp_path: Path, **kwargs) -> FlushThread:
     )
 
 
-# --- drain_once & batch shape ------------------------------------------------
+# drain_once & batch shape
 
 
 def test_drain_once_empties_buffers_and_returns_batch(tmp_path):
@@ -104,7 +105,7 @@ def test_empty_drain_is_noop(tmp_path):
     assert thread.drain_once() is None
 
 
-# --- SpoolWriter -------------------------------------------------------------
+# SpoolWriter
 
 
 def test_spool_writer_writes_parseable_file_matching_schema(tmp_path):
@@ -162,7 +163,7 @@ def test_spool_files_sort_chronologically(tmp_path):
     assert extracted == sorted(extracted)
 
 
-# --- FlushThread lifecycle ---------------------------------------------------
+# FlushThread lifecycle
 
 
 def test_tick_writes_spool_and_invokes_transport(tmp_path):
@@ -257,7 +258,7 @@ def test_buffer_full_event_wakes_thread_before_interval(tmp_path):
         thread.stop(timeout=2.0)
 
 
-# --- Supervisor --------------------------------------------------------------
+# Supervisor
 
 
 @pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
@@ -349,3 +350,104 @@ def test_deaths_outside_window_do_not_latch(tmp_path):
     clock[0] += 120
     sup._record_death()
     assert sup.mode == "normal"
+
+
+# attr sanitization
+
+
+def test_tick_survives_unserializable_scope_attr(tmp_path):
+    # A non-JSON attr used to raise inside SpoolSink.emit *after* the producer
+    # buffers were drained, so the whole tick's spans and marks were lost with
+    # nothing but a WARNING to show for it.
+    writer = _make_writer(tmp_path)
+    thread = _make_thread(tmp_path, writer=writer)
+    with ci.scope("epoch", index=0, tags={"a", "b"}):
+        ci.mark("loss", 0.5)
+    thread._tick()
+
+    files = list(writer.spool_dir.glob("*.json"))
+    assert len(files) == 1, "batch was dropped instead of sanitized"
+    payload = json.loads(files[0].read_text())
+    assert payload["spans"][0]["name"] == "epoch"
+    # Set ordering is not stable — assert the degradation, not the text.
+    assert isinstance(payload["spans"][0]["attrs"]["tags"], str)
+    assert payload["marks"][0]["name"] == "loss"
+
+
+def test_tick_survives_self_referential_attr(tmp_path):
+    # A cycle raises ValueError in json.dumps and RecursionError in a naive
+    # recursive sanitizer; the path memo must degrade the back-reference to a
+    # string and keep the rest of the batch.
+    writer = _make_writer(tmp_path)
+    thread = _make_thread(tmp_path, writer=writer)
+    cycle: list[Any] = []
+    cycle.append(cycle)
+    with ci.scope("epoch", cycle=cycle):
+        ci.mark("loss", 0.5)
+    thread._tick()
+
+    files = list(writer.spool_dir.glob("*.json"))
+    assert len(files) == 1, "cycle killed the tick"
+    payload = json.loads(files[0].read_text())
+    # Outer list is rebuilt; the back-reference degrades to its repr.
+    assert payload["spans"][0]["attrs"]["cycle"] == ["[[...]]"]
+    assert payload["marks"][0]["name"] == "loss"
+
+
+def test_numpy_attr_sanitized_but_mark_value_left_alone(tmp_path):
+    # np.float64 subclasses float, so ci.mark accepts it and json.dumps already
+    # emits it as a JSON number. Sanitizing must not stringify it: the platform
+    # cross-checks ``value`` against ``value_type`` and would reject the entire
+    # batch on a mismatch.
+    np = pytest.importorskip("numpy")
+    writer = _make_writer(tmp_path)
+    thread = _make_thread(tmp_path, writer=writer)
+    with ci.scope("epoch"):
+        ci.mark("loss", np.float64(0.5), grad=np.zeros(3))
+    thread._tick()
+
+    files = list(writer.spool_dir.glob("*.json"))
+    assert len(files) == 1
+    m = json.loads(files[0].read_text())["marks"][0]
+    assert m["value_type"] == "float"
+    assert isinstance(m["value"], float)
+    assert m["value"] == 0.5
+    assert isinstance(m["attrs"]["grad"], str)
+
+
+def test_safe_attrs_preserves_structure_and_skips_copy_for_scalars():
+    # Sanitization must not flatten legitimately JSON-shaped attrs, and the
+    # all-scalar case (the common one) must not allocate a copy.
+    scalars = {"lr": 0.1, "step": 3, "ok": True, "note": "x", "none": None}
+    assert _safe_attrs(scalars) is scalars
+
+    nested = {"cfg": {"layers": [1, 2], "opt": ("adam", 0.9)}, "bad": {1, 2}}
+    out = _safe_attrs(nested)
+    assert out is not nested
+    assert out["cfg"] == {"layers": [1, 2], "opt": ["adam", 0.9]}
+    assert isinstance(out["bad"], str)
+    json.dumps(out)  # must not raise
+
+
+def test_transport_receives_sanitized_batch(tmp_path):
+    # The transport path serializes independently of the spool sink and has no
+    # ``default=`` fallback, so it must be handed an already-clean dict.
+    sent: list[dict] = []
+
+    class FakeTransport:
+        def send(self, payload: dict) -> bool:
+            json.dumps(payload)  # raises on a dirty batch
+            sent.append(payload)
+            return True
+
+        def close(self) -> None:
+            return None
+
+    thread = _make_thread(tmp_path, transport=FakeTransport())
+    with ci.scope("epoch", tags={"a", "b"}):
+        ci.mark("loss", 0.5, grad=object())
+    thread._tick()
+
+    assert len(sent) == 1, "transport.send failed on an unsanitized batch"
+    assert isinstance(sent[0]["spans"][0]["attrs"]["tags"], str)
+    assert isinstance(sent[0]["marks"][0]["attrs"]["grad"], str)

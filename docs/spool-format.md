@@ -68,6 +68,21 @@ flag in `cirron.core.scope`, not part of the public config surface);
 otherwise it remains `null`. `memory_peak_bytes` is reserved and not
 populated today.
 
+`attrs` is a free-form object of user-supplied metadata, carrying whatever
+keyword arguments were passed to `ci.scope()` (or `ci.mark()`, for a mark's
+own `attrs`). Values are JSON scalars, arrays, or objects. Because those
+keyword arguments are adopted without validation — the check would sit on the
+training hot path — a value may be any Python object; anything not
+JSON-serializable is converted to its `str()` form when the batch is written,
+and nested keys are coerced to strings. Self-referential and very deeply
+nested values degrade to a string at that point rather than recursing. A
+value that cannot be serialized therefore costs you that one attr, never the
+batch it belongs to. Note that `str()` output is a debugging aid, not a
+stable format: prefer passing values that are already JSON-native when you
+intend to query them later. This conversion applies to `attrs`, the only
+user-controlled part of the record; every other field is emitted by the SDK
+itself.
+
 ### `marks[]`
 
 ```json

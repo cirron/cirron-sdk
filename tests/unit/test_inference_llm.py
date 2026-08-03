@@ -351,9 +351,7 @@ def test_hf_patch_marks_from_nested_user_scope(monkeypatch):
         llm_mod.uninstall_hf_generate_patch()
 
 
-# ---------------------------------------------------------------------------
-# ContextVar leak regressions (PR #30 review)
-# ---------------------------------------------------------------------------
+# ContextVar leak regressions
 
 
 def test_sync_non_stream_does_not_leak_context_after_return():
