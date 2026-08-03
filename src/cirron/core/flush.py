@@ -174,11 +174,14 @@ def _safe_attrs(attrs: dict[str, Any]) -> dict[str, Any]:
 
     ``ci.scope`` / ``ci.mark`` adopt ``**attrs`` without validation — that
     check is deliberately off the hot path — so numpy arrays, sets, tensors
-    and datetimes all land here. ``SpoolWriter.write`` calls ``json.dumps``
-    without a ``default=``, and by then the producer buffers are already
-    drained, so one bad value would destroy the whole tick's spans and marks.
-    Sanitizing on the flush thread makes every batch unconditionally
-    serializable for all three ``json.dumps`` call sites.
+    and datetimes all land here. By the time a batch is serialized the
+    producer buffers are already drained, so a value ``json.dumps`` rejects
+    would take the whole tick's spans and marks with it. Sanitizing here
+    makes span and mark ``attrs`` safe at all three serialization sites
+    (spool, event stream, HTTP ingest). Other batch fields are *not*
+    covered: ``SpoolWriter.write`` passes ``default=str`` as a last resort,
+    but the transports do not, so anything bypassing this helper — snapshot
+    records — must be JSON-native on its own.
 
     Fast path: attr dicts whose values are all JSON scalars — the
     overwhelmingly common case — are returned by reference, uncopied.

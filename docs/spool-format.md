@@ -79,7 +79,9 @@ nested values degrade to a string at that point rather than recursing. A
 value that cannot be serialized therefore costs you that one attr, never the
 batch it belongs to. Note that `str()` output is a debugging aid, not a
 stable format: prefer passing values that are already JSON-native when you
-intend to query them later.
+intend to query them later. This conversion applies to `attrs`, the only
+user-controlled part of the record; every other field is emitted by the SDK
+itself.
 
 ### `marks[]`
 
