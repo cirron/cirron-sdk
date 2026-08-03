@@ -354,6 +354,7 @@ def test_deaths_outside_window_do_not_latch(tmp_path):
 
 # attr sanitization
 
+
 def test_tick_survives_unserializable_scope_attr(tmp_path):
     # A non-JSON attr used to raise inside SpoolSink.emit *after* the producer
     # buffers were drained, so the whole tick's spans and marks were lost with
