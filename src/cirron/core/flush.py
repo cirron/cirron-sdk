@@ -59,8 +59,15 @@ DEFAULT_SPOOL_MAX_BYTES = 1_000_000_000  # 1 GB
 DEFAULT_INTERVAL_SEC = 1.0
 
 
-def _sdk_version() -> str:
-    """Resolve the installed ``cirron-sdk`` version string.
+# Resolved at most once per process. ``Batch.to_json`` runs at least twice
+# per tick (spool write, then ``transport.send``) and the distribution
+# metadata lookup walks ``sys.path`` on every call for a value that cannot
+# change while the process is alive.
+_SDK_VERSION: str | None = None
+
+
+def _resolve_sdk_version() -> str:
+    """Read the installed ``cirron-sdk`` version from distribution metadata.
 
     Returns:
         str: The installed package version, or ``"0.0.0"`` if the
@@ -76,6 +83,24 @@ def _sdk_version() -> str:
             return "0.0.0"
     except Exception:
         return "0.0.0"
+
+
+def _sdk_version() -> str:
+    """Return the process-cached ``cirron-sdk`` version string.
+
+    Thread-safe by construction: a race can only make two threads compute
+    the same string and assign it twice, and reading the global once into
+    a local means no caller can observe a half-populated value.
+
+    Returns:
+        str: The installed package version, or ``"0.0.0"``.
+    """
+    global _SDK_VERSION
+    cached = _SDK_VERSION
+    if cached is None:
+        cached = _resolve_sdk_version()
+        _SDK_VERSION = cached
+    return cached
 
 
 class Transport(Protocol):

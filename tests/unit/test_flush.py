@@ -105,6 +105,37 @@ def test_empty_drain_is_noop(tmp_path):
     assert thread.drain_once() is None
 
 
+# _sdk_version
+
+
+def test_sdk_version_resolved_once_per_process(monkeypatch):
+    from cirron.core import flush as flush_mod
+
+    # Reset through monkeypatch (not a bare assignment) so the real cached
+    # value is restored at teardown and the fake can't leak into later tests.
+    monkeypatch.setattr(flush_mod, "_SDK_VERSION", None)
+
+    calls = {"n": 0}
+
+    def fake_version(name: str) -> str:
+        calls["n"] += 1
+        return "9.9.9"
+
+    monkeypatch.setattr("importlib.metadata.version", fake_version)
+    assert flush_mod._sdk_version() == "9.9.9"
+    assert calls["n"] == 1
+
+    def boom(name: str) -> str:
+        raise RuntimeError("distribution metadata must not be read twice")
+
+    monkeypatch.setattr("importlib.metadata.version", boom)
+    # Assert on the returned value, not merely the absence of an exception:
+    # ``_resolve_sdk_version`` swallows every Exception, so a second lookup
+    # would quietly return "0.0.0" rather than raising.
+    assert flush_mod._sdk_version() == "9.9.9"
+    assert calls["n"] == 1
+
+
 # SpoolWriter
 
 
