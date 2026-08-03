@@ -83,7 +83,7 @@ def require_safetensors():
     pytest.importorskip("safetensors")
 
 
-# -------- should_sample ------------------------------------------------------
+# should_sample 
 
 
 def test_should_sample_rate_approx_correct():
@@ -109,7 +109,7 @@ def test_should_sample_one_always():
     assert all(should_sample(1.0, rng) for _ in range(100))
 
 
-# -------- full mode always writes -------------------------------------------
+# full mode always writes 
 
 
 def test_full_mode_emits_blob_every_call(require_safetensors, tmp_path):
@@ -152,7 +152,7 @@ def test_sampled_full_rate_writes_blob(require_safetensors, tmp_path):
     assert records[0].blob_uri is not None
 
 
-# -------- safetensors round-trip --------------------------------------------
+# safetensors round-trip 
 
 
 def test_safetensors_roundtrip(require_safetensors, tmp_path):
@@ -174,7 +174,7 @@ def test_safetensors_roundtrip(require_safetensors, tmp_path):
         np.testing.assert_allclose(loaded[name], arr)
 
 
-# -------- size warning -------------------------------------------------------
+# size warning 
 
 
 def test_size_warning_fires_for_large_payload(require_safetensors, tmp_path, caplog, monkeypatch):
@@ -203,7 +203,7 @@ def test_size_warning_silent_below_threshold(require_safetensors, tmp_path, capl
     assert not any("snapshot for span" in r.message for r in caplog.records)
 
 
-# -------- missing safetensors ------------------------------------------------
+# missing safetensors 
 
 
 def test_missing_safetensors_raises(monkeypatch, tmp_path):
@@ -228,7 +228,7 @@ def test_missing_safetensors_raises(monkeypatch, tmp_path):
         )
 
 
-# -------- name preservation --------------------------------------------------
+# name preservation 
 
 
 def test_tensor_names_preserved_through_capture(require_safetensors, tmp_path):
@@ -247,7 +247,7 @@ def test_tensor_names_preserved_through_capture(require_safetensors, tmp_path):
     assert names == {"encoder.layer.0.attn.weight", "encoder.layer.0.attn.bias"}
 
 
-# -------- gradient blob ------------------------------------------------------
+# gradient blob 
 
 
 def test_gradient_blob_written_when_grad_refs_provided(require_safetensors, tmp_path):
@@ -268,7 +268,7 @@ def test_gradient_blob_written_when_grad_refs_provided(require_safetensors, tmp_
     assert grad_rec.blob_uri.endswith("gradients.safetensors")
 
 
-# -------- blob queue enqueue -------------------------------------------------
+# blob queue enqueue 
 
 
 def test_capture_enqueues_blob(require_safetensors, tmp_path):
@@ -289,7 +289,7 @@ def test_capture_enqueues_blob(require_safetensors, tmp_path):
     assert pb.attempts == 0
 
 
-# -------- silent-drop safety (Copilot review, PR #28) ----------------------
+# silent-drop safety (Copilot review, PR #28) 
 
 
 def test_unconvertible_tensor_keeps_mode_stats(require_safetensors, tmp_path, monkeypatch):
@@ -323,7 +323,7 @@ def test_unconvertible_tensor_keeps_mode_stats(require_safetensors, tmp_path, mo
     assert bad_rec.blob_uri is None
 
 
-# -------- never-crash under injected failures ----------------------
+# never-crash under injected failures 
 
 
 def test_sampled_serialize_failure_preserves_stats(
@@ -391,7 +391,7 @@ def test_sampled_named_parameters_exception(require_safetensors, tmp_path, caplo
     assert any("named_parameters() raised" in r.message for r in caplog.records)
 
 
-# -------- key preservation (no sanitization) --------------------------------
+# key preservation (no sanitization) 
 
 
 def test_special_char_names_preserved_in_safetensors_key(require_safetensors, tmp_path):

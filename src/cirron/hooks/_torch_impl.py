@@ -299,7 +299,7 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
         # without bound during long runs.
         _drain_cuda(pending_cuda, force=False)
 
-    # --- forward hooks ------------------------------------------------------
+    # forward hooks 
 
     # Per-call state piggy-backs on the pre-hook return → post-hook via a
     # thread-local stack of (scope, cuda_start). Only depth==1 opens a span.
@@ -390,7 +390,7 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
     except Exception:
         log.warning("cirron.hooks.torch: forward-hook registration failed", exc_info=True)
 
-    # --- backward -----------------------------------------------------------
+    # backward 
 
     orig_tensor_backward = torch.Tensor.backward
 
@@ -461,7 +461,7 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
     except Exception:
         log.warning("cirron.hooks.torch: autograd.backward patch failed", exc_info=True)
 
-    # --- optimizer step -----------------------------------------------------
+    # optimizer step 
 
     # Global optimizer step hooks fire for every Optimizer subclass
     # (SGD, Adam, ...) without having to patch each ``step`` method.
@@ -567,7 +567,7 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
             exc_info=True,
         )
 
-    # --- DataLoader ---------------------------------------------------------
+    # DataLoader 
 
     # Grad tensors stashed at each ``opt_post`` so ``capture`` can read
     # them at the epoch boundary even after the user's
@@ -759,7 +759,7 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
     except Exception:
         log.warning("cirron.hooks.torch: DataLoader.__iter__ patch failed", exc_info=True)
 
-    # --- close-open-epoch on uninstall -------------------------------------
+    # close-open-epoch on uninstall 
 
     def _close_open_epoch() -> None:
         """Drain any open step + epoch spans on uninstall, snapshotting the final epoch.

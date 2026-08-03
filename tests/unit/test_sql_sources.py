@@ -69,7 +69,7 @@ def _request(**kwargs: Any) -> LoadRequest:
     return LoadRequest(**defaults)
 
 
-# -- URI parsing --------------------------------------------------------------
+# URI parsing 
 
 
 class TestParseSqlUri:
@@ -167,7 +167,7 @@ class TestParseSqlUri:
             parse_sql_uri("host/table")
 
 
-# -- query composition --------------------------------------------------------
+# query composition 
 
 
 class TestBuildQuery:
@@ -220,7 +220,7 @@ class TestBuildQuery:
         assert q == 'SELECT * FROM "weird""name"'
 
 
-# -- credential resolution ----------------------------------------------------
+# credential resolution 
 
 
 class TestCredentialResolver:
@@ -299,7 +299,7 @@ class TestCredentialResolver:
         assert creds.token == "dapi-xxx"
 
 
-# -- execute_to_pandas --------------------------------------------------------
+# execute_to_pandas 
 
 
 class _FakeCursor:
@@ -338,7 +338,7 @@ class TestExecuteToPandas:
         assert len(df) == 0
 
 
-# -- require_driver -----------------------------------------------------------
+# require_driver 
 
 
 class TestRequireDriver:
@@ -358,7 +358,7 @@ class TestRequireDriver:
         assert result is leaf
 
 
-# -- per-driver shims ---------------------------------------------------------
+# per-driver shims 
 
 
 class TestPostgresDataSource:
@@ -520,7 +520,7 @@ class TestDatabricksDataSource:
             src.load()
 
 
-# -- end-to-end via ci.load() -------------------------------------------------
+# end-to-end via ci.load() 
 
 
 class TestEndToEnd:
@@ -568,7 +568,7 @@ class TestEndToEnd:
         assert isinstance(result, pd.DataFrame)
 
 
-# -- test helpers -------------------------------------------------------------
+# test helpers 
 
 
 def _http_response(code: int, body: bytes):

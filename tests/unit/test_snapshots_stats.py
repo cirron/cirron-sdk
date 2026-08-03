@@ -78,7 +78,7 @@ def _fake_cirron(snapshots: str | None = "stats") -> Any:
     return c
 
 
-# -------- stats correctness --------------------------------------------------
+# stats correctness 
 
 
 def test_tensor_stats_known_values():
@@ -109,7 +109,7 @@ def test_tensor_stats_empty_array_is_safe():
     assert len(stats["histogram"]["counts"]) == HISTOGRAM_BINS
 
 
-# -------- capture_weight_stats ----------------------------------------------
+# capture_weight_stats 
 
 
 def test_capture_weight_stats_emits_one_record_per_param():
@@ -135,7 +135,7 @@ def test_capture_weight_stats_emits_one_record_per_param():
     assert by_name["layer1.weight"].dtype == "float32"
 
 
-# -------- capture_gradient_stats --------------------------------------------
+# capture_gradient_stats 
 
 
 def test_capture_gradient_stats_skips_none_grads():
@@ -155,7 +155,7 @@ def test_capture_gradient_stats_skips_none_grads():
     assert rec.stats["max"] == pytest.approx(0.5)
 
 
-# -------- capture gate + configuration --------------------------------------
+# capture gate + configuration 
 
 
 def test_capture_no_op_when_snapshots_disabled():
@@ -188,7 +188,7 @@ def test_capture_include_grads_false_omits_grads():
     assert {r.tensor_name for r in records} == {"layer.weight"}
 
 
-# -------- end-to-end: SnapshotBuffer → FlushThread.drain_once → Batch -------
+# end-to-end: SnapshotBuffer → FlushThread.drain_once → Batch 
 
 
 def test_snapshots_flow_into_batch_json(tmp_path):
