@@ -212,12 +212,19 @@ can't keep up, so under sustained back-pressure a reader may see:
 - a span whose `parent_id` names a span that never ships.
 
 Readers MUST tolerate both rather than treating a dangling reference as
-corruption. The SDK's own per-span sinks skip marks whose span isn't
-present in the batch. Dropped records are counted and surfaced via
-`ci.health()` (`scope_drop_count`, `mark_drop_count`, `spool_drop_count`).
-The first in-memory drop on a thread also emits a `UserWarning`. A
-non-zero count means the producing run was under-instrumented, not that
-the file is malformed.
+corruption. The SDK's own readers drop such records silently instead of
+erroring: the built-in per-span sinks skip marks whose span isn't in the
+batch, and `cirron traces view` omits a span whose `parent_id` is absent
+(along with that span's marks) while still rendering the rest of the
+tree. One consequence worth knowing when reconciling numbers: the span
+and mark counts a viewer reports — e.g. `cirron traces list` — can be
+lower than the raw record counts in the file.
+
+Dropped records are counted and surfaced via `ci.health()`
+(`scope_drop_count`, `mark_drop_count`, `spool_drop_count`). The first
+in-memory drop on a thread also emits a `UserWarning`. A non-zero count
+means the producing run was under-instrumented, not that the file is
+malformed.
 
 Whole batch files can also disappear from the spool directory: it is
 capped (`spool_max_bytes`, 1 GB by default) and evicts oldest-first,
