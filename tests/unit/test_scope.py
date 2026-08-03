@@ -184,8 +184,10 @@ def test_get_current_scope_tracks_innermost():
 def test_pop_on_empty_stack_is_safe():
     stack = ScopeStack()
     # must not raise; returns None and logs (once).
-    assert stack.pop() is None
-    assert stack.pop() is None
+    first = stack.pop()
+    assert first is None
+    second = stack.pop()
+    assert second is None
     assert stack.depth() == 0
 
 
