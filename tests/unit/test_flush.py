@@ -184,6 +184,86 @@ def test_spool_cap_drops_oldest_and_counts(tmp_path):
     assert total <= 3_000
 
 
+def _on_disk(writer: SpoolWriter) -> int:
+    return sum(p.stat().st_size for p in writer.spool_dir.glob("*.json"))
+
+
+def _big_batch(i: int) -> Batch:
+    return Batch(
+        batch_id=f"batch{i:02d}",
+        created_ns=1_700_000_000_000_000_000 + i,
+        spans=[{"id": "a", "name": "x" * 1_200}],
+        marks=[],
+    )
+
+
+def test_spool_write_does_not_rescan_under_cap(tmp_path, monkeypatch):
+    """The whole point of the running total: an under-cap write must not
+    touch the directory listing."""
+    writer = _make_writer(tmp_path)
+    calls = {"n": 0}
+    real = writer._scan_locked
+
+    def counting():
+        calls["n"] += 1
+        return real()
+
+    # Patched after construction, so the __init__ seed scan isn't counted.
+    monkeypatch.setattr(writer, "_scan_locked", counting)
+    for i in range(5):
+        writer.write(Batch(batch_id=f"b{i}", created_ns=i + 1, spans=[], marks=[]))
+
+    assert calls["n"] == 0
+    assert writer.total_bytes == _on_disk(writer)
+
+
+def test_spool_seed_scan_counts_preexisting_files_without_evicting(tmp_path):
+    """A fresh writer over a populated directory adopts the real total and
+    deletes nothing on construction."""
+    first = _make_writer(tmp_path, max_bytes=3_000)
+    for i in range(2):
+        first.write(_big_batch(i))
+    before = sorted(p.name for p in first.spool_dir.glob("*.json"))
+
+    second = SpoolWriter(first.spool_dir, max_bytes=3_000)
+
+    assert sorted(p.name for p in second.spool_dir.glob("*.json")) == before
+    assert second.drop_count == 0
+    assert second.total_bytes == _on_disk(second)
+
+
+def test_spool_total_tracking_survives_external_deletion(tmp_path):
+    """Out-of-band deletion leaves the counter over-counting; the next
+    eviction pass re-derives it from real stat data and converges."""
+    writer = _make_writer(tmp_path, max_bytes=3_000)
+    first = writer.write(_big_batch(0))
+    writer.write(_big_batch(1))
+
+    first.unlink()
+    for i in range(2, 8):
+        writer.write(_big_batch(i))
+
+    on_disk = _on_disk(writer)
+    assert on_disk <= 3_000
+    assert writer.total_bytes == on_disk
+
+
+def test_spool_periodic_rescan_reconciles_counter(tmp_path, monkeypatch):
+    """Under-cap drift is corrected by the forced periodic rescan — the
+    guard that keeps the cap honest when several ranks share a spool dir."""
+    from cirron.core import flush as flush_mod
+
+    monkeypatch.setattr(flush_mod, "SPOOL_RESCAN_EVERY_WRITES", 2)
+    writer = _make_writer(tmp_path)
+
+    p0 = writer.write(Batch(batch_id="b0", created_ns=1, spans=[], marks=[]))
+    p0.unlink()
+    assert writer.total_bytes > _on_disk(writer)  # drifted
+
+    writer.write(Batch(batch_id="b1", created_ns=2, spans=[], marks=[]))
+    assert writer.total_bytes == _on_disk(writer)  # reconciled
+
+
 def test_spool_files_sort_chronologically(tmp_path):
     writer = _make_writer(tmp_path)
     for i in range(5):
