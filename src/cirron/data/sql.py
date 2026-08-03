@@ -51,7 +51,7 @@ _SDK_VERSION_HEADER = "X-Cirron-SDK-Version"
 _TIMEOUT_SEC = 10.0
 
 
-# URI parsing 
+# URI parsing
 
 
 @dataclass
@@ -229,7 +229,7 @@ def _parse_pg_mysql_path(
     )
 
 
-# credential resolution 
+# credential resolution
 
 
 @dataclass
@@ -535,7 +535,7 @@ def _merge_into(base: SqlCredentials, override: SqlCredentials) -> None:
         base.extra.update(override.extra)
 
 
-# query composition 
+# query composition
 
 Quoter = Callable[[str], str]
 
@@ -640,7 +640,7 @@ def _qualified_table(uri: SqlUri, quote: Quoter) -> str:
     return ".".join(parts)
 
 
-# cursor → DataFrame 
+# cursor → DataFrame
 
 
 def execute_to_pandas(cursor: Any, query: str) -> Any:
@@ -692,7 +692,7 @@ def execute_to_pandas(cursor: Any, query: str) -> Any:
     return pd.DataFrame(rows, columns=columns)
 
 
-# driver helpers 
+# driver helpers
 
 
 def require_driver(module_name: str, extra_name: str) -> Any:

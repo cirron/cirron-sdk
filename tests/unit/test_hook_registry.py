@@ -44,7 +44,7 @@ def _reset(monkeypatch, tmp_path):
     profiler_mod._reset_for_tests()
 
 
-# detect_frameworks 
+# detect_frameworks
 
 
 def test_detect_frameworks_with_mocked_spec_returns_torch_only(monkeypatch):
@@ -64,7 +64,7 @@ def test_detect_frameworks_excludes_sklearn():
     assert "sklearn" not in FRAMEWORK_MODULES
 
 
-# explicit frameworks skip detection 
+# explicit frameworks skip detection
 
 
 def test_explicit_frameworks_skips_detect(monkeypatch):
@@ -78,7 +78,7 @@ def test_explicit_frameworks_skips_detect(monkeypatch):
     assert p.installed_hooks == ["torch"]
 
 
-# unknown framework warns 
+# unknown framework warns
 
 
 def test_install_hooks_unknown_name_warns_and_skips(caplog):
@@ -141,7 +141,7 @@ def test_install_hooks_installer_exception_is_swallowed(caplog):
         registry._installers.pop("explodes", None)
 
 
-# hook handles uninstall cleanly 
+# hook handles uninstall cleanly
 
 
 def test_hook_handles_uninstall_on_shutdown():
@@ -204,7 +204,7 @@ def test_uninstall_exception_does_not_block_shutdown(caplog):
             registry._installers.pop(n, None)
 
 
-# HookRegistry / NoopHookHandle basics 
+# HookRegistry / NoopHookHandle basics
 
 
 def test_noop_hook_handle_satisfies_protocol():

@@ -61,7 +61,7 @@ def _make_thread(tmp_path: Path, **kwargs) -> FlushThread:
     )
 
 
-# drain_once & batch shape 
+# drain_once & batch shape
 
 
 def test_drain_once_empties_buffers_and_returns_batch(tmp_path):
@@ -105,7 +105,7 @@ def test_empty_drain_is_noop(tmp_path):
     assert thread.drain_once() is None
 
 
-# SpoolWriter 
+# SpoolWriter
 
 
 def test_spool_writer_writes_parseable_file_matching_schema(tmp_path):
@@ -163,7 +163,7 @@ def test_spool_files_sort_chronologically(tmp_path):
     assert extracted == sorted(extracted)
 
 
-# FlushThread lifecycle 
+# FlushThread lifecycle
 
 
 def test_tick_writes_spool_and_invokes_transport(tmp_path):
@@ -258,7 +258,7 @@ def test_buffer_full_event_wakes_thread_before_interval(tmp_path):
         thread.stop(timeout=2.0)
 
 
-# Supervisor 
+# Supervisor
 
 
 @pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
