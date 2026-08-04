@@ -12,6 +12,7 @@ Covers the acceptance criteria on ``drain_once`` empties both buffers into a wel
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 from pathlib import Path
@@ -58,6 +59,9 @@ def _make_thread(tmp_path: Path, **kwargs) -> FlushThread:
         kwargs.pop("transport", None),
         kwargs.pop("interval", 60.0),
         kwargs.pop("wake_event", None),
+        # ``sinks=None`` makes FlushThread build its own ``[SpoolSink(writer)]``,
+        # so callers that don't pass sinks behave exactly as before.
+        sinks=kwargs.pop("sinks", None),
     )
 
 
@@ -349,6 +353,132 @@ def test_tick_writes_spool_and_invokes_transport(tmp_path):
     assert len(files) == 1
     assert len(sent) == 1
     assert sent[0]["schema_version"] == SPOOL_SCHEMA_VERSION
+
+
+# ---------------------------------------------------------------------------
+# Durability: failure paths inside ``_tick_body``
+#
+# These tests call ``_tick_body()`` directly rather than ``_tick()``. ``_tick``
+# is a deliberate catch-all wrapper (flush.py) that turns *any* escaping
+# exception into a WARNING, so testing through it would pass even if the
+# per-sink / per-transport try-except blocks were deleted. Driving
+# ``_tick_body`` makes those inner blocks the actual subject.
+# ---------------------------------------------------------------------------
+
+
+class _RaisingSink:
+    """Sink whose ``emit`` always raises. Satisfies the OutputSink protocol."""
+
+    name = "boom"
+
+    def emit(self, batch: Batch) -> None:
+        raise RuntimeError("sink exploded")
+
+
+class _RecordingSink:
+    """Sink that records every batch it receives."""
+
+    name = "recorder"
+
+    def __init__(self) -> None:
+        self.batches: list[Batch] = []
+
+    def emit(self, batch: Batch) -> None:
+        self.batches.append(batch)
+        return None
+
+
+def test_failing_sink_does_not_block_other_sinks(tmp_path, caplog):
+    """A sink raising in ``emit`` must not stop later sinks from receiving
+    the batch, and must not propagate out of ``_tick_body``.
+
+    The raising sink is listed *first* on purpose — that ordering is what
+    proves the loop continues past a failure rather than merely tolerating a
+    failure at the end.
+    """
+    boom = _RaisingSink()
+    recorder = _RecordingSink()
+    thread = _make_thread(tmp_path, sinks=[boom, recorder])
+
+    with ci.scope("sink-failure-scope"):
+        ci.mark("x", 1)
+
+    with caplog.at_level(logging.WARNING, logger="cirron.flush"):
+        thread._tick_body()  # must not raise
+
+    assert len(recorder.batches) == 1, "later sink did not receive the batch"
+    batch = recorder.batches[0]
+    assert any(s["name"] == "sink-failure-scope" for s in batch.spans)
+    assert any(m["name"] == "x" for m in batch.marks)
+    # The failing sink is identified by its ``name`` in the warning.
+    assert any("boom" in rec.getMessage() for rec in caplog.records), (
+        f"no warning naming the failing sink; got {[r.getMessage() for r in caplog.records]}"
+    )
+
+
+def test_raising_transport_keeps_spool(tmp_path):
+    """A transport that raises must leave the batch on disk.
+
+    No ``sinks=`` is passed, so FlushThread installs the default
+    ``SpoolSink(writer)``. The spool write happens before ``transport.send``,
+    which is what makes the "batch remains in spool" promise true.
+    """
+    writer = _make_writer(tmp_path)
+
+    class RaisingTransport:
+        def send(self, payload: dict) -> bool:
+            raise RuntimeError("transport exploded")
+
+        def close(self) -> None:
+            return None
+
+    thread = _make_thread(tmp_path, writer=writer, transport=RaisingTransport())
+    with ci.scope("raising-transport-scope"):
+        ci.mark("loss", 0.5)
+
+    thread._tick_body()  # must not raise
+
+    files = list(writer.spool_dir.glob("*.json"))
+    assert len(files) == 1
+    payload = json.loads(files[0].read_text())
+    assert payload["schema_version"] == SPOOL_SCHEMA_VERSION
+    assert any(s["name"] == "raising-transport-scope" for s in payload["spans"])
+    assert any(m["name"] == "loss" for m in payload["marks"])
+
+
+def test_transport_false_return_keeps_spool(tmp_path):
+    """``send`` returning ``False`` (the protocol's soft failure) keeps the spool.
+
+    Verified behavior: ``_tick_body`` **discards** ``send``'s return value —
+    there is no ``if not ok:`` branch, so ``False`` and ``True`` are
+    indistinguishable to the flush thread. The ``Transport`` docstring's
+    "``False`` to leave the batch in spool" is honored *structurally*, because
+    the sink loop (which includes ``SpoolSink``) runs before ``send``. This
+    test therefore pins the sink-before-transport **ordering**, not a branch.
+    """
+    writer = _make_writer(tmp_path)
+    calls: list[dict] = []
+
+    class SoftFailTransport:
+        def send(self, payload: dict) -> bool:
+            calls.append(payload)
+            return False
+
+        def close(self) -> None:
+            return None
+
+    thread = _make_thread(tmp_path, writer=writer, transport=SoftFailTransport())
+    with ci.scope("soft-fail-scope"):
+        ci.mark("loss", 0.25)
+
+    thread._tick_body()  # must not raise
+
+    assert len(calls) == 1, "transport.send was not attempted"
+    files = list(writer.spool_dir.glob("*.json"))
+    assert len(files) == 1
+    payload = json.loads(files[0].read_text())
+    assert payload["schema_version"] == SPOOL_SCHEMA_VERSION
+    assert any(s["name"] == "soft-fail-scope" for s in payload["spans"])
 
 
 def test_live_flush_thread_drains_cross_thread(tmp_path):

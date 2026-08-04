@@ -294,10 +294,16 @@ def test_drop_count_all_aggregates_across_threads():
             stack.pop()
 
     threads = [threading.Thread(target=worker) for _ in range(3)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    # Overflowing MAX_DEPTH is the point of this test, so the one-shot
+    # per-thread warning is expected output, not noise — assert it here rather
+    # than letting it leak into pytest's warnings summary. Capturing across
+    # threads is safe in this bounded case: every producer is joined inside the
+    # context and nothing else emits concurrently.
+    with pytest.warns(UserWarning, match="depth exceeded MAX_DEPTH"):
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
 
     # Each thread dropped 3 scopes past MAX_DEPTH → 9 total.
     assert stack.drop_count_all() == 9
@@ -368,3 +374,84 @@ def test_closed_buffer_bound_applies_to_close_scope(monkeypatch):
     with pytest.warns(UserWarning, match="closed-scope buffer full"):
         stack.close_scope(opened[0])
     assert stack.drop_count_all() == 1
+
+
+def test_concurrent_drain_conservation():
+    """Draining while producers are still running must neither lose nor
+    duplicate a closed scope.
+
+    Every other threaded test in this file joins its producers *before*
+    draining, so the flush thread's real interleaving — ``drain_closed_all``
+    racing live ``push``/``pop`` on several threads — is never exercised.
+    The invariant asserted here is COUNT CONSERVATION, never timing.
+    """
+    n_producers = 4
+    cycles = 25_000
+    total = n_producers * cycles
+
+    # A fresh stack, so the module's autouse default-stack fixture and any
+    # other test's leftovers are irrelevant.
+    stack = ScopeStack()
+
+    # 25_000 closed scopes per producer thread-state is well under
+    # CLOSED_BUFFER_CAP (100_000), so the drop-oldest cap must never engage;
+    # drop_count_all() == 0 below proves an eviction didn't silently satisfy
+    # the count.
+    from cirron.core import scope as scope_mod
+
+    assert cycles < scope_mod.CLOSED_BUFFER_CAP
+
+    drained: list[Scope] = []
+    producers_done = threading.Event()
+    start = threading.Barrier(n_producers + 1)
+
+    def producer() -> None:
+        push, pop = stack.push, stack.pop  # hot-path idiom used by ci.batches
+        start.wait()
+        for i in range(cycles):
+            push("soak", index=i)
+            pop()
+
+    def drainer() -> None:
+        empties = 0
+        while True:
+            got = stack.drain_closed_all()
+            if got:
+                drained.extend(got)
+                empties = 0
+            elif producers_done.is_set():
+                # Producers have been joined, so nothing more can arrive.
+                # Require two consecutive empty drains before giving up.
+                empties += 1
+                if empties >= 2:
+                    return
+            else:
+                # Idle backpressure, NOT synchronization: correctness rests
+                # entirely on the joins and the count assertions below. A
+                # free-spinning drainer starves the producers under the GIL
+                # badly enough to matter — measured ~150x slower for the same
+                # workload — so yield briefly when there's nothing to take.
+                producers_done.wait(timeout=0.001)
+
+    threads = [threading.Thread(target=producer, name=f"producer-{i}") for i in range(n_producers)]
+    drain_thread = threading.Thread(target=drainer, name="drainer")
+    drain_thread.start()
+    for t in threads:
+        t.start()
+    start.wait()  # release all producers together so the drainer truly races them
+    for t in threads:
+        t.join(timeout=60)
+        assert not t.is_alive(), "producer thread did not finish"
+    producers_done.set()
+    drain_thread.join(timeout=60)
+    assert not drain_thread.is_alive(), "drainer thread did not finish"
+
+    # No loss.
+    assert len(drained) == total, f"expected {total} closed scopes, drained {len(drained)}"
+    # No double-emit. ``drained`` holds a strong reference to every scope for
+    # the whole test, so CPython cannot recycle an id() and forge uniqueness.
+    assert len({id(s) for s in drained}) == total, "a scope was emitted more than once"
+    # No cap eviction and no MAX_DEPTH drop (drop_count_all folds both causes).
+    assert stack.drop_count_all() == 0
+    # Every drained scope is genuinely closed.
+    assert all(s.end_ns is not None for s in drained)
