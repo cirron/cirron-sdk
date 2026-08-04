@@ -1133,3 +1133,82 @@ def test_discard_pending_leaves_other_scopes_queued():
     _discard_pending(pending, drop_me)
 
     assert [item[0] for item in pending.items] == [keep_me]
+
+
+# epoch fallback latch
+
+
+def _epoch_indices(stack):
+    return [s.index for s in stack.drain_closed_all() if s.name == "epoch"]
+
+
+def _tiny_loader(n=1):
+    xs = torch.zeros(n, 2)
+    ys = torch.zeros(n, 1)
+    return torch.utils.data.DataLoader(torch.utils.data.TensorDataset(xs, ys), batch_size=1)
+
+
+def test_long_epoch_not_chopped_by_step_fallback(stack, tmp_path, ctx):
+    """An epoch longer than epoch_steps stays one epoch.
+
+    Real epochs run to thousands of optimizer steps. Once a DataLoader is
+    driving epoch boundaries, the step counter must not invent extra ones.
+    """
+    ci = Cirron(output_dir=str(tmp_path))
+    ci._profile_config = {"torch": {"epoch_steps": 5}}
+    h = torch_install(stack, ci, ctx)
+    try:
+        model = torch.nn.Linear(2, 1)
+        opt = torch.optim.SGD(model.parameters(), lr=0.01)
+        for _ in _tiny_loader():  # one loader pass opens epoch 0
+            pass
+        for _ in range(8):  # comfortably past epoch_steps=5
+            _drive_step(model, opt)
+    finally:
+        h.uninstall()
+
+    indices = _epoch_indices(stack)
+    assert indices == [0], f"the fallback chopped one epoch into {len(indices)}: {indices}"
+
+
+def test_fallback_still_rotates_without_a_dataloader(stack, tmp_path, ctx):
+    """Loops that never touch a DataLoader keep the old behavior."""
+    ci = Cirron(output_dir=str(tmp_path))
+    ci._profile_config = {"torch": {"epoch_steps": 5}}
+    h = torch_install(stack, ci, ctx)
+    try:
+        model = torch.nn.Linear(2, 1)
+        opt = torch.optim.SGD(model.parameters(), lr=0.01)
+        for _ in range(10):  # exactly two thresholds
+            _drive_step(model, opt)
+    finally:
+        h.uninstall()
+
+    indices = _epoch_indices(stack)
+    assert len(indices) == 2, f"expected 2 fallback rotations, got {len(indices)}: {indices}"
+    assert indices == [0, 1], "epoch indices should be gapless"
+
+
+def test_fallback_stays_disabled_after_the_first_dataloader_pass(stack, tmp_path, ctx):
+    """The latch is permanent: later loader passes still rotate, the
+    counter still doesn't."""
+    ci = Cirron(output_dir=str(tmp_path))
+    ci._profile_config = {"torch": {"epoch_steps": 5}}
+    h = torch_install(stack, ci, ctx)
+    try:
+        model = torch.nn.Linear(2, 1)
+        opt = torch.optim.SGD(model.parameters(), lr=0.01)
+        loader = _tiny_loader()
+        for _ in loader:  # epoch 0
+            pass
+        for _ in range(7):  # past the threshold, must not rotate
+            _drive_step(model, opt)
+        for _ in loader:  # epoch 1, loader-driven
+            pass
+        for _ in range(7):  # again past the threshold
+            _drive_step(model, opt)
+    finally:
+        h.uninstall()
+
+    indices = _epoch_indices(stack)
+    assert indices == [0, 1], f"expected exactly the 2 loader-driven epochs, got {indices}"

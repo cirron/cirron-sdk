@@ -314,6 +314,11 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
     epoch_state: dict[str, Any] = {
         "scope": None,  # currently open epoch Scope | None
         "step_count": 0,  # optimizer steps since last epoch rotate
+        # Latched on the first DataLoader-driven rotation. Once the loader
+        # has proven itself the epoch signal, the step-count fallback below
+        # must never fire: a real epoch can be far longer than the
+        # threshold, and rotating mid-epoch would invent epochs.
+        "dl_driven": False,
         "index": 0,  # next epoch index to assign
     }
     # Implicit ``step`` scope: opens on the first ``DataLoader.__next__``
@@ -678,11 +683,19 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
             # Epoch ownership claimed by another hook (e.g. transformers
             # ``on_epoch_begin``); don't fire the step-count fallback.
             return
-        # Epoch-detection fallback: rotate the epoch scope every
-        # ``epoch_steps`` optimizer steps if the DataLoader signal
-        # hasn't fired.
+        # Epoch-detection fallback, for training loops that never iterate a
+        # DataLoader and would otherwise produce no epoch spans at all.
+        #
+        # It is latched off permanently once the DataLoader signal has
+        # driven a rotation, because past that point the loader is the
+        # epoch boundary and this counter is not. Firing anyway would chop
+        # any epoch longer than ``epoch_steps`` (ImageNet-scale epochs run
+        # to thousands of optimizer steps) into several spurious epoch
+        # spans, inflate the epoch indices, and re-run the expensive
+        # end-of-epoch weight and gradient snapshot every ``epoch_steps``
+        # steps instead of once per real epoch.
         epoch_state["step_count"] += 1
-        if epoch_state["step_count"] >= epoch_steps:
+        if not epoch_state["dl_driven"] and epoch_state["step_count"] >= epoch_steps:
             _rotate_epoch()
 
     def _opt_pre_safe(*a: Any, **kw: Any) -> Any:
@@ -937,6 +950,10 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
                 implicit ``step``) spans on each ``__next__``.
         """
         if not _skip_epoch():
+            # Set before rotating, and on every iteration including the
+            # first: this call IS the DataLoader signal firing, so from
+            # here on the step-count fallback in ``_opt_post`` stays off.
+            epoch_state["dl_driven"] = True
             _catch("epoch_rotate", _rotate_epoch)
         base_iter = orig_dl_iter(self)
         return _wrap_iter(base_iter)
