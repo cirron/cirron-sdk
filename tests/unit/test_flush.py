@@ -958,6 +958,16 @@ def _start_and_stop(tmp_path, **kwargs) -> Path:
     return tmp_path / "spool"
 
 
+def _medium_batch(i: int) -> Batch:
+    """~340 bytes on disk: fine-grained enough to land just under a 3 KB cap."""
+    return Batch(
+        batch_id=f"batch{i:02d}",
+        created_ns=1_700_000_000_000_000_000 + i,
+        spans=[{"id": "a", "name": "x" * 200}],
+        marks=[],
+    )
+
+
 def test_fallback_writer_keeps_configured_spool_dir(tmp_path, _clean_flush_state):
     spool = _start_and_stop(tmp_path / "custom-out")
 
@@ -1010,6 +1020,34 @@ def test_fallback_writer_repoints_after_a_new_run(tmp_path, _clean_flush_state):
     assert writer is not first
     assert writer.spool_dir == second_spool
     assert writer.max_bytes == 5_000
+
+
+def test_fallback_writer_total_is_not_stale_across_a_lifecycle(tmp_path, _clean_flush_state):
+    """A writer cached before a run must not carry its seed scan past that
+    run's writes, or the first post-shutdown flush skips cap enforcement
+    while the directory is already sitting at the cap."""
+    out = tmp_path / "out"
+    _start_and_stop(out, spool_max_bytes=3_000)
+    with ci.scope("after-first-run"):
+        pass
+    flush_now()  # builds + caches the fallback writer against a near-empty dir
+
+    # Second lifecycle: its own writer fills the spool up to the cap.
+    start_flush_thread(Cirron(output_dir=str(out), flush_interval=60.0, spool_max_bytes=3_000))
+    live = flush_mod._writer
+    assert live is not None
+    for i in range(20):
+        live.write(_medium_batch(i))
+    stop_flush_thread(timeout=2.0)
+    # Precondition for the assertion below: the next batch has to be what
+    # tips the directory over the cap.
+    assert 2_500 < _on_disk(live) <= 3_000
+
+    with ci.scope("after-second-run"):
+        ci.mark("loss", 0.5)
+    flush_now()
+
+    assert _on_disk(live) <= 3_000, "cap enforced against a stale byte total"
 
 
 def test_fallback_writer_uses_defaults_when_never_started(tmp_path, _clean_flush_state):

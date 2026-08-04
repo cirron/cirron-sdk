@@ -982,11 +982,17 @@ def stop_flush_thread(timeout: float = 5.0) -> None:
         timeout (float): Seconds to wait for the worker / watcher to
             join. Default ``5.0``.
     """
-    global _supervisor, _writer, _wake_event
+    global _supervisor, _writer, _wake_event, _fallback_writer_cache
     with _state_lock:
         sup = _supervisor
         _supervisor = None
         _writer = None
+        # Drop any cached fallback writer with it. Its running byte total
+        # was seeded when it was built, so reusing it across a flush-thread
+        # lifecycle would enforce the cap against a stale number and could
+        # leave the directory over cap. The first post-shutdown flush pays
+        # one rebuild scan; repeated ones still hit the cache.
+        _fallback_writer_cache = None
         # Detach the wake hookup so a dangling reference can't poke a
         # stopped supervisor's event.
         get_default_mark_buffer().set_wake_event(None)
@@ -1069,7 +1075,10 @@ def _fallback_writer() -> SpoolWriter:
     byte total with a full glob + ``stat`` of the directory; rebuilding per
     call would make repeated post-shutdown flushes O(files) each. The cache
     is keyed on the settings themselves, so a later run against a different
-    directory rebuilds rather than writing to the old one.
+    directory rebuilds rather than writing to the old one, and
+    ``stop_flush_thread`` drops it so a cached writer's byte total can never
+    survive a flush-thread lifecycle (or another rank's writes) and enforce
+    the cap against a stale number.
 
     Deliberately lock-free: :func:`flush_now` runs from the SIGTERM/SIGINT
     handler on the main thread, which may be interrupted while holding the
