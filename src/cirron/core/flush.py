@@ -22,7 +22,6 @@ Design notes:
 from __future__ import annotations
 
 import atexit
-import json
 import logging
 import os
 import signal
@@ -34,6 +33,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from pathlib import Path
+from stat import S_ISREG
 from typing import TYPE_CHECKING, Any, Protocol
 
 from cirron.core.blob_queue import (
@@ -42,10 +42,19 @@ from cirron.core.blob_queue import (
     PendingBlob,
     get_default_blob_queue,
 )
+
+# The JSON policy lives in ``core/json.py``. It was defined in this module
+# historically and had to move to a leaf so ``transport.py`` (which already
+# imports from this one) and ``snapshots/types.py`` (which this one imports
+# from) can both reach it without a cycle. ``from cirron.core.flush import
+# _safe_attrs`` keeps working through this import.
+from cirron.core.json import _safe_attrs, dumps_utf8, nonfinite_token
 from cirron.core.mark import Mark, MarkBuffer, get_default_mark_buffer
 from cirron.core.scope import Scope, ScopeStack, get_default_stack
 from cirron.core.snapshot_buffer import SnapshotBuffer, get_default_snapshot_buffer
+from cirron.core.swallow import swallowed
 from cirron.core.trace_buffer import _TraceBuffer, get_default_trace_buffer
+from cirron.core.version import _sdk_version
 from cirron.snapshots.types import TraceSnapshot, snapshot_to_dict
 
 if TYPE_CHECKING:
@@ -58,24 +67,17 @@ SPOOL_SCHEMA_VERSION = 1
 DEFAULT_SPOOL_MAX_BYTES = 1_000_000_000  # 1 GB
 DEFAULT_INTERVAL_SEC = 1.0
 
-
-def _sdk_version() -> str:
-    """Resolve the installed ``cirron-sdk`` version string.
-
-    Returns:
-        str: The installed package version, or ``"0.0.0"`` if the
-            distribution metadata isn't reachable (e.g. running from a
-            source tree without an editable install).
-    """
-    try:
-        from importlib.metadata import PackageNotFoundError, version
-
-        try:
-            return version("cirron-sdk")
-        except PackageNotFoundError:
-            return "0.0.0"
-    except Exception:
-        return "0.0.0"
+# ``SpoolWriter`` tracks a running byte total so the common (under-cap)
+# write costs O(1) syscalls instead of stat-ing every file in the spool.
+# That counter only sees *this* process's writes, though, and the spool
+# directory carries no rank or pid (``start_flush_thread`` builds
+# ``<output_dir>/spool``), so every rank of a distributed run shares one
+# directory. Forcing a full reconciliation scan every N writes bounds how
+# far the counter can undercount what is actually on disk, keeping the cap
+# a property of the directory rather than of a single process. At the
+# default ~1 write/sec that is one scan per few minutes instead of one per
+# write.
+SPOOL_RESCAN_EVERY_WRITES = 256
 
 
 class Transport(Protocol):
@@ -87,6 +89,11 @@ class Transport(Protocol):
     a safetensors file and returns its remote URI, or ``None`` on
     failure; the flush thread uses this to drain the blob queue before
     the JSON batch that references the blobs.
+
+    This is the single definition of the transport contract —
+    :mod:`cirron.core.transport` re-exports it rather than declaring its
+    own. The import can only run in this direction: ``transport.py``
+    already imports ``SPOOL_SCHEMA_VERSION`` from here.
     """
 
     def send(self, batch: dict[str, Any]) -> bool:
@@ -114,6 +121,10 @@ class Transport(Protocol):
         """
         ...
 
+    def close(self) -> None:
+        """Release any underlying network resources."""
+        ...
+
 
 def _scope_to_dict(s: Scope) -> dict[str, Any]:
     """Serialize a ``Scope`` to its spool-format dict shape.
@@ -123,7 +134,8 @@ def _scope_to_dict(s: Scope) -> dict[str, Any]:
 
     Returns:
         dict[str, Any]: Span dict with ``id`` / ``name`` / ``parent_id`` /
-            timing fields / ``attrs`` / ``mark_ids`` keys.
+            timing fields / ``attrs`` / ``mark_ids`` keys. ``attrs`` is
+            sanitized (see :func:`_safe_attrs`).
     """
     return {
         "id": s.id,
@@ -138,7 +150,7 @@ def _scope_to_dict(s: Scope) -> dict[str, Any]:
         "thread_id": s.thread_id,
         "pid": s.pid,
         "rank": s.rank,
-        "attrs": s.attrs,
+        "attrs": _safe_attrs(s.attrs),
         "mark_ids": list(s.marks),
     }
 
@@ -171,20 +183,46 @@ def _mark_to_dict(m: Mark) -> dict[str, Any]:
     Args:
         m (Mark): The mark to serialize.
 
+    ``attrs`` is sanitized (see :func:`_safe_attrs`). A finite ``value``
+    is not — ``ci.mark`` already rejects anything but ``float`` / ``int`` /
+    ``str`` / ``bool``, and platform ingest cross-checks it against
+    ``value_type``, so coercing a good value could only turn a good batch
+    into a rejected one.
+
+    The one exception is a non-finite float. ``json.dumps`` would emit the
+    bare token ``NaN`` / ``Infinity`` / ``-Infinity``, which is not valid
+    RFC 8259 JSON, and the platform parses the body before validating it,
+    so one diverged loss costs the entire batch. Those become
+    ``"value": null`` plus a sibling ``"value_nonfinite"`` carrying
+    ``"nan"`` / ``"inf"`` / ``"-inf"``. ``value_type`` deliberately stays
+    ``"float"``: the mark *is* a float mark, and a reader that ignores the
+    new field still sees a correctly typed record with a missing value
+    rather than a type contradiction. The key is absent on finite marks.
+
     Returns:
         dict[str, Any]: Mark dict with ``id`` / ``span_id`` / ``name`` /
-            ``value`` / ``ts_ns`` / ``kind`` keys.
+            ``value_type`` / ``value`` / ``attrs`` / ``ts_ns`` / ``kind``
+            keys, plus ``value_nonfinite`` when ``value`` was non-finite.
     """
-    return {
+    value = m.value
+    out: dict[str, Any] = {
         "id": m.id,
         "span_id": m.span_id,
         "name": m.name,
         "value_type": m.value_type,
-        "value": m.value,
-        "attrs": m.attrs,
+        "value": value,
+        "attrs": _safe_attrs(m.attrs),
         "ts_ns": m.ts_ns,
         "kind": m.kind,
     }
+    # True for ``np.float64``, False for ``bool`` (an ``int`` subclass), so
+    # a finite numpy scalar is emitted unchanged as a JSON number.
+    if isinstance(value, float):
+        token = nonfinite_token(value)
+        if token is not None:
+            out["value"] = None
+            out["value_nonfinite"] = token
+    return out
 
 
 @dataclass
@@ -235,6 +273,12 @@ class SpoolWriter:
         self._max_bytes = max_bytes
         self._drop_count = 0
         self._lock = threading.Lock()
+        # Running byte total so an under-cap write costs O(1) syscalls
+        # rather than O(files). Seeded once here and re-derived from real
+        # ``stat`` data by every cap-enforcement pass. This only *seeds* —
+        # constructing a writer must never evict anyone's spool files.
+        self._writes_since_scan = 0
+        self._total_bytes = self._scan_locked()[1]
 
     @property
     def spool_dir(self) -> Path:
@@ -263,6 +307,49 @@ class SpoolWriter:
         """
         return self._drop_count
 
+    @property
+    def total_bytes(self) -> int:
+        """Running byte total of ``*.json`` in the spool directory.
+
+        Exact immediately after any cap-enforcement pass. Between passes it
+        may over-count files deleted out of band and under-count files
+        written by another process sharing the directory; both are
+        corrected by the next scan.
+
+        Returns:
+            int: The writer's running byte total.
+        """
+        return self._total_bytes
+
+    def _scan_locked(self) -> tuple[list[tuple[Path, int]], int]:
+        """Stat every spool file. Caller holds ``self._lock`` (or is ``__init__``).
+
+        Returns:
+            tuple[list[tuple[Path, int]], int]: ``(path, size)`` pairs sorted
+                oldest-first — the zero-padded ``created_ns`` filename prefix
+                makes the lexicographic sort chronological — and their total
+                size. Sizes are returned alongside the paths so the eviction
+                loop never has to re-``stat``, which both halves the syscalls
+                and lets it correct ``total`` by a known size when a file
+                turns out to be already gone. Entries that vanish or aren't
+                regular files are skipped: a second process sharing the spool
+                dir can evict between the ``glob`` and the ``stat``, and an
+                unguarded ``stat`` there would raise out of ``write()`` and
+                cost a whole batch that is already safely on disk.
+        """
+        entries: list[tuple[Path, int]] = []
+        total = 0
+        for p in sorted(self._dir.glob("*.json")):
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            if not S_ISREG(st.st_mode):
+                continue
+            entries.append((p, st.st_size))
+            total += st.st_size
+        return entries, total
+
     def write(self, batch: Batch) -> Path:
         """Atomically write one batch as ``<created_ns>-<id>.json``.
 
@@ -274,16 +361,30 @@ class SpoolWriter:
         """
         filename = f"{batch.created_ns:020d}-{batch.batch_id}.json"
         path = self._dir / filename
-        payload = json.dumps(batch.to_json(), separators=(",", ":"))
+        # Encode once: ``write_bytes`` skips the re-encode ``write_text``
+        # would do internally, hands us the exact on-disk size for the
+        # running total, and sidesteps text-mode newline translation.
+        data = dumps_utf8(batch.to_json())
         with self._lock:
             tmp = path.with_suffix(".json.tmp")
-            tmp.write_text(payload, encoding="utf-8")
+            tmp.write_bytes(data)
             os.replace(tmp, path)
-            self._enforce_cap_locked()
+            # Credited only once the file is actually in place: a raising
+            # write or replace leaves the counter untouched.
+            self._total_bytes += len(data)
+            self._writes_since_scan += 1
+            if (
+                self._total_bytes > self._max_bytes
+                or self._writes_since_scan >= SPOOL_RESCAN_EVERY_WRITES
+            ):
+                self._enforce_cap_locked()
         return path
 
     def enforce_cap(self) -> int:
         """Run cap enforcement out-of-band.
+
+        Also the manual reconciliation entry point: the pass re-derives
+        ``total_bytes`` from real ``stat`` data even when it evicts nothing.
 
         Returns:
             int: Number of files evicted by this call.
@@ -294,22 +395,38 @@ class SpoolWriter:
     def _enforce_cap_locked(self) -> int:
         """Drop oldest-first until total bytes fit under ``max_bytes``.
 
+        Also reconciles ``_total_bytes`` from real ``stat`` data, correcting
+        whatever drift the running counter accumulated since the last pass.
+
         Returns:
             int: Number of files dropped this pass.
         """
-        files = sorted(p for p in self._dir.glob("*.json") if p.is_file())
-        total = sum(p.stat().st_size for p in files)
+        entries, total = self._scan_locked()
         dropped = 0
-        for f in files:
+        for f, size in entries:
             if total <= self._max_bytes:
                 break
             try:
-                size = f.stat().st_size
                 f.unlink()
-                total -= size
-                dropped += 1
             except FileNotFoundError:
+                # Raced with another rank's eviction between our scan and
+                # now. The bytes are off disk either way, so ``total`` must
+                # come down or we over-count and evict more files than the
+                # cap actually requires. Not counted in ``dropped``: we
+                # didn't evict it, and ``drop_count`` reports *our* evictions.
+                total -= size
                 continue
+            except OSError:
+                # Still on disk (e.g. PermissionError, or a reader holding
+                # it open on Windows). Leave ``total`` alone and try the
+                # next file rather than abandoning the pass while over cap.
+                continue
+            total -= size
+            dropped += 1
+        # Unconditional, including when nothing was dropped: the no-eviction
+        # case is exactly what corrects drift from out-of-band deletion.
+        self._total_bytes = total
+        self._writes_since_scan = 0
         self._drop_count += dropped
         if dropped:
             log.warning(
@@ -737,6 +854,8 @@ _state_lock = threading.Lock()
 _supervisor: _Supervisor | None = None
 _writer: SpoolWriter | None = None
 _wake_event: threading.Event | None = None
+_spool_settings: tuple[Path, int] | None = None
+_fallback_writer_cache: SpoolWriter | None = None
 _exit_handlers_registered = False
 _prior_sigterm: Any = None
 _prior_sigint: Any = None
@@ -782,7 +901,7 @@ def start_flush_thread(
     """
     from cirron.core.sinks import build_sinks
 
-    global _supervisor, _writer, _wake_event
+    global _supervisor, _writer, _wake_event, _spool_settings
     with _state_lock:
         if _supervisor is not None:
             return _supervisor
@@ -804,6 +923,9 @@ def start_flush_thread(
         # safe ad-hoc fallback target, even when ``output="none"`` opts
         # the live tick out of writing to it.
         _writer = SpoolWriter(spool_dir, max_bytes=spool_max_bytes)
+        # Recorded alongside the writer so the resolved settings survive
+        # ``stop_flush_thread`` clearing ``_writer``.
+        _spool_settings = (spool_dir, spool_max_bytes)
         _wake_event = threading.Event()
         stack = get_default_stack()
         buf = get_default_mark_buffer()
@@ -852,21 +974,43 @@ def start_flush_thread(
 def stop_flush_thread(timeout: float = 5.0) -> None:
     """Stop the singleton flush thread. No-op if none is running.
 
+    ``_spool_settings`` is deliberately *not* cleared here: a trailing
+    :func:`flush_now` has to keep writing to the spool directory and byte
+    cap this run resolved, rather than falling back to module defaults.
+
     Args:
         timeout (float): Seconds to wait for the worker / watcher to
             join. Default ``5.0``.
     """
-    global _supervisor, _writer, _wake_event
+    global _supervisor, _writer, _wake_event, _fallback_writer_cache
     with _state_lock:
         sup = _supervisor
         _supervisor = None
         _writer = None
+        # Drop any cached fallback writer with it. Its running byte total
+        # was seeded when it was built, so reusing it across a flush-thread
+        # lifecycle would enforce the cap against a stale number and could
+        # leave the directory over cap. The first post-shutdown flush pays
+        # one rebuild scan; repeated ones still hit the cache.
+        _fallback_writer_cache = None
         # Detach the wake hookup so a dangling reference can't poke a
         # stopped supervisor's event.
         get_default_mark_buffer().set_wake_event(None)
         _wake_event = None
     if sup is not None:
         sup.stop(timeout=timeout)
+
+
+def _reset_for_tests() -> None:
+    """Test-only: forget the remembered spool settings and cached fallback writer.
+
+    ``stop_flush_thread`` intentionally leaves both in place, so without this
+    a test that pointed the spool at its own ``tmp_path`` would leak that
+    directory into the next test's fallback flush.
+    """
+    global _spool_settings, _fallback_writer_cache
+    _spool_settings = None
+    _fallback_writer_cache = None
 
 
 def flush_to_trace_buffer() -> int:
@@ -918,12 +1062,55 @@ def flush_to_trace_buffer() -> int:
     return len(batch.spans)
 
 
+def _fallback_writer() -> SpoolWriter:
+    """Ad-hoc spool writer for flushes with no live flush thread.
+
+    Reuses the ``(spool_dir, max_bytes)`` the last :func:`start_flush_thread`
+    resolved, so a post-shutdown flush writes where the user configured and
+    enforces the cap they configured. Only a process that never started a
+    flush thread at all falls back to ``./.cirron/spool/`` at
+    ``DEFAULT_SPOOL_MAX_BYTES`` — there those *are* the resolved settings.
+
+    The writer is cached because ``SpoolWriter.__init__`` seeds its running
+    byte total with a full glob + ``stat`` of the directory; rebuilding per
+    call would make repeated post-shutdown flushes O(files) each. The cache
+    is keyed on the settings themselves, so a later run against a different
+    directory rebuilds rather than writing to the old one, and
+    ``stop_flush_thread`` drops it so a cached writer's byte total can never
+    survive a flush-thread lifecycle (or another rank's writes) and enforce
+    the cap against a stale number.
+
+    Deliberately lock-free: :func:`flush_now` runs from the SIGTERM/SIGINT
+    handler on the main thread, which may be interrupted while holding the
+    non-reentrant ``_state_lock``. A benign race just builds the writer
+    twice, and ``SpoolWriter`` already tolerates sharing a directory with
+    another writer.
+
+    Returns:
+        SpoolWriter: Writer targeting the configured (or default) spool.
+    """
+    global _fallback_writer_cache
+    settings = _spool_settings
+    if settings is None:
+        spool_dir, max_bytes = Path("./.cirron/spool/"), DEFAULT_SPOOL_MAX_BYTES
+    else:
+        spool_dir, max_bytes = settings
+    cached = _fallback_writer_cache
+    if cached is not None and cached.spool_dir == spool_dir and cached.max_bytes == max_bytes:
+        return cached
+    writer = SpoolWriter(spool_dir, max_bytes=max_bytes)
+    _fallback_writer_cache = writer
+    return writer
+
+
 def flush_now() -> Path | None:
     """Drain every producer thread's buffers and write one batch synchronously.
 
     Safe from any thread and from ``atexit``. If no flush thread is running
-    an ad-hoc writer at ``./.cirron/spool/`` is used so data from short-lived
-    scripts isn't lost.
+    an ad-hoc writer is used so data from short-lived scripts isn't lost; it
+    targets the spool directory and byte cap the last ``start_flush_thread()``
+    resolved, or ``./.cirron/spool/`` at ``DEFAULT_SPOOL_MAX_BYTES`` when this
+    process never started one (see :func:`_fallback_writer`).
 
     Also feeds the in-memory trace buffer (so ``ci.trace()`` works
     after a sync flush) and dispatches through the active worker's sinks
@@ -977,9 +1164,9 @@ def flush_now() -> Path | None:
         # ``ci.trace()`` reads from it.
         return None
     # No active worker (atexit / short script) — fall back to the spool
-    # writer if one is present, or build an ad-hoc writer at ``.cirron/spool/``
-    # so trailing data from a profile-less run isn't lost.
-    writer = _writer if _writer is not None else SpoolWriter(Path("./.cirron/spool/"))
+    # writer if one is present, or build an ad-hoc writer against this run's
+    # resolved spool settings so trailing data isn't lost.
+    writer = _writer if _writer is not None else _fallback_writer()
     return writer.write(batch)
 
 
@@ -998,16 +1185,20 @@ def _register_exit_handlers() -> None:
     try:
         _prior_sigterm = signal.getsignal(signal.SIGTERM)
         signal.signal(signal.SIGTERM, _signal_handler)
-    except (ValueError, OSError):
+    except (ValueError, OSError) as exc:
         # signal() outside the main thread raises ValueError; on some
         # restricted runtimes (e.g. embedded Python) it raises OSError.
         # Either way we just skip — atexit still covers the common case.
-        pass
+        # Counted at DEBUG rather than warned about: running off the main
+        # thread is a legitimate configuration, not a fault.
+        swallowed("flush.signal_sigterm", exc)
     try:
         _prior_sigint = signal.getsignal(signal.SIGINT)
         signal.signal(signal.SIGINT, _signal_handler)
-    except (ValueError, OSError):
-        pass
+    except (ValueError, OSError) as exc:
+        # Fails together with the SIGTERM install above; both are counted
+        # so an off-main-thread run reports two events rather than one.
+        swallowed("flush.signal_sigint", exc)
 
 
 def _shutdown() -> None:

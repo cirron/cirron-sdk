@@ -29,6 +29,16 @@ log = logging.getLogger("cirron.scope")
 
 MAX_DEPTH = 64
 
+# Backstop for the per-thread closed-scope buffer. The flush thread drains
+# it about once a second; if it stalls (slow disk, supervisor respawn
+# window) an unbounded deque would grow without limit — the one buffer in
+# the pipeline that can OOM a long training run. Mirrors the drop-oldest
+# contract ``MarkBuffer`` already has (see ``mark.py``): ~100k ``Scope``
+# objects is tens of MB. This is a backstop, not a normal-operation limit
+# — reaching it means the flush thread is unhealthy, and the fix is
+# flush-thread health rather than a bigger cap.
+CLOSED_BUFFER_CAP = 100_000
+
 # Module-level knob for CPU-time capture. Calling ``time.process_time_ns()``
 # twice per scope cycle costs ~200–400 ns per call on Linux/x86 — enough
 # to push ``scope_push_pop_us_per_cycle`` past its 5 μs budget on the
@@ -149,6 +159,7 @@ class _ScopeState:
         "closed",
         "drop_count",
         "warned_overflow",
+        "warned_closed_overflow",
         "warned_underflow",
         "thread_id",
         "__weakref__",
@@ -158,13 +169,39 @@ class _ScopeState:
         self.stack: list[Scope] = []
         # ``deque`` so the consumer thread can ``popleft`` concurrently with
         # the producer's ``append`` — both are atomic under the GIL.
-        self.closed: deque[Scope] = deque()
+        # ``maxlen`` gives lock-free drop-oldest if the consumer stalls; see
+        # ``CLOSED_BUFFER_CAP``.
+        self.closed: deque[Scope] = deque(maxlen=CLOSED_BUFFER_CAP)
         self.drop_count: int = 0
         self.warned_overflow: bool = False
+        self.warned_closed_overflow: bool = False
         self.warned_underflow: bool = False
         # Cache the owning thread's id once — ``push`` calls ``get_ident``
         # on every scope otherwise, which isn't free on the hot path.
         self.thread_id: int = threading.get_ident()
+
+
+def _note_closed_overflow(state: _ScopeState) -> None:
+    """Account for one closed scope about to be dropped by ``maxlen``.
+
+    Called from the three sites that append to ``state.closed``, and only
+    on the overflow branch — the hot path pays one ``len()`` and one
+    integer compare. The deque's ``maxlen`` performs the actual drop; this
+    only does the bookkeeping, mirroring ``MarkBuffer.append`` in
+    ``mark.py``.
+
+    Args:
+        state (_ScopeState): The state whose closed buffer is full.
+    """
+    state.drop_count += 1
+    if not state.warned_closed_overflow:
+        warnings.warn(
+            f"cirron closed-scope buffer full (capacity={CLOSED_BUFFER_CAP}); "
+            "the flush thread may be stalled — oldest spans on this thread "
+            "will be dropped silently.",
+            stacklevel=4,
+        )
+        state.warned_closed_overflow = True
 
 
 # Per-asyncio-task / explicit-context override of the active scope state.
@@ -356,7 +393,12 @@ class ScopeStack:
         # outcome here.
         if scope_obj.cpu_start_ns is not None:
             scope_obj.cpu_ns = _process_time_ns() - scope_obj.cpu_start_ns
-        state.closed.append(scope_obj)
+        closed = state.closed
+        if len(closed) == CLOSED_BUFFER_CAP:
+            _note_closed_overflow(state)
+        # ``maxlen`` makes the append O(1) and drops from the opposite end
+        # when full — exactly "drop oldest".
+        closed.append(scope_obj)
         return scope_obj
 
     def current(self) -> Scope | None:
@@ -388,7 +430,10 @@ class ScopeStack:
         """
         state = self._state
         closed = state.closed
-        state.closed = deque()
+        # The replacement must carry ``maxlen`` too, or the first drain on
+        # a thread would silently un-bound its buffer. Same reason
+        # ``MarkBuffer.drain`` rebuilds with ``maxlen=self._capacity``.
+        state.closed = deque(maxlen=CLOSED_BUFFER_CAP)
         return list(closed)
 
     def drain_closed_all(self) -> list[Scope]:
@@ -441,7 +486,13 @@ class ScopeStack:
         return out
 
     def drop_count(self) -> int:
-        """Number of scopes dropped due to ``MAX_DEPTH`` on the calling thread.
+        """Number of scopes dropped on the calling thread.
+
+        Counts both causes: a ``push`` past ``MAX_DEPTH`` and a closed
+        scope evicted because the buffer was at ``CLOSED_BUFFER_CAP``.
+        The two have opposite remedies — the first means the caller nests
+        too deep, the second means the flush thread is stalled — so use
+        the distinct warning texts to tell them apart.
 
         Returns:
             int: Per-thread drop count.
@@ -454,7 +505,7 @@ class ScopeStack:
         ``drop_count()`` is thread-local — it only reflects the caller's
         own thread. ``health()`` needs process-wide visibility, so we
         aggregate here the same way ``drain_closed_all`` enumerates
-        ``_states``.
+        ``_states``. Sums both drop causes; see :meth:`drop_count`.
 
         Returns:
             int: Process-wide cumulative scope drops.
@@ -493,7 +544,15 @@ class ScopeStack:
             state = self._states.get(scope_obj.thread_id)
         if state is None:
             return
-        state.closed.append(scope_obj)
+        closed = state.closed
+        if len(closed) == CLOSED_BUFFER_CAP:
+            # ``drop_count`` here is a cross-thread read-modify-write that
+            # can lose an update against the owning thread's ``pop()``. It
+            # is a diagnostic (``health()["scope_drop_count"]``), nothing
+            # branches on its exact value, and a lost update can only
+            # under-report — never invent a drop.
+            _note_closed_overflow(state)
+        closed.append(scope_obj)
 
     def close_and_remove(self, scope_obj: Scope) -> None:
         """Close ``scope_obj`` and surgically remove it from its owning
@@ -531,7 +590,88 @@ class ScopeStack:
         if scope_obj.cpu_start_ns is not None:
             scope_obj.cpu_ns = _process_time_ns() - scope_obj.cpu_start_ns
         scope_obj.end_ns = _time_ns()
-        state.closed.append(scope_obj)
+        closed = state.closed
+        if len(closed) == CLOSED_BUFFER_CAP:
+            _note_closed_overflow(state)
+        closed.append(scope_obj)
+
+    # deferred close (hook-internal)
+    #
+    # ``finalize_deferred`` + ``emit_closed`` split what ``pop`` and
+    # ``close_scope`` do in one step: stop the clock now, become drainable
+    # later. They exist for asynchronous timing sources, where a span's
+    # wall-clock end is known immediately but part of its payload is not.
+    #
+    # The torch hook's CUDA timing is the motivating case. GPU time comes
+    # from event pairs that resolve after the op has already returned, so a
+    # normally-closed scope can be serialized by the flush thread before its
+    # ``gpu_ns`` is written, and the late write then lands on an object
+    # nobody will read again. Holding the scope back until its event
+    # resolves closes that window.
+    #
+    # These are hook-internal API, not user surface. A caller that uses
+    # ``finalize_deferred`` owns the obligation to call ``emit_closed``
+    # exactly once on every path, including error paths, or the span is
+    # never emitted at all.
+
+    def finalize_deferred(self, scope_obj: Scope) -> None:
+        """Stop a scope's clock without making it drainable yet.
+
+        Does everything :meth:`pop` / :meth:`close_scope` do (remove from
+        the owning thread's stack, derive ``cpu_ns``, set ``end_ns``)
+        except the append to the drainable deque. The caller must later
+        hand the scope to :meth:`emit_closed`.
+
+        Removing it from the stack here is what stops later ``push``es
+        from nesting under a scope that has conceptually ended. As in
+        :meth:`close_and_remove`, the stack list is only touched from the
+        owning thread; ``list.remove`` is not atomic and a concurrent
+        ``push`` / ``pop`` on that thread would race.
+
+        Args:
+            scope_obj (Scope): The scope to finalize. Already-finalized
+                scopes (``end_ns is not None``) are left alone.
+        """
+        if threading.get_ident() == scope_obj.thread_id:
+            try:
+                self._state.stack.remove(scope_obj)
+            except ValueError:
+                # Already off the stack (popped, rotated, or pushed under a
+                # different state). Finalizing in place is still correct.
+                pass
+        if scope_obj.end_ns is not None:
+            return
+        if scope_obj.cpu_start_ns is not None:
+            scope_obj.cpu_ns = _process_time_ns() - scope_obj.cpu_start_ns
+        # Written last so a reader observing ``end_ns`` also sees ``cpu_ns``,
+        # matching the ordering ``close_scope`` documents.
+        scope_obj.end_ns = _time_ns()
+
+    def emit_closed(self, scope_obj: Scope) -> None:
+        """Make an already-finalized scope drainable.
+
+        The append half of :meth:`finalize_deferred`. Appends to the
+        *owning* thread's deque (not the caller's), so a scope resolved on
+        a consumer thread still drains as its producer's work.
+
+        There is no double-emit guard here: ``Scope`` is slotted and
+        carries no "emitted" bit, and ``end_ns`` is already set by
+        ``finalize_deferred`` so it cannot serve as one. Callers get
+        single-emission structurally instead, by removing the scope from
+        their own pending collection at the moment they emit it.
+
+        Args:
+            scope_obj (Scope): A scope previously passed to
+                :meth:`finalize_deferred`.
+        """
+        with self._states_lock:
+            state = self._states.get(scope_obj.thread_id)
+        if state is None:
+            return
+        closed = state.closed
+        if len(closed) == CLOSED_BUFFER_CAP:
+            _note_closed_overflow(state)
+        closed.append(scope_obj)
 
     @contextmanager
     def isolated_state(self, key: str) -> Iterator[_ScopeState]:

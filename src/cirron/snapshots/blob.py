@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from cirron.core.errors import CirronDependencyError
+from cirron.core.swallow import swallowed
 
 log = logging.getLogger("cirron.snapshots.blob")
 
@@ -211,16 +212,25 @@ def _tensor_to_numpy(tensor: Any) -> Any:
             if callable(to_np):
                 return np.ascontiguousarray(to_np())
         except Exception:
+            # Probe tier 1 (torch-shaped: detach/cpu/numpy). Failing is
+            # normal for any tensor that isn't torch, so this is not
+            # routed through swallowed(); only the terminal tier below
+            # means the tensor was actually dropped.
             pass
     to_np = getattr(tensor, "numpy", None)
     if callable(to_np):
         try:
             return np.ascontiguousarray(to_np())
         except Exception:
+            # Probe tier 2 (anything exposing .numpy()). Same reasoning.
             pass
     try:
         return np.ascontiguousarray(tensor)
-    except Exception:
+    except Exception as exc:
+        # Terminal tier: reaching here means the tensor is dropped from the
+        # snapshot entirely. The two probe tiers above are expected to miss
+        # for non-torch tensors and stay uncounted.
+        swallowed("blob.tensor_to_numpy", exc)
         return None
 
 

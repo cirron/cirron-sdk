@@ -31,14 +31,17 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from importlib.metadata import PackageNotFoundError, version
 from typing import TYPE_CHECKING, Any
 
+# Re-exported: ``driver`` lives in ``core.deps`` next to the EXTRAS registry it
+# reads, but the four SQL shims (and their tests) import it from here.
+from cirron.core.deps import driver as driver
 from cirron.core.errors import (
     CirronDependencyError,
     CirronPlatformRequired,
     CirronSecretNotFound,
 )
+from cirron.core.version import _sdk_version
 
 if TYPE_CHECKING:
     from cirron.core.config import Cirron
@@ -51,7 +54,7 @@ _SDK_VERSION_HEADER = "X-Cirron-SDK-Version"
 _TIMEOUT_SEC = 10.0
 
 
-# -- URI parsing --------------------------------------------------------------
+# URI parsing
 
 
 @dataclass
@@ -229,7 +232,7 @@ def _parse_pg_mysql_path(
     )
 
 
-# -- credential resolution ----------------------------------------------------
+# credential resolution
 
 
 @dataclass
@@ -250,19 +253,6 @@ class SqlCredentials:
     schema: str | None = None
     token: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
-
-
-def _sdk_version() -> str:
-    """Return the installed ``cirron-sdk`` version, or a sentinel.
-
-    Returns:
-        str: The package version, or ``"0.0.0"`` when running from a
-            source tree without an installed distribution.
-    """
-    try:
-        return version("cirron-sdk")
-    except PackageNotFoundError:
-        return "0.0.0"
 
 
 class CredentialResolver:
@@ -535,7 +525,7 @@ def _merge_into(base: SqlCredentials, override: SqlCredentials) -> None:
         base.extra.update(override.extra)
 
 
-# -- query composition --------------------------------------------------------
+# query composition
 
 Quoter = Callable[[str], str]
 
@@ -640,7 +630,7 @@ def _qualified_table(uri: SqlUri, quote: Quoter) -> str:
     return ".".join(parts)
 
 
-# -- cursor → DataFrame -------------------------------------------------------
+# cursor → DataFrame
 
 
 def execute_to_pandas(cursor: Any, query: str) -> Any:
@@ -692,38 +682,44 @@ def execute_to_pandas(cursor: Any, query: str) -> Any:
     return pd.DataFrame(rows, columns=columns)
 
 
-# -- driver helpers -----------------------------------------------------------
+def run_select(
+    connect: Callable[..., Any],
+    conn_kwargs: dict[str, Any],
+    query: str,
+    *,
+    cursor_close: bool = False,
+) -> Any:
+    """Connect, run ``query``, and tear everything down deterministically.
 
+    The shared tail for all four per-driver shims. What genuinely differs
+    between drivers is the import name, the ``conn_kwargs`` mapping, and
+    the connect callable — those stay in the shims. The
+    connect/cursor/cleanup skeleton does not differ, and when each shim
+    hand-rolled it they drifted into three different cleanup styles.
 
-def require_driver(module_name: str, extra_name: str) -> Any:
-    """Import a SQL driver or raise :class:`CirronDependencyError`.
-
-    Driver imports are lazy because none of them are hard dependencies —
-    a user who only hits S3 never pays the cost of ``psycopg``'s C
-    extensions. Uses ``importlib.import_module`` (not ``__import__``)
-    so dotted names like ``"databricks.sql"`` return the leaf module.
-    The error message names the pip extra so users can copy-paste the
-    fix.
+    Plain ``close()`` rather than ``with connect(...)``: psycopg's context
+    manager also commits or rolls back the transaction, which is
+    meaningless for the read-only ``SELECT``s this module composes, and
+    the other three drivers don't offer equivalent semantics.
 
     Args:
-        module_name (str): Driver module to import (e.g. ``"psycopg"``,
-            ``"databricks.sql"``).
-        extra_name (str): Cirron extra name used in the install hint.
+        connect (Callable[..., Any]): The driver's ``connect`` callable.
+        conn_kwargs (dict[str, Any]): Driver-specific connect keywords.
+        query (str): The composed ``SELECT``.
+        cursor_close (bool): Close the cursor explicitly before the
+            connection. Snowflake requires this; drivers that clean up
+            their own cursors on ``conn.close()`` leave it ``False``.
 
     Returns:
-        Any: The imported driver module.
-
-    Raises:
-        CirronDependencyError: If the driver isn't installed.
+        Any: The pandas DataFrame from :func:`execute_to_pandas`.
     """
-    import importlib
-
+    conn = connect(**conn_kwargs)
     try:
-        return importlib.import_module(module_name)
-    except ImportError as e:
-        from cirron.core.deps import install_hint
-
-        raise CirronDependencyError(
-            f"the {extra_name!r} source backend requires the {module_name!r} "
-            f"driver. Install with: {install_hint([extra_name])}"
-        ) from e
+        cursor = conn.cursor()
+        try:
+            return execute_to_pandas(cursor, query)
+        finally:
+            if cursor_close:
+                cursor.close()
+    finally:
+        conn.close()

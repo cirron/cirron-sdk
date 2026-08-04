@@ -14,7 +14,10 @@ from __future__ import annotations
 
 import logging
 import threading
+import weakref
 from typing import TYPE_CHECKING, Any
+
+from cirron.core.swallow import swallowed
 
 if TYPE_CHECKING:
     from cirron.core.config import Cirron
@@ -24,6 +27,36 @@ if TYPE_CHECKING:
 log = logging.getLogger("cirron.hooks.torch")
 
 DEFAULT_EPOCH_STEPS = 1000
+
+# Reap cadence for finished CUDA event pairs. Draining is O(pending) with
+# a device query per pair, and it ran on every single timed op close, so
+# the cost scaled with how many kernels happened to still be in flight.
+# Reaping every _REAP_INTERVAL closes amortizes that away; _REAP_BACKSTOP
+# forces a drain regardless, so a run whose kernels resolve slowly cannot
+# grow the pending list without bound.
+_REAP_INTERVAL = 32
+_REAP_BACKSTOP = 256
+
+# Ceiling on the pool of reusable CUDA events. A training step opens up to
+# six timed spans and each needs two events, so a steady state wants a few
+# dozen; the cap stops a pathological backlog from hoarding them.
+_EVENT_POOL_CAP = 64
+
+
+def _should_reap(ops: int, pending_len: int) -> bool:
+    """Decide whether this op close should scan the pending CUDA pairs.
+
+    Split out as a pure function so the cadence is testable without a GPU
+    (the callers it serves only run when CUDA is available).
+
+    Args:
+        ops (int): Count of timed ops closed since install.
+        pending_len (int): Current length of the pending pair list.
+
+    Returns:
+        bool: ``True`` when the pending list should be drained now.
+    """
+    return ops % _REAP_INTERVAL == 0 or pending_len >= _REAP_BACKSTOP
 
 
 def _catch(label: str, fn: Any, *args: Any, **kwargs: Any) -> Any:
@@ -58,6 +91,18 @@ class _CudaPending:
 
     def __init__(self) -> None:
         self.items: list[tuple[Any, Any, Any]] = []
+        # Events whose elapsed_time has already been read, kept for reuse.
+        # Allocating a CUDA event is the cost being avoided here;
+        # ``Event.record()`` overwrites the previous capture, so a fully
+        # consumed event can be re-recorded and is as good as a fresh one.
+        # Only :func:`_drain_cuda` puts events here, and only once the
+        # pair has left ``items``.
+        self.pool: list[Any] = []
+        # Timed ops closed so far, driving the reap cadence.
+        self.ops: int = 0
+        # Scope stack the held scopes belong to, so the drain can emit them
+        # once their events resolve. Set by ``install``.
+        self.scope_stack: Any = None
 
 
 class TorchHookHandle:
@@ -140,6 +185,15 @@ def _drain_cuda(pending: _CudaPending, *, force: bool = False) -> None:
             log.warning("cirron.hooks.torch: cuda.synchronize failed", exc_info=True)
     keep: list[tuple[Any, Any, Any]] = []
     for scope_obj, start_ev, end_ev in pending.items:
+        # A pair is queued a moment before its scope is finalized. Callers
+        # are structured to finalize before any drain can run, but enforce
+        # it here too: emitting a scope with no ``end_ns`` would hand the
+        # flush thread an unfinished span, which is the precise failure
+        # this deferral exists to prevent. Holding the pair costs nothing
+        # and the next drain picks it up.
+        if getattr(scope_obj, "end_ns", None) is None:
+            keep.append((scope_obj, start_ev, end_ev))
+            continue
         try:
             if not force and not end_ev.query():
                 keep.append((scope_obj, start_ev, end_ev))
@@ -148,7 +202,59 @@ def _drain_cuda(pending: _CudaPending, *, force: bool = False) -> None:
             scope_obj.gpu_ns = int(elapsed_ms * 1_000_000)
         except Exception:
             log.warning("cirron.hooks.torch: elapsed_time failed", exc_info=True)
+            # The pair leaves ``items`` either way, so emit here too. A
+            # span must never be lost just because its GPU timing was:
+            # better a span with gpu_ns unset than no span at all.
+            _emit_deferred(pending, scope_obj)
+            # Deliberately not recycled: an event that misbehaved once is
+            # not worth handing to the next span.
+            continue
+        # Emission is what makes the scope visible to the flush thread, and
+        # it happens only now that gpu_ns is written. Dropping the pair from
+        # ``items`` in the same pass is what guarantees exactly one emit.
+        _emit_deferred(pending, scope_obj)
+        # The only place events re-enter the pool. Reaching here means the
+        # pair is leaving ``items`` and its elapsed_time has been read, so
+        # nothing else still refers to either event.
+        if len(pending.pool) + 2 <= _EVENT_POOL_CAP:
+            pending.pool.append(start_ev)
+            pending.pool.append(end_ev)
     pending.items = keep
+
+
+def _discard_pending(pending: _CudaPending, scope_obj: Any) -> None:
+    """Drop every queued pair belonging to ``scope_obj``.
+
+    Used when deferral could not be completed and the scope has to be
+    closed normally instead. Leaving the pair queued would let a later
+    drain emit a scope that the normal close has already emitted.
+
+    Args:
+        pending (_CudaPending): Holder to remove the pairs from.
+        scope_obj (Any): The scope whose pairs should be discarded.
+    """
+    pending.items = [item for item in pending.items if item[0] is not scope_obj]
+
+
+def _emit_deferred(pending: _CudaPending, scope_obj: Any) -> None:
+    """Make a held scope drainable, if it was held in the first place.
+
+    Scopes only enter the deferred path when a CUDA end event was recorded
+    for them; everything else was closed normally and must not be emitted
+    twice.
+
+    Args:
+        pending (_CudaPending): Holder carrying the scope stack reference.
+        scope_obj (Any): The scope whose CUDA pair just resolved.
+    """
+    stack = pending.scope_stack
+    if stack is None:
+        return
+    try:
+        stack.emit_closed(scope_obj)
+    except Exception as exc:
+        swallowed("torch.emit_deferred", exc)
+        log.warning("cirron.hooks.torch: deferred scope emit failed", exc_info=True)
 
 
 def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> TorchHookHandle:
@@ -179,6 +285,8 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
     except Exception:
         cuda_available = False
     pending_cuda = _CudaPending() if cuda_available else None
+    if pending_cuda is not None:
+        pending_cuda.scope_stack = scope_stack
     handle._cuda = pending_cuda
 
     # Checked at runtime (inside ``_dl_iter`` / ``_opt_post``) so torch
@@ -209,6 +317,11 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
     epoch_state: dict[str, Any] = {
         "scope": None,  # currently open epoch Scope | None
         "step_count": 0,  # optimizer steps since last epoch rotate
+        # Latched on the first DataLoader-driven rotation. Once the loader
+        # has proven itself the epoch signal, the step-count fallback below
+        # must never fire: a real epoch can be far longer than the
+        # threshold, and rotating mid-epoch would invent epochs.
+        "dl_driven": False,
         "index": 0,  # next epoch index to assign
     }
     # Implicit ``step`` scope: opens on the first ``DataLoader.__next__``
@@ -272,34 +385,92 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
         if scope_obj is None or pending_cuda is None:
             return None
         try:
-            ev = torch.cuda.Event(enable_timing=True)
+            pool = pending_cuda.pool
+            ev = pool.pop() if pool else torch.cuda.Event(enable_timing=True)
             ev.record()
             return ev
         except Exception:
             log.warning("cirron.hooks.torch: cuda Event.record failed", exc_info=True)
             return None
 
-    def _maybe_end_cuda(scope_obj: Scope | None, start_ev: Any) -> None:
-        """Record the CUDA end event paired with ``start_ev`` and reap finished pairs.
+    def _maybe_end_cuda(scope_obj: Scope | None, start_ev: Any) -> bool:
+        """Record the CUDA end event paired with ``start_ev`` and queue the pair.
+
+        Queueing only. The reap deliberately lives in :func:`_maybe_reap`,
+        which the caller runs *after* finalizing, so a drain can never
+        observe the pair queued here before its scope has an ``end_ns``.
 
         Args:
             scope_obj (Scope | None): The span being timed.
             start_ev (Any): The matching start event from
                 :func:`_maybe_start_cuda`.
+
+        Returns:
+            bool: ``True`` when the scope was queued for deferred close,
+                meaning the caller must NOT close it: the drain will
+                finish it once the GPU timing is readable. ``False`` on
+                every non-CUDA path, where the caller closes as usual.
         """
         if scope_obj is None or start_ev is None or pending_cuda is None:
-            return
+            return False
         try:
-            end_ev = torch.cuda.Event(enable_timing=True)
+            pool = pending_cuda.pool
+            end_ev = pool.pop() if pool else torch.cuda.Event(enable_timing=True)
             end_ev.record()
             pending_cuda.items.append((scope_obj, start_ev, end_ev))
+            return True
         except Exception:
             log.warning("cirron.hooks.torch: cuda end record failed", exc_info=True)
-        # Opportunistically reap finished events so the list doesn't grow
-        # without bound during long runs.
-        _drain_cuda(pending_cuda, force=False)
+            return False
 
-    # --- forward hooks ------------------------------------------------------
+    def _maybe_reap() -> None:
+        """Periodically drain resolved CUDA pairs.
+
+        Called after the just-closed scope has been finalized, never
+        before: a drain emits whatever it resolves, and emitting a scope
+        whose ``end_ns`` is still unset would put an unfinished span in
+        front of the flush thread, which is the race this whole path
+        exists to prevent.
+        """
+        if pending_cuda is None:
+            return
+        # Reap on a cadence rather than on every close, so the scan cost is
+        # amortized instead of paid per op.
+        pending_cuda.ops += 1
+        if _should_reap(pending_cuda.ops, len(pending_cuda.items)):
+            # A reap triggered by the backstop has to actually shrink the
+            # list, so it synchronizes rather than skipping pairs that
+            # merely have not resolved yet.
+            force = len(pending_cuda.items) >= _REAP_BACKSTOP
+            _drain_cuda(pending_cuda, force=force)
+
+    def _close_or_defer(scope_obj: Scope | None, start_ev: Any) -> None:
+        """End a timed span, holding it back when GPU timing is still pending.
+
+        Args:
+            scope_obj (Scope | None): The span being closed.
+            start_ev (Any): The matching CUDA start event, if any.
+        """
+        if _maybe_end_cuda(scope_obj, start_ev) and scope_obj is not None:
+            # Held: finalize the clock now, but stay out of the drainable
+            # deque until _drain_cuda has written gpu_ns.
+            try:
+                scope_stack.finalize_deferred(scope_obj)
+            except Exception as exc:
+                swallowed("torch.finalize_deferred", exc)
+                log.warning("cirron.hooks.torch: deferred finalize failed", exc_info=True)
+                # Discard the queued pair before falling back, or the drain
+                # would emit this scope a second time once it resolves.
+                if pending_cuda is not None:
+                    _discard_pending(pending_cuda, scope_obj)
+                _close(scope_obj)
+        else:
+            _close(scope_obj)
+        # Only now, with the scope above fully finalized, is it safe to let
+        # a drain run.
+        _maybe_reap()
+
+    # forward hooks
 
     # Per-call state piggy-backs on the pre-hook return → post-hook via a
     # thread-local stack of (scope, cuda_start). Only depth==1 opens a span.
@@ -324,8 +495,8 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
         mode = "train"
         try:
             mode = "train" if bool(module.training) else "eval"
-        except Exception:
-            pass
+        except Exception as exc:
+            swallowed("torch.forward_mode_probe", exc)
         scope_obj = _open("forward", mode=mode)
         fwd_depth.scope = scope_obj
         start_ev = _maybe_start_cuda(scope_obj)
@@ -348,8 +519,7 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
                 stk = getattr(fwd_cuda_stack, "ev", None)
                 if stk:
                     start_ev = stk.pop()
-                _maybe_end_cuda(scope_obj, start_ev)
-                _close(scope_obj)
+                _close_or_defer(scope_obj, start_ev)
                 fwd_depth.scope = None
         finally:
             if fwd_depth.n > 0:
@@ -390,7 +560,7 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
     except Exception:
         log.warning("cirron.hooks.torch: forward-hook registration failed", exc_info=True)
 
-    # --- backward -----------------------------------------------------------
+    # backward
 
     orig_tensor_backward = torch.Tensor.backward
 
@@ -412,8 +582,7 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
         try:
             return orig_tensor_backward(self, *a, **kw)
         finally:
-            _maybe_end_cuda(scope_obj, start_ev)
-            _close(scope_obj)
+            _close_or_defer(scope_obj, start_ev)
 
     try:
         torch.Tensor.backward = _tensor_backward  # type: ignore[method-assign,assignment]
@@ -449,8 +618,7 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
             return orig_autograd_backward(*a, **kw)
         finally:
             if not already:
-                _maybe_end_cuda(scope_obj, start_ev)
-                _close(scope_obj)
+                _close_or_defer(scope_obj, start_ev)
 
     try:
         torch.autograd.backward = _autograd_backward  # type: ignore[assignment]
@@ -461,7 +629,7 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
     except Exception:
         log.warning("cirron.hooks.torch: autograd.backward patch failed", exc_info=True)
 
-    # --- optimizer step -----------------------------------------------------
+    # optimizer step
 
     # Global optimizer step hooks fire for every Optimizer subclass
     # (SGD, Adam, ...) without having to patch each ``step`` method.
@@ -500,8 +668,7 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
         start_ev = None
         if entries:
             scope_obj, start_ev = entries.pop()
-        _maybe_end_cuda(scope_obj, start_ev)
-        _close(scope_obj)
+        _close_or_defer(scope_obj, start_ev)
         # Capture grad references while ``.grad`` is still populated —
         # the user's ``zero_grad`` runs after ``optimizer.step`` returns
         # and would otherwise strip the grads before the epoch boundary.
@@ -520,12 +687,26 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
             # Epoch ownership claimed by another hook (e.g. transformers
             # ``on_epoch_begin``); don't fire the step-count fallback.
             return
-        # Epoch-detection fallback: rotate the epoch scope every
-        # ``epoch_steps`` optimizer steps if the DataLoader signal
-        # hasn't fired.
-        epoch_state["step_count"] += 1
-        if epoch_state["step_count"] >= epoch_steps:
-            _rotate_epoch()
+        # Epoch-detection fallback, for training loops that never iterate a
+        # DataLoader and would otherwise produce no epoch spans at all.
+        #
+        # It is latched off permanently once the DataLoader signal has
+        # driven a rotation, because past that point the loader is the
+        # epoch boundary and this counter is not. Firing anyway would chop
+        # any epoch longer than ``epoch_steps`` (ImageNet-scale epochs run
+        # to thousands of optimizer steps) into several spurious epoch
+        # spans, inflate the epoch indices, and re-run the expensive
+        # end-of-epoch weight and gradient snapshot every ``epoch_steps``
+        # steps instead of once per real epoch.
+        #
+        # The counter is only maintained while the fallback is live. Once
+        # latched off, nothing reads it again, so incrementing would be
+        # pure per-step cost on the hot path (and would grow unbounded
+        # across a long loader-driven run).
+        if not epoch_state["dl_driven"]:
+            epoch_state["step_count"] += 1
+            if epoch_state["step_count"] >= epoch_steps:
+                _rotate_epoch()
 
     def _opt_pre_safe(*a: Any, **kw: Any) -> Any:
         """Exception-swallowing wrapper around :func:`_opt_pre`.
@@ -567,7 +748,7 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
             exc_info=True,
         )
 
-    # --- DataLoader ---------------------------------------------------------
+    # DataLoader
 
     # Grad tensors stashed at each ``opt_post`` so ``capture`` can read
     # them at the epoch boundary even after the user's
@@ -576,6 +757,86 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
     # snapshot reflects the final step's grads.
     grad_refs_state: dict[str, list[tuple[str, Any]]] = {"refs": []}
 
+    # Imported once per install rather than per step. It stays inside
+    # ``install`` instead of moving to module scope because
+    # ``cirron.core.profiler`` imports from ``cirron.hooks._registry``,
+    # so a module-level import here would close an import cycle.
+    from cirron.core.profiler import get_watched_model
+
+    # A model's ``(name, parameter)`` pairs are fixed for its lifetime,
+    # but the stash below runs on every optimizer step, where rebuilding
+    # them costs a full ``named_parameters()`` traversal per step (161
+    # tensors on a ResNet50). Cache them per watched model instead.
+    #
+    # Keyed on a weakref rather than ``id()``: the profiler deliberately
+    # holds the watched model weakly, and comparing identity through a
+    # weakref both sidesteps id reuse after collection and lets a dead
+    # model be noticed.
+    param_cache: dict[str, Any] = {"ref": None, "pairs": [], "finalizer": None}
+
+    def _cached_param_pairs(model: Any) -> list[tuple[str, Any]] | None:
+        """Return ``(name, parameter)`` pairs for ``model``, rebuilding on change.
+
+        Args:
+            model (Any): The currently watched model.
+
+        Returns:
+            list[tuple[str, Any]] | None: Cached pairs, or ``None`` when
+                ``model`` exposes no callable ``named_parameters`` (the
+                caller then leaves any previously stashed refs alone).
+        """
+        ref = param_cache["ref"]
+        if ref is not None and ref() is model:
+            return param_cache["pairs"]
+        named = getattr(model, "named_parameters", None)
+        if not callable(named):
+            _drop_param_cache()
+            return None
+        # Coerce names here rather than per step. ``nn.Module`` always
+        # yields ``str``, but ``ci.watch()`` accepts any object exposing
+        # ``named_parameters()``, and these names become safetensors keys
+        # on the sampled/full blob path, which rejects non-string keys.
+        # Paid once per model, so the per-step stash keeps the names as-is.
+        pairs = [(str(n), p) for n, p in named()]
+        try:
+            ref = weakref.ref(model)
+            # Release the pairs the moment the model is collected, instead
+            # of waiting for a later step to notice. Without this a run
+            # that stops stepping (training finished, model dropped) would
+            # pin a full set of parameter tensors until uninstall, which
+            # is exactly the retention the weakref keying exists to avoid.
+            finalizer = weakref.finalize(model, _drop_param_cache)
+        except TypeError:
+            # Not weakref-able. Skip caching rather than hold the model
+            # strongly; the traversal is then paid per step, as before.
+            _drop_param_cache()
+            return pairs
+        # Detach the outgoing model's finalizer first: it would otherwise
+        # fire later and clear the incoming model's cache.
+        _drop_param_cache()
+        param_cache["ref"] = ref
+        param_cache["finalizer"] = finalizer
+        param_cache["pairs"] = pairs
+        return pairs
+
+    def _drop_param_cache() -> None:
+        """Release the cached pairs.
+
+        The cache holds every parameter tensor strongly, so keeping it
+        past the watched model's lifetime would pin a full set of weights
+        (device memory included) for the rest of the process.
+
+        Safe to call from a ``weakref.finalize`` callback: it only touches
+        the cache dict, never the model.
+        """
+        finalizer = param_cache["finalizer"]
+        if finalizer is not None:
+            # Idempotent, and a no-op when we are being called *by* it.
+            finalizer.detach()
+        param_cache["finalizer"] = None
+        param_cache["ref"] = None
+        param_cache["pairs"] = []
+
     def _stash_grad_refs() -> None:
         """Capture ``(name, .grad)`` pairs for the watched model post-step.
 
@@ -583,9 +844,10 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
         snapshot can serialize grads even after the user's
         ``opt.zero_grad(set_to_none=True)`` has nulled ``Parameter.grad``.
         Silently no-ops when snapshots are off or no model is registered.
-        """
-        from cirron.core.profiler import get_watched_model
 
+        Reading ``.grad`` has to happen every step (that is the whole
+        point), but the names and parameters it reads through are cached.
+        """
         if cirron.snapshots not in ("stats", "sampled", "full"):
             return
         # Suppress the "no model registered" diagnostic here — this
@@ -595,12 +857,17 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
         # the user-visible signal.
         model = get_watched_model(warn_if_missing=False)
         if model is None:
-            return
-        named = getattr(model, "named_parameters", None)
-        if not callable(named):
+            # Guarded so the common no-watched-model path (HF, Keras, and
+            # any bare loop that never calls ci.watch) stays a lookup and
+            # a branch, rather than paying for a clear on every step.
+            if param_cache["ref"] is not None:
+                _drop_param_cache()
             return
         try:
-            grad_refs_state["refs"] = [(str(n), p.grad) for n, p in named() if p.grad is not None]
+            pairs = _cached_param_pairs(model)
+            if pairs is None:
+                return
+            grad_refs_state["refs"] = [(n, p.grad) for n, p in pairs if p.grad is not None]
         except Exception:
             log.warning("cirron.hooks.torch: grad ref stash failed", exc_info=True)
 
@@ -664,6 +931,12 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
                 _close(lingering)
                 step_state["scope"] = None
                 step_state["index"] += 1
+        # Resolve any scope still held for CUDA timing before the epoch
+        # closes. Without this a held span could outlive the epoch it
+        # belongs to, and an epoch boundary is a natural sync point: the
+        # ops in question have long since been submitted.
+        if pending_cuda is not None and pending_cuda.items:
+            _drain_cuda(pending_cuda, force=True)
         prev = epoch_state["scope"]
         # Capture weight + gradient stats against the outgoing epoch span
         # *before* we unwind it — the span id is what the snapshots link
@@ -690,6 +963,10 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
                 implicit ``step``) spans on each ``__next__``.
         """
         if not _skip_epoch():
+            # Set before rotating, and on every iteration including the
+            # first: this call IS the DataLoader signal firing, so from
+            # here on the step-count fallback in ``_opt_post`` stays off.
+            epoch_state["dl_driven"] = True
             _catch("epoch_rotate", _rotate_epoch)
         base_iter = orig_dl_iter(self)
         return _wrap_iter(base_iter)
@@ -732,8 +1009,8 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
                 if scope_obj is not None:
                     try:
                         scope_obj.attrs["data_load_ns"] = dt
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        swallowed("torch.data_load_attr", exc)
                 _close(scope_obj)
                 return item
 
@@ -759,7 +1036,7 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
     except Exception:
         log.warning("cirron.hooks.torch: DataLoader.__iter__ patch failed", exc_info=True)
 
-    # --- close-open-epoch on uninstall -------------------------------------
+    # close-open-epoch on uninstall
 
     def _close_open_epoch() -> None:
         """Drain any open step + epoch spans on uninstall, snapshotting the final epoch.

@@ -10,16 +10,17 @@ between the last tick and the call are visible.
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING, Any, Literal
 
 from cirron.core.errors import CirronDependencyError
+from cirron.core.json import dumps
 from cirron.core.render import (
     build_tree,
     flatten_for_df,
     render_tree_text,
     to_dict_tree,
 )
+from cirron.core.swallow import swallowed
 from cirron.core.trace_buffer import get_default_trace_buffer
 
 if TYPE_CHECKING:
@@ -211,8 +212,8 @@ def trace(
         from cirron.core.flush import flush_to_trace_buffer
 
         flush_to_trace_buffer()
-    except Exception:
-        pass
+    except Exception as exc:
+        swallowed("trace.pre_read_flush", exc)
 
     spans, marks_by_span_id = get_default_trace_buffer().snapshot()
 
@@ -235,7 +236,7 @@ def trace(
     if format == "json":
         roots = build_tree(spans, marks_by_span_id)
         tree = to_dict_tree(roots)
-        return json.dumps({"roots": tree, "span_count": len(spans)}, default=str)
+        return dumps({"roots": tree, "span_count": len(spans)}, separators=None)
     if format == "df":
         try:
             import pandas as pd

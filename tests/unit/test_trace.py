@@ -210,3 +210,48 @@ def test_trace_buffer_keeps_summary_marks_when_capping():
     kinds = [m["kind"] for m in bucket]
     assert "summary" in kinds  # canonical end-of-span value preserved
     assert kinds.count("point") <= 2
+
+
+# non-finite marks
+
+
+def _produce_nonfinite_span():
+    ci.profile(output="none")
+    with ci.scope("epoch", index=0):
+        ci.mark("loss", float("nan"))
+        ci.mark("acc", 0.9)
+    ci.flush()
+
+
+def test_tree_format_renders_the_nonfinite_token(capsys):
+    # The local inspect surface must not print ``loss=None`` for a
+    # diverged loss — that hides the thing the trace was opened for.
+    _produce_nonfinite_span()
+    ci.trace()
+    out = capsys.readouterr().out
+    assert "loss=nan" in out
+    assert "loss=None" not in out
+    assert "acc=0.9000" in out
+
+
+def test_dict_format_carries_value_nonfinite():
+    _produce_nonfinite_span()
+    result = ci.trace(format="dict")
+    assert isinstance(result, dict)
+    marks = [m for r in result["roots"] for m in r["marks"] if r["name"] == "epoch"]
+    loss = next(m for m in marks if m["name"] == "loss")
+    acc = next(m for m in marks if m["name"] == "acc")
+    assert loss["value"] is None
+    assert loss["value_nonfinite"] == "nan"
+    assert "value_nonfinite" not in acc, "the key is absent on finite marks"
+
+
+def test_json_format_is_strict_rfc8259():
+    _produce_nonfinite_span()
+    s = ci.trace(format="json")
+    assert isinstance(s, str)
+
+    def _reject(token: str) -> None:
+        raise AssertionError(f"non-standard JSON constant: {token}")
+
+    json.loads(s, parse_constant=_reject)

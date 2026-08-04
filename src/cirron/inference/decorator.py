@@ -30,6 +30,7 @@ from collections.abc import Callable
 from typing import Any
 
 from cirron.core.scope import ScopeStack, get_default_stack
+from cirron.core.swallow import swallowed
 from cirron.inference.llm import (
     install_hf_generate_patch,
     maybe_mark_openai_usage,
@@ -62,8 +63,8 @@ def _make_stream_closer(stack: ScopeStack, opened: Any) -> Callable[[], None]:
         if opened is not None:
             try:
                 stack.close_and_remove(opened)
-            except Exception:
-                pass
+            except Exception as exc:
+                swallowed("inference.stream_closer", exc)
 
     return _close
 
@@ -93,8 +94,8 @@ def _finish_call(
     """
     try:
         maybe_mark_openai_usage(result)
-    except Exception:
-        pass
+    except Exception as exc:
+        swallowed("inference.mark_openai_usage", exc)
     chunk_timing = bool(cfg.get("stream_chunk_timing", False))
     close = _make_stream_closer(stack, opened)
     wrapped = wrap_stream(
@@ -135,8 +136,8 @@ def inference(
     # instrumentation. Silent if transformers is not installed.
     try:
         install_hf_generate_patch()
-    except Exception:
-        pass
+    except Exception as exc:
+        swallowed("inference.install_hf_patch", exc)
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         """Wrap ``func`` (sync or ``async def``) with request instrumentation.

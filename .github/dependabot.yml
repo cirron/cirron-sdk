@@ -1,0 +1,35 @@
+# This file exists for `labels`, not for scheduling.
+#
+# Dependabot labels its PRs with the semver impact of the dependency it is
+# bumping, and `auto` reads PR labels to decide the SDK's next version. Left
+# alone, a dependency's bump size silently becomes the SDK's. Setting
+# `labels` replaces Dependabot's defaults, so its PRs carry no release
+# meaning. Security updates run without this file, so each ecosystem is
+# declared here to bring them under the same policy.
+version: 2
+
+updates:
+  - package-ecosystem: uv
+    directory: /
+    # `release` is the integration trunk; `main` publishes. See CONTRIBUTING.md.
+    target-branch: release
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+    groups:
+      python-dependencies:
+        patterns:
+          - "*"
+
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: release
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+    groups:
+      github-actions:
+        patterns:
+          - "*"

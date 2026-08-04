@@ -30,11 +30,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import weakref
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from cirron.core.errors import CirronDatasetNotFound, CirronPlatformRequired
+from cirron.core.swallow import swallowed
+from cirron.core.version import _sdk_version
 from cirron.data.sources import DataSource, SourceConfig
 
 if TYPE_CHECKING:
@@ -54,19 +55,6 @@ _LIST_PAGE_LIMIT = 10_000
 # loop silently hammering the API. 10 pages × 10k = 100k objects, which
 # is far above the sane ci.load() working set.
 _MAX_LIST_PAGES = 10
-
-
-def _sdk_version() -> str:
-    """Return the installed ``cirron-sdk`` version, or a sentinel.
-
-    Returns:
-        str: The package version, or ``"0.0.0"`` if running from a
-            source tree without an installed distribution.
-    """
-    try:
-        return version("cirron-sdk")
-    except PackageNotFoundError:
-        return "0.0.0"
 
 
 def _bearer(api_key: str) -> str:
@@ -370,8 +358,8 @@ def _materialize_file_handles(result: Any) -> Any:
         detached = img.copy()
         try:
             img.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            swallowed("registered.image_close", exc)
         return detached
 
     if isinstance(result, Image.Image):

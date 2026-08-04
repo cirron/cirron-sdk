@@ -16,6 +16,7 @@ torch/tf installed.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import threading
 import time
@@ -193,6 +194,40 @@ def _empty_stats() -> dict[str, Any]:
     }
 
 
+def _histogram_range(lo: float, hi: float) -> tuple[float, float] | None:
+    """Resolve the ``(min, max)`` range to histogram over.
+
+    Both backends refuse a non-finite range, and they refuse it
+    differently: ``np.histogram`` raises ``ValueError("supplied range ...
+    is not finite")``, which :func:`_make_record`'s ``except Exception``
+    turns into a silently dropped record, while ``torch.histc`` raises
+    ``RuntimeError`` — except on tensors small enough to take the
+    arithmetic-bins branch, which never calls it and would emit 17 ``NaN``
+    bin edges straight into the batch. Deciding here means the same
+    diverged tensor produces the same record on every path: stats without
+    a ``histogram`` key.
+
+    When ``lo == hi`` (a constant tensor) the range is widened by 1.0 so
+    the backend doesn't return an all-zero histogram. The *reported*
+    ``max`` is unaffected — callers report ``hi``, which equals ``lo`` in
+    that case anyway.
+
+    Args:
+        lo (float): Tensor minimum.
+        hi (float): Tensor maximum.
+
+    Returns:
+        tuple[float, float] | None: The range to bin over, or ``None``
+            when either extreme is non-finite and no meaningful binning
+            exists.
+    """
+    if not (math.isfinite(lo) and math.isfinite(hi)):
+        return None
+    if lo == hi:
+        return (lo, lo + 1.0)
+    return (lo, hi)
+
+
 def _tensor_stats_torch(tensor: Any) -> dict[str, Any]:
     """Fast path for ``torch.Tensor`` — uses native reductions and
     ``torch.histc`` to skip the host-side copy the NumPy path would
@@ -259,34 +294,28 @@ def _tensor_stats_torch(tensor: Any) -> dict[str, Any]:
     norm = (numel * (mean * mean + std * std)) ** 0.5
 
     # ``torch.histc`` requires a range; reuse the min/max we already
-    # computed. When ``lo == hi`` (constant tensor) widen by a tiny
-    # epsilon so torch doesn't return an all-zero histogram, but keep the
-    # reported ``max`` equal to ``min`` in that degenerate case.
-    if lo == hi:
-        hist_hi = lo + 1.0
-        reported_max: float = lo
-    else:
-        hist_hi = hi
-        reported_max = hi
+    # computed.
+    hist_range = _histogram_range(lo, hi)
+    if hist_range is None:
+        return {"mean": mean, "std": std, "min": lo, "max": hi, "norm": norm}
+    hist_lo, hist_hi = hist_range
     # Tiny tensors (<2×bins) can't meaningfully fill 16 buckets — skip
     # ``torch.histc`` and emit a single-bucket histogram to avoid paying
     # the dispatch for a degenerate case. ResNet50's many 64/128/256-long
     # BN scale/shift tensors still use the full path; this only catches
     # shapes like ``[1]`` or ``[]`` that round-tripping are wasteful for.
+    step = (hist_hi - hist_lo) / HISTOGRAM_BINS
+    bins = [hist_lo + step * i for i in range(HISTOGRAM_BINS + 1)]
     if flat.numel() < HISTOGRAM_BINS * 2:
-        step = (hist_hi - lo) / HISTOGRAM_BINS
-        bins = [lo + step * i for i in range(HISTOGRAM_BINS + 1)]
         counts = [int(flat.numel())] + [0] * (HISTOGRAM_BINS - 1)
     else:
-        counts_t = torch.histc(flat, bins=HISTOGRAM_BINS, min=lo, max=hist_hi)
-        step = (hist_hi - lo) / HISTOGRAM_BINS
-        bins = [lo + step * i for i in range(HISTOGRAM_BINS + 1)]
+        counts_t = torch.histc(flat, bins=HISTOGRAM_BINS, min=hist_lo, max=hist_hi)
         counts = counts_t.to(torch.int64).tolist()
     return {
         "mean": mean,
         "std": std,
         "min": lo,
-        "max": reported_max,
+        "max": hi,
         "norm": norm,
         "histogram": {"bins": bins, "counts": counts},
     }
@@ -320,19 +349,16 @@ def _tensor_stats_numpy(arr: Any) -> dict[str, Any]:
     # Population std (``ddof=0``) matches the torch path.
     std = float(flat.std())
     norm = float(np.linalg.norm(flat))
-    if lo == hi:
-        hist_range: tuple[float, float] = (lo, lo + 1.0)
-        reported_max = lo
-    else:
-        hist_range = (lo, hi)
-        reported_max = hi
+    hist_range = _histogram_range(lo, hi)
+    if hist_range is None:
+        return {"mean": mean, "std": std, "min": lo, "max": hi, "norm": norm}
     # Pass range explicitly so numpy skips its internal min/max scan.
     counts, edges = np.histogram(flat, bins=HISTOGRAM_BINS, range=hist_range)
     return {
         "mean": mean,
         "std": std,
         "min": lo,
-        "max": reported_max,
+        "max": hi,
         "norm": norm,
         "histogram": {
             "bins": edges.tolist(),

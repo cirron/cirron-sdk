@@ -498,3 +498,26 @@ def test_blob_path_explicit_override_wins(tmp_path) -> None:
 
     transport.upload_blob(blob, "snapshots/span/weights.safetensors")
     assert session.put_calls[0]["url"].startswith("https://api.example.test/custom/blob/")
+
+
+# strict JSON output
+
+
+def _strict_loads(text: str) -> Any:
+    def _reject(token: str) -> None:
+        raise AssertionError(f"non-standard JSON constant: {token}")
+
+    return json.loads(text, parse_constant=_reject)
+
+
+def test_event_stream_envelope_is_strict_json() -> None:
+    # Defense in depth: the transport encodes independently of the spool
+    # sink, so a value that bypassed the dict-layer substitution must
+    # still leave this path as valid RFC 8259 JSON rather than a line the
+    # downstream reader cannot parse.
+    buf = io.StringIO()
+    t = EventStreamTransport(stream=buf)
+    batch = {"batch_id": "abc123", "spans": [], "marks": [], "leaked": float("nan")}
+    assert t.send(batch) is True
+    envelope = _strict_loads(buf.getvalue())
+    assert envelope["payload"]["leaked"] == "nan"

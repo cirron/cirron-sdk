@@ -3,7 +3,7 @@
 Covers the acceptance criteria:
 - OpenAI-style response dict has tokens marked
 - Non-LLM functions are unaffected
-- Detection failure is silent
+- Detection failure never propagates to user code, and is counted
 
 Plus streaming TTFT / throughput and the HuggingFace ``generate`` patch
 described in.
@@ -22,6 +22,7 @@ import pytest
 import cirron as ci
 from cirron.core.mark import get_default_mark_buffer
 from cirron.core.scope import get_default_stack
+from cirron.core.swallow import reset_swallow_counts, swallow_counts
 from cirron.inference import llm as llm_mod
 
 
@@ -123,6 +124,33 @@ def test_detection_failure_is_silent():
         if m.span_id == span_id and m.name in {"prompt_tokens", "completion_tokens", "total_tokens"}
     ]
     assert token_marks == []
+
+
+def test_broken_usage_detector_is_counted_not_silent():
+    """A detector that breaks against an unfamiliar response shape must
+    stay non-fatal, but must not be invisible.
+
+    This is the regression test for the failure mode the counters exist
+    for: without them, a usage detector broken by a provider's new
+    response shape drops every token mark with no error, no log line and
+    nothing in ``ci.health()``, which is indistinguishable from "this
+    model reports no usage". If a future refactor makes the swallow
+    silent again, this fails.
+    """
+
+    class Exploding:
+        @property
+        def usage(self) -> Any:
+            raise RuntimeError("provider changed its response shape")
+
+    @ci.inference
+    def predict():
+        return Exploding()
+
+    reset_swallow_counts()
+    result = predict()  # must not raise
+    assert isinstance(result, Exploding)
+    assert swallow_counts().get("llm.maybe_mark_openai_usage", 0) >= 1
 
 
 # Streaming
@@ -351,9 +379,7 @@ def test_hf_patch_marks_from_nested_user_scope(monkeypatch):
         llm_mod.uninstall_hf_generate_patch()
 
 
-# ---------------------------------------------------------------------------
-# ContextVar leak regressions (PR #30 review)
-# ---------------------------------------------------------------------------
+# ContextVar leak regressions
 
 
 def test_sync_non_stream_does_not_leak_context_after_return():

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import email.utils
 import gzip
-import json
 import logging
 import random
 import time
@@ -21,6 +20,9 @@ from typing import Any
 
 import requests
 from requests.adapters import HTTPAdapter
+
+from cirron.core.json import dumps_utf8
+from cirron.core.version import _sdk_version
 
 log = logging.getLogger("cirron.ingest")
 
@@ -47,24 +49,6 @@ def _bearer(api_key: str) -> str:
         str: ``"Bearer <api_key>"``.
     """
     return f"Bearer {api_key}"
-
-
-def _sdk_version() -> str:
-    """Resolve the installed ``cirron-sdk`` version string.
-
-    Returns:
-        str: The installed package version, or ``"0.0.0"`` if metadata
-            isn't reachable.
-    """
-    try:
-        from importlib.metadata import PackageNotFoundError, version
-
-        try:
-            return version("cirron-sdk")
-        except PackageNotFoundError:
-            return "0.0.0"
-    except Exception:
-        return "0.0.0"
 
 
 @dataclass(frozen=True)
@@ -220,7 +204,7 @@ class IngestClient:
             tuple[bytes, dict[str, str]]: ``(payload, headers)`` —
                 payload is gzipped when ``len(body) >= GZIP_MIN_BYTES``.
         """
-        body = json.dumps(batch, separators=(",", ":")).encode("utf-8")
+        body = dumps_utf8(batch)
         compressed = len(body) >= GZIP_MIN_BYTES
         payload = gzip.compress(body, mtime=0) if compressed else body
         headers = {
