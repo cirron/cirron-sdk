@@ -249,6 +249,29 @@ def test_inf_tensor_numpy_stats_omit_histogram():
     assert "histogram" not in stats
 
 
+@pytest.mark.parametrize(
+    "values",
+    [
+        [-np.inf, 0.0, np.inf],  # summing both infinities is indeterminate
+        [np.nan, 1.0, 2.0],
+        [np.inf, np.inf],
+    ],
+)
+def test_nonfinite_capture_emits_no_numpy_warnings(values, recwarn):
+    """Capturing a diverged tensor must stay silent.
+
+    Summing a tensor holding both infinities yields nan and numpy warns
+    about it. That nan is the answer we want and is substituted on the way
+    to the wire, so the warning is noise the caller cannot act on. A
+    profiler printing RuntimeWarnings into a training log at the moment a
+    model blows up is worse than useless.
+    """
+    stats = _tensor_stats(np.array(values, dtype=np.float64))
+
+    assert [str(w.message) for w in recwarn.list] == []
+    assert "mean" in stats, "silencing the warning must not skip the reduction"
+
+
 def test_finite_tensor_still_has_full_histogram():
     stats = _tensor_stats(np.arange(64, dtype=np.float64))
     assert len(stats["histogram"]["bins"]) == HISTOGRAM_BINS + 1

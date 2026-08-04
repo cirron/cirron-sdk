@@ -384,7 +384,17 @@ class SpoolWriter:
         return self._scan_locked().total
 
     def _scan_locked(self) -> _SpoolScan:
-        """Stat every spool file. Caller holds ``self._lock`` (or is ``__init__``).
+        """Stat every spool file.
+
+        The ``_locked`` suffix marks where this sits in the locking scheme,
+        not a precondition: the scan itself is read-only, touches no
+        instance state, and already tolerates the directory changing
+        underneath it, so holding ``self._lock`` is optional. Callers that
+        go on to *act* on the result take the lock, because eviction and
+        the running-total update must not interleave with a concurrent
+        ``write``. Callers that only read a number, :meth:`disk_bytes` and
+        ``__init__``, deliberately do not, and :meth:`disk_bytes` must not:
+        see its docstring for the deadlock that would introduce.
 
         Deliberately zero-argument: the test suite replaces this on the
         instance with a call-counting wrapper, so a parameter added here
