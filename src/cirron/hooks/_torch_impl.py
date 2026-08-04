@@ -183,6 +183,15 @@ def _drain_cuda(pending: _CudaPending, *, force: bool = False) -> None:
             log.warning("cirron.hooks.torch: cuda.synchronize failed", exc_info=True)
     keep: list[tuple[Any, Any, Any]] = []
     for scope_obj, start_ev, end_ev in pending.items:
+        # A pair is queued a moment before its scope is finalized. Callers
+        # are structured to finalize before any drain can run, but enforce
+        # it here too: emitting a scope with no ``end_ns`` would hand the
+        # flush thread an unfinished span, which is the precise failure
+        # this deferral exists to prevent. Holding the pair costs nothing
+        # and the next drain picks it up.
+        if getattr(scope_obj, "end_ns", None) is None:
+            keep.append((scope_obj, start_ev, end_ev))
+            continue
         try:
             if not force and not end_ev.query():
                 keep.append((scope_obj, start_ev, end_ev))
@@ -209,6 +218,20 @@ def _drain_cuda(pending: _CudaPending, *, force: bool = False) -> None:
             pending.pool.append(start_ev)
             pending.pool.append(end_ev)
     pending.items = keep
+
+
+def _discard_pending(pending: _CudaPending, scope_obj: Any) -> None:
+    """Drop every queued pair belonging to ``scope_obj``.
+
+    Used when deferral could not be completed and the scope has to be
+    closed normally instead. Leaving the pair queued would let a later
+    drain emit a scope that the normal close has already emitted.
+
+    Args:
+        pending (_CudaPending): Holder to remove the pairs from.
+        scope_obj (Any): The scope whose pairs should be discarded.
+    """
+    pending.items = [item for item in pending.items if item[0] is not scope_obj]
 
 
 def _emit_deferred(pending: _CudaPending, scope_obj: Any) -> None:
@@ -363,7 +386,11 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
             return None
 
     def _maybe_end_cuda(scope_obj: Scope | None, start_ev: Any) -> bool:
-        """Record the CUDA end event paired with ``start_ev`` and reap finished pairs.
+        """Record the CUDA end event paired with ``start_ev`` and queue the pair.
+
+        Queueing only. The reap deliberately lives in :func:`_maybe_reap`,
+        which the caller runs *after* finalizing, so a drain can never
+        observe the pair queued here before its scope has an ``end_ns``.
 
         Args:
             scope_obj (Scope | None): The span being timed.
@@ -378,17 +405,28 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
         """
         if scope_obj is None or start_ev is None or pending_cuda is None:
             return False
-        deferred = False
         try:
             pool = pending_cuda.pool
             end_ev = pool.pop() if pool else torch.cuda.Event(enable_timing=True)
             end_ev.record()
             pending_cuda.items.append((scope_obj, start_ev, end_ev))
-            deferred = True
+            return True
         except Exception:
             log.warning("cirron.hooks.torch: cuda end record failed", exc_info=True)
-        # Reap finished events periodically rather than on every close, so
-        # the list still can't grow without bound but the scan cost is
+            return False
+
+    def _maybe_reap() -> None:
+        """Periodically drain resolved CUDA pairs.
+
+        Called after the just-closed scope has been finalized, never
+        before: a drain emits whatever it resolves, and emitting a scope
+        whose ``end_ns`` is still unset would put an unfinished span in
+        front of the flush thread, which is the race this whole path
+        exists to prevent.
+        """
+        if pending_cuda is None:
+            return
+        # Reap on a cadence rather than on every close, so the scan cost is
         # amortized instead of paid per op.
         pending_cuda.ops += 1
         if _should_reap(pending_cuda.ops, len(pending_cuda.items)):
@@ -397,7 +435,6 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
             # merely have not resolved yet.
             force = len(pending_cuda.items) >= _REAP_BACKSTOP
             _drain_cuda(pending_cuda, force=force)
-        return deferred
 
     def _close_or_defer(scope_obj: Scope | None, start_ev: Any) -> None:
         """End a timed span, holding it back when GPU timing is still pending.
@@ -406,17 +443,23 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
             scope_obj (Scope | None): The span being closed.
             start_ev (Any): The matching CUDA start event, if any.
         """
-        if _maybe_end_cuda(scope_obj, start_ev):
+        if _maybe_end_cuda(scope_obj, start_ev) and scope_obj is not None:
             # Held: finalize the clock now, but stay out of the drainable
             # deque until _drain_cuda has written gpu_ns.
-            if scope_obj is not None:
-                try:
-                    scope_stack.finalize_deferred(scope_obj)
-                except Exception:
-                    log.warning("cirron.hooks.torch: deferred finalize failed", exc_info=True)
-                    _close(scope_obj)
-            return
-        _close(scope_obj)
+            try:
+                scope_stack.finalize_deferred(scope_obj)
+            except Exception:
+                log.warning("cirron.hooks.torch: deferred finalize failed", exc_info=True)
+                # Discard the queued pair before falling back, or the drain
+                # would emit this scope a second time once it resolves.
+                if pending_cuda is not None:
+                    _discard_pending(pending_cuda, scope_obj)
+                _close(scope_obj)
+        else:
+            _close(scope_obj)
+        # Only now, with the scope above fully finalized, is it safe to let
+        # a drain run.
+        _maybe_reap()
 
     # forward hooks
 

@@ -762,6 +762,8 @@ def test_drain_recycles_events_after_reading_elapsed_time():
 
     class _Scope:
         gpu_ns = None
+        # Held scopes are always finalized before any drain sees them.
+        end_ns = 1
 
     class _Event:
         def __init__(self, ready=True):
@@ -791,6 +793,8 @@ def test_drain_keeps_unresolved_pairs_out_of_the_pool():
 
     class _Scope:
         gpu_ns = None
+        # Held scopes are always finalized before any drain sees them.
+        end_ns = 1
 
     class _PendingEvent:
         def query(self):
@@ -817,6 +821,8 @@ def test_drain_does_not_recycle_events_that_failed():
 
     class _Scope:
         gpu_ns = None
+        # Held scopes are always finalized before any drain sees them.
+        end_ns = 1
 
     class _BrokenEvent:
         def query(self):
@@ -842,6 +848,8 @@ def test_event_pool_is_capped():
 
     class _Scope:
         gpu_ns = None
+        # Held scopes are always finalized before any drain sees them.
+        end_ns = 1
 
     class _Event:
         def query(self):
@@ -1045,6 +1053,8 @@ def test_drain_without_a_scope_stack_does_not_raise():
 
     class _Scope:
         gpu_ns = None
+        # Held scopes are always finalized before any drain sees them.
+        end_ns = 1
 
     pending = _CudaPending()  # scope_stack left as None
     pending.items.append((_Scope(), _FakeEvent(), _FakeEvent()))
@@ -1052,3 +1062,74 @@ def test_drain_without_a_scope_stack_does_not_raise():
     _drain_cuda(pending, force=True)
 
     assert pending.items == []
+
+
+def test_drain_will_not_emit_a_scope_that_is_not_finalized_yet():
+    """A pair is queued a moment before its scope is finalized.
+
+    If a drain runs in that window and the event already reads complete,
+    emitting would put a span with no end_ns in front of the flush
+    thread, which is exactly the race the deferred path exists to close.
+    The pair must simply stay pending.
+    """
+    from cirron.hooks._torch_impl import _CudaPending, _drain_cuda
+
+    stack = ScopeStack()
+    pending = _CudaPending()
+    pending.scope_stack = stack
+
+    scope_obj = stack.push("forward")  # queued, but NOT finalized
+    pending.items.append((scope_obj, _FakeEvent(), _FakeEvent()))
+    assert scope_obj.end_ns is None
+
+    _drain_cuda(pending, force=True)  # force: the worst case for ordering
+
+    assert stack.drain_closed_all() == [], "emitted a scope before it was finalized"
+    assert len(pending.items) == 1, "the pair should stay pending until the scope is finalized"
+
+    # Once finalized, the very next drain emits it normally.
+    stack.finalize_deferred(scope_obj)
+    _drain_cuda(pending, force=True)
+
+    assert stack.drain_closed_all() == [scope_obj]
+    assert scope_obj.gpu_ns == 2_000_000
+
+
+def test_discard_pending_prevents_a_double_emit_after_fallback_close():
+    """If deferral fails and the scope is closed normally, the stale pair
+    must not emit it a second time."""
+    from cirron.hooks._torch_impl import _CudaPending, _discard_pending, _drain_cuda
+
+    stack = ScopeStack()
+    pending = _CudaPending()
+    pending.scope_stack = stack
+
+    scope_obj = stack.push("optimizer_step")
+    pending.items.append((scope_obj, _FakeEvent(), _FakeEvent()))
+
+    # The fallback path: drop the queued pair, then close normally.
+    _discard_pending(pending, scope_obj)
+    stack.close_scope(scope_obj)
+
+    _drain_cuda(pending, force=True)
+
+    drained = stack.drain_closed_all()
+    assert len(drained) == 1, f"scope emitted {len(drained)} times, expected once"
+    assert drained[0] is scope_obj
+
+
+def test_discard_pending_leaves_other_scopes_queued():
+    """Discarding one scope's pairs must not disturb its neighbours."""
+    from cirron.hooks._torch_impl import _CudaPending, _discard_pending
+
+    stack = ScopeStack()
+    pending = _CudaPending()
+    pending.scope_stack = stack
+    keep_me = stack.push("forward")
+    drop_me = stack.push("backward")
+    pending.items.append((keep_me, _FakeEvent(), _FakeEvent()))
+    pending.items.append((drop_me, _FakeEvent(), _FakeEvent()))
+
+    _discard_pending(pending, drop_me)
+
+    assert [item[0] for item in pending.items] == [keep_me]
