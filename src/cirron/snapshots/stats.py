@@ -343,12 +343,20 @@ def _tensor_stats_numpy(arr: Any) -> dict[str, Any]:
     # runs on the same contiguous buffer.
     if flat.dtype.kind != "f":
         flat = flat.astype(np.float64, copy=False)
-    lo = float(flat.min())
-    hi = float(flat.max())
-    mean = float(flat.mean())
-    # Population std (``ddof=0``) matches the torch path.
-    std = float(flat.std())
-    norm = float(np.linalg.norm(flat))
+    # A diverged tensor is exactly what this profiler exists to capture, and
+    # summing a tensor holding both infinities is legitimately indeterminate:
+    # numpy warns "invalid value encountered in reduce" and yields nan. That
+    # nan is the correct answer and is substituted downstream by
+    # ``stats_to_wire``, so the warning carries no information the caller can
+    # act on. Suppressing it keeps the SDK from printing RuntimeWarnings into
+    # a user's training log at the precise moment their model blew up.
+    with np.errstate(invalid="ignore"):
+        lo = float(flat.min())
+        hi = float(flat.max())
+        mean = float(flat.mean())
+        # Population std (``ddof=0``) matches the torch path.
+        std = float(flat.std())
+        norm = float(np.linalg.norm(flat))
     hist_range = _histogram_range(lo, hi)
     if hist_range is None:
         return {"mean": mean, "std": std, "min": lo, "max": hi, "norm": norm}

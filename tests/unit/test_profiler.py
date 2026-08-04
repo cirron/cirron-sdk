@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import os
+import time
+from pathlib import Path
 
 import pytest
 
@@ -177,6 +180,23 @@ def test_health_returns_expected_shape():
     assert h["enabled"] is True
     assert h["transport"] == "FileOnlyTransport"
     assert h["flush_mode"] in ("normal", "spool_only")
+
+
+def test_health_spool_bytes_includes_orphaned_tmp_files():
+    """``spool_bytes`` used to run its own ``*.json`` glob, so it reported the
+    same under-count the cap did: an orphaned ``.json.tmp`` from a hard-killed
+    writer occupied disk that neither number could see."""
+    p = cirron.profile()
+    spool_dir = Path(p.health()["spool_dir"])
+    spool_dir.mkdir(parents=True, exist_ok=True)
+    before = p.health()["spool_bytes"]
+
+    orphan = spool_dir / "00000000000000000001-dead.json.tmp"
+    orphan.write_bytes(b"x" * 4_096)
+    stamp = time.time() - 7_200
+    os.utime(orphan, (stamp, stamp))
+
+    assert p.health()["spool_bytes"] == before + 4_096
 
 
 def test_health_module_level_without_active_profiler():
