@@ -74,7 +74,13 @@ def _format_marks(marks: list[Mark]) -> str:
     for m in marks:
         name = m.get("name", "?")
         value = m.get("value")
-        if isinstance(value, float):
+        if value is None:
+            # A non-finite mark carries its token in a sibling field.
+            # Printing ``loss=None`` for a diverged loss would hide
+            # exactly what the user opened the trace to see.
+            token = m.get("value_nonfinite")
+            parts.append(f"{name}={token}" if token else f"{name}=None")
+        elif isinstance(value, float):
             parts.append(f"{name}={value:.4f}")
         else:
             parts.append(f"{name}={value}")
@@ -186,6 +192,30 @@ def render_tree_text(roots: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _mark_node(m: Mark) -> dict[str, Any]:
+    """Convert one mark to its public ``format="dict"`` shape.
+
+    ``value_nonfinite`` is carried through only when present, matching the
+    wire rule that the key is absent on every finite mark.
+
+    Args:
+        m (Mark): Mark dict as it appears in the trace buffer.
+
+    Returns:
+        dict[str, Any]: ``{name, value, kind}``, plus ``value_nonfinite``
+            when the mark's value was non-finite.
+    """
+    node: dict[str, Any] = {
+        "name": m.get("name"),
+        "value": m.get("value"),
+        "kind": m.get("kind"),
+    }
+    token = m.get("value_nonfinite")
+    if token:
+        node["value_nonfinite"] = token
+    return node
+
+
 def to_dict_tree(roots: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Convert internal nodes to a public nested-dict shape for ``format="dict"``.
 
@@ -219,10 +249,7 @@ def to_dict_tree(roots: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "gpu_ns": span.get("gpu_ns"),
             "memory_peak_bytes": span.get("memory_peak_bytes"),
             "attrs": span.get("attrs") or {},
-            "marks": [
-                {"name": m.get("name"), "value": m.get("value"), "kind": m.get("kind")}
-                for m in node["marks"]
-            ],
+            "marks": [_mark_node(m) for m in node["marks"]],
             "children": [to_dict(c) for c in node["children"]],
         }
 
