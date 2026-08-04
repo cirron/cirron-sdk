@@ -125,6 +125,11 @@ class Transport(Protocol):
     a safetensors file and returns its remote URI, or ``None`` on
     failure; the flush thread uses this to drain the blob queue before
     the JSON batch that references the blobs.
+
+    This is the single definition of the transport contract —
+    :mod:`cirron.core.transport` re-exports it rather than declaring its
+    own. The import can only run in this direction: ``transport.py``
+    already imports ``SPOOL_SCHEMA_VERSION`` from here.
     """
 
     def send(self, batch: dict[str, Any]) -> bool:
@@ -150,6 +155,10 @@ class Transport(Protocol):
             str | None: The remote URI on success, or ``None`` on
                 failure (the local blob stays on disk for retry).
         """
+        ...
+
+    def close(self) -> None:
+        """Release any underlying network resources."""
         ...
 
 
