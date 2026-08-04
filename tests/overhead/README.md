@@ -105,7 +105,11 @@ Two constraints, both load-bearing:
 - **Max of two consecutive runs on the release branch**, matching the
   existing ratios, so one run's jitter does not become the ceiling.
 
-If CI shows more than 20% run-to-run variance on these metrics, raise
-the tolerance for the per-primitive keys rather than padding the
-committed values; the reference-loop ratios should stay at +20%.
-Whoever proposes that change should bring the variance data.
+If CI shows more than 20% run-to-run variance on these metrics, the fix
+is a tolerance change rather than padded baseline values. Note that
+`REGRESSION_TOLERANCE` in `conftest.py` is currently shared by every
+ratcheted metric, so loosening it for the micro-benchmarks alone means
+first making the tolerance per-metric. That indirection is not worth
+adding on speculation, so it is deliberately absent until the variance
+data says it is needed. Whoever proposes the change should bring that
+data.

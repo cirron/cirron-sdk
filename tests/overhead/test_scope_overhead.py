@@ -1,7 +1,7 @@
 """Overhead budget: scope push/pop must stay under ~5μs per cycle.
 
-1M push/pop cycles in < 5s on a single thread. Gating + result logging
-are handled by ``conftest.py``.
+1M push/pop cycles on a single thread. Gating + result logging are
+handled by ``conftest.py``.
 """
 
 from __future__ import annotations
@@ -9,6 +9,10 @@ from __future__ import annotations
 import time
 
 from cirron.core.scope import ScopeStack
+
+# Per cycle, matching the unit the metric is recorded and compared in.
+# See the note in ``test_mark_overhead.py``.
+_BUDGET_US_PER_CYCLE = 5.0
 
 
 def test_1m_push_pop_cycles_under_5s(record_result, baseline_metrics, assert_no_regression) -> None:
@@ -30,13 +34,13 @@ def test_1m_push_pop_cycles_under_5s(record_result, baseline_metrics, assert_no_
         "scope_push_pop_us_per_cycle",
         per_cycle_us,
         "us",
-        budget=5.0,
+        budget=_BUDGET_US_PER_CYCLE,
         baseline=baseline_metrics.get("scope_push_pop_us_per_cycle"),
     )
     # Hard ceiling: the documented budget, independent of any baseline.
-    assert elapsed < 5.0, (
+    assert per_cycle_us < _BUDGET_US_PER_CYCLE, (
         f"scope push/pop overhead regression: {elapsed:.2f}s for {N} cycles "
-        f"(~{per_cycle_us:.2f}μs/cycle, budget 5μs)"
+        f"(~{per_cycle_us:.2f}μs/cycle, budget {_BUDGET_US_PER_CYCLE}μs/cycle)"
     )
     # Ratchet: the budget has ~2x headroom over what this actually costs,
     # so a real regression can double the cost and still pass the ceiling.

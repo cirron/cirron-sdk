@@ -20,7 +20,11 @@ import time
 import cirron as ci
 from cirron.core.mark import get_default_mark_buffer
 
-_BUDGET_S = 5.0  # 5 μs × 1M calls
+# Expressed per call, which is the unit the metric is recorded and
+# compared in. Deriving a total-seconds threshold from it would only be
+# equivalent while N happens to be 1e6, and the recorded budget would
+# silently start describing something else the moment N changed.
+_BUDGET_US_PER_CALL = 5.0
 
 
 def test_1m_marks_under_budget(record_result, baseline_metrics, assert_no_regression) -> None:
@@ -44,13 +48,13 @@ def test_1m_marks_under_budget(record_result, baseline_metrics, assert_no_regres
         "mark_us_per_call",
         per_call_us,
         "us",
-        budget=_BUDGET_S,
+        budget=_BUDGET_US_PER_CALL,
         baseline=baseline_metrics.get("mark_us_per_call"),
     )
     # Hard ceiling: the documented budget, independent of any baseline.
-    assert elapsed < _BUDGET_S, (
+    assert per_call_us < _BUDGET_US_PER_CALL, (
         f"ci.mark overhead regression: {elapsed:.2f}s for {N} calls "
-        f"(~{per_call_us:.2f}μs/call, budget {_BUDGET_S}μs)"
+        f"(~{per_call_us:.2f}μs/call, budget {_BUDGET_US_PER_CALL}μs/call)"
     )
     # Ratchet: as the docstring above notes, the real cost sits well under
     # the 5μs trip point, so the budget alone can't catch a 2x regression.
