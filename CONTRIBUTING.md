@@ -38,7 +38,7 @@ Feature requests go in the issue tracker too, via the [feature request template]
 > `release` requires lint, typecheck, the unit matrix and the three framework matrices,
 > while `main` additionally requires the `overhead` job and that your branch be up to date.
 
-A maintainer will apply the appropriate release label (`major` / `minor` / `patch` / `internal` / `documentation`) during review — see [Releases](#releases) for what they mean. You don't need to label the PR yourself.
+A maintainer will apply the appropriate release label (`enhancement` / `bug` / `internal` / `documentation`, or a `release: *` override) during review — see [Releases](#releases) for what they mean. You don't need to label the PR yourself.
 
 For small fixes (typos, doc clarifications, obvious one-line bugs), feel free to skip the issue and go straight to a PR. For non-trivial changes, open an issue first; it saves rework if the design needs iteration.
 
@@ -46,7 +46,7 @@ A maintainer will triage within a week. Review velocity beyond triage depends on
 
 ### PR and issue labels
 
-Most labels (`bug`, `enhancement`, `documentation`, etc.) are self-describing and documented in GitHub's label description field. The labels below have rules around *when* they may be applied, so they're documented here too:
+Most labels are documented in GitHub's label description field. Note that `bug`, `enhancement` and `documentation` are not purely descriptive: they drive the release version, so see [Releases](#releases) before applying one. The labels below have rules around *when* they may be applied, so they're documented here too:
 
 - **`skip-ci`** (PRs only): bypasses the CI workflow. Use it **only** on PRs that touch zero source code: README typos, doc-only changes under `docs/` (excluding formats/specs), or comment-only/docstring fixes that don't change the build. **Not allowed** on anything under `src/` or `tests/`, including renames, refactors, "obviously safe" one-line changes, dependency bumps, or anything that touches `pyproject.toml`.
 
@@ -60,11 +60,22 @@ Releases are driven by [`auto`](https://intuit.github.io/auto/) and triggered on
 
 ### Release-type labels (apply exactly one per PR)
 
-- **`major`**: breaking change. Bumps `X.y.z`.
-- **`minor`**: backwards-compatible feature. Bumps `x.Y.z`.
-- **`patch`**: backwards-compatible fix. Bumps `x.y.Z`.
+The two you'll reach for most are the ordinary triage labels, which carry release meaning directly:
+
+- **`enhancement`**: new or improved behavior. Bumps `x.Y.z`, and groups under "🚀 Enhancement".
+- **`bug`**: fixes broken behavior. Bumps `x.y.Z`, and groups under "🐛 Bug Fix".
+
+The rest are explicit overrides, namespaced so that a label applied by an external tool can never be mistaken for a release instruction:
+
+- **`release: major`**: breaking change. Bumps `X.y.z`.
+- **`release: minor`**: same effect as `enhancement`, for when the triage label doesn't fit.
+- **`release: patch`**: same effect as `bug`, for when the triage label doesn't fit.
 - **`internal`**: tooling / CI / dev-workflow change. No version bump, included in changelog under "Internal".
 - **`documentation`**: docs-only. No version bump.
+
+A PR carrying none of these falls through to a patch bump and is listed under "🐛 Bug Fix", so an unlabelled feature is reported as a bug fix. Label the PR.
+
+Several labelled PRs in one release still produce a single bump: the highest one wins. Ten `enhancement` PRs are one minor bump, not ten.
 
 ### Release-control labels
 
@@ -73,7 +84,7 @@ Releases are driven by [`auto`](https://intuit.github.io/auto/) and triggered on
 
 ### How prereleases work
 
-To cut a release candidate, merge PRs to the `rc` branch. Auto computes the next stable version from the bump label, appends `-rc.N` (auto-incrementing), and ships to TestPyPI. Example: `main` is at `0.1.0`, you open a PR to `rc` labeled `major` — auto produces `v1.0.0-rc.0`. When the RC is solid, merge `rc` → `main` and auto ships the stable `v1.0.0` to PyPI. The `rc` suffix matters for Python: PEP 440 only normalizes a fixed set of prerelease tokens (`a`, `b`, `rc`, `dev`, `post`), so `v0.1.0-rc.0` becomes the standard `0.1.0rc0` on PyPI.
+To cut a release candidate, merge PRs to the `rc` branch. Auto computes the next stable version from the bump label, appends `-rc.N` (auto-incrementing), and ships to TestPyPI. Example: `main` is at `0.1.0`, you open a PR to `rc` labeled `release: major` — auto produces `v1.0.0-rc.0`. When the RC is solid, merge `rc` → `main` and auto ships the stable `v1.0.0` to PyPI. The `rc` suffix matters for Python: PEP 440 only normalizes a fixed set of prerelease tokens (`a`, `b`, `rc`, `dev`, `post`), so `v0.1.0-rc.0` becomes the standard `0.1.0rc0` on PyPI.
 
 ### `skip-ci` vs `skip-release`
 
