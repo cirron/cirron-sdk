@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from cirron.core.errors import CirronDependencyError
+from cirron.core.swallow import swallowed
 
 log = logging.getLogger("cirron.snapshots.blob")
 
@@ -220,7 +221,11 @@ def _tensor_to_numpy(tensor: Any) -> Any:
             pass
     try:
         return np.ascontiguousarray(tensor)
-    except Exception:
+    except Exception as exc:
+        # Terminal tier: reaching here means the tensor is dropped from the
+        # snapshot entirely. The two probe tiers above are expected to miss
+        # for non-torch tensors and stay uncounted.
+        swallowed("blob.tensor_to_numpy", exc)
         return None
 
 

@@ -79,3 +79,47 @@ def test_swallow_counts_returns_a_copy():
     counts["a.b"] = 999
     counts["injected"] = 1
     assert swallow_counts() == {"a.b": 1}
+
+
+# Terminal-failure sites: reaching one means data was dropped, so it must
+# be counted. The probe tiers above each of these stay uncounted.
+
+
+def test_blob_terminal_conversion_is_counted():
+    """A tensor that survives none of the conversion tiers is dropped from
+    the snapshot entirely, so the terminal failure must leave a trace."""
+    pytest.importorskip("numpy")
+    from cirron.snapshots.blob import _tensor_to_numpy
+
+    class _Unconvertible:
+        """Fails all three tiers: no ``detach``, no ``numpy``, and
+        ``np.ascontiguousarray`` raises rather than building an object
+        array (which is what a bare ``object()`` would produce)."""
+
+        def __array__(self, *args, **kwargs):
+            raise RuntimeError("cannot be arrayed")
+
+    assert _tensor_to_numpy(_Unconvertible()) is None
+    assert swallow_counts().get("blob.tensor_to_numpy", 0) >= 1
+
+
+def test_transformers_lr_resolution_failure_is_counted():
+    """When neither the scheduler nor the args yields a learning rate, the
+    mark is dropped; that terminal miss must be counted."""
+    pytest.importorskip("transformers")
+    from cirron.core.config import Cirron
+    from cirron.core.scope import ScopeStack
+    from cirron.hooks._registry import HookContext
+    from cirron.hooks._transformers_impl import _make_callback_class
+
+    callback_cls = _make_callback_class(ScopeStack(), Cirron(), HookContext())
+
+    class _Args:
+        @property
+        def learning_rate(self):
+            raise RuntimeError("no usable learning_rate")
+
+    # No lr_scheduler in kwargs, so the scheduler probe is skipped entirely
+    # and resolution falls through to the terminal args read.
+    callback_cls().on_step_end(_Args(), None, None)
+    assert swallow_counts().get("transformers.resolve_lr", 0) >= 1

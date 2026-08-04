@@ -20,6 +20,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from cirron.core.mark import mark as _mark
+from cirron.core.swallow import swallowed
 
 if TYPE_CHECKING:
     from cirron.core.config import Cirron
@@ -191,7 +192,9 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
             return
         try:
             items = logs.items()
-        except Exception:
+        except Exception as exc:
+            # Terminal: every metric in this log call is dropped, not one.
+            swallowed("transformers.log_items", exc)
             return
         for name, value in items:
             try:
@@ -200,7 +203,8 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
                 continue
             try:
                 _mark(str(name), fv, kind=kind)
-            except Exception:
+            except Exception as exc:
+                swallowed("transformers.mark_logged", exc)
                 continue
 
     def _resolve_lr(args: Any, kwargs: dict[str, Any]) -> float | None:
@@ -225,7 +229,10 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
                 pass
         try:
             return float(args.learning_rate)
-        except Exception:
+        except Exception as exc:
+            # Terminal: the scheduler probe above already missed, so the LR
+            # is now unresolvable and no learning_rate mark is emitted.
+            swallowed("transformers.resolve_lr", exc)
             return None
 
     class CirronTrainerCallback(TrainerCallback):  # type: ignore[misc, valid-type]
@@ -348,8 +355,8 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
                 if lr is not None:
                     try:
                         _mark("learning_rate", lr)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        swallowed("transformers.mark_learning_rate", exc)
                 _close(self._step_scope)
                 self._step_scope = None
 
