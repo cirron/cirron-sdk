@@ -46,6 +46,7 @@ from cirron.core.blob_queue import (
 from cirron.core.mark import Mark, MarkBuffer, get_default_mark_buffer
 from cirron.core.scope import Scope, ScopeStack, get_default_stack
 from cirron.core.snapshot_buffer import SnapshotBuffer, get_default_snapshot_buffer
+from cirron.core.swallow import swallowed
 from cirron.core.trace_buffer import _TraceBuffer, get_default_trace_buffer
 from cirron.core.version import _sdk_version
 from cirron.snapshots.types import TraceSnapshot, snapshot_to_dict
@@ -1176,16 +1177,20 @@ def _register_exit_handlers() -> None:
     try:
         _prior_sigterm = signal.getsignal(signal.SIGTERM)
         signal.signal(signal.SIGTERM, _signal_handler)
-    except (ValueError, OSError):
+    except (ValueError, OSError) as exc:
         # signal() outside the main thread raises ValueError; on some
         # restricted runtimes (e.g. embedded Python) it raises OSError.
         # Either way we just skip — atexit still covers the common case.
-        pass
+        # Counted at DEBUG rather than warned about: running off the main
+        # thread is a legitimate configuration, not a fault.
+        swallowed("flush.signal_sigterm", exc)
     try:
         _prior_sigint = signal.getsignal(signal.SIGINT)
         signal.signal(signal.SIGINT, _signal_handler)
-    except (ValueError, OSError):
-        pass
+    except (ValueError, OSError) as exc:
+        # Fails together with the SIGTERM install above; both are counted
+        # so an off-main-thread run reports two events rather than one.
+        swallowed("flush.signal_sigint", exc)
 
 
 def _shutdown() -> None:

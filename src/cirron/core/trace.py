@@ -20,6 +20,7 @@ from cirron.core.render import (
     render_tree_text,
     to_dict_tree,
 )
+from cirron.core.swallow import swallowed
 from cirron.core.trace_buffer import get_default_trace_buffer
 
 if TYPE_CHECKING:
@@ -211,8 +212,8 @@ def trace(
         from cirron.core.flush import flush_to_trace_buffer
 
         flush_to_trace_buffer()
-    except Exception:
-        pass
+    except Exception as exc:
+        swallowed("trace.pre_read_flush", exc)
 
     spans, marks_by_span_id = get_default_trace_buffer().snapshot()
 
