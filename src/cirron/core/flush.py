@@ -22,7 +22,6 @@ Design notes:
 from __future__ import annotations
 
 import atexit
-import json
 import logging
 import os
 import signal
@@ -43,6 +42,13 @@ from cirron.core.blob_queue import (
     PendingBlob,
     get_default_blob_queue,
 )
+
+# The JSON policy lives in ``core/json.py``. It was defined in this module
+# historically and had to move to a leaf so ``transport.py`` (which already
+# imports from this one) and ``snapshots/types.py`` (which this one imports
+# from) can both reach it without a cycle. ``from cirron.core.flush import
+# _safe_attrs`` keeps working through this import.
+from cirron.core.json import _safe_attrs, dumps_utf8, nonfinite_token
 from cirron.core.mark import Mark, MarkBuffer, get_default_mark_buffer
 from cirron.core.scope import Scope, ScopeStack, get_default_stack
 from cirron.core.snapshot_buffer import SnapshotBuffer, get_default_snapshot_buffer
@@ -120,95 +126,6 @@ class Transport(Protocol):
         ...
 
 
-_JSON_SCALARS = (str, int, float, bool, type(None))
-
-# Bounds recursion so a deeply nested attr can't raise RecursionError out of
-# ``_scope_to_dict`` and cost the whole tick — the failure this sanitizer
-# exists to prevent. Cycles are caught separately, by the ``_seen`` path memo.
-_MAX_JSON_DEPTH = 32
-
-
-def _to_str(value: Any) -> str:
-    """Best-effort ``str()`` that never raises.
-
-    Args:
-        value (Any): Object with a possibly hostile ``__str__``.
-
-    Returns:
-        str: ``str(value)``, or ``"<unserializable>"`` if that raised.
-    """
-    try:
-        return str(value)
-    except Exception:
-        return "<unserializable>"
-
-
-def _json_safe(value: Any, _depth: int = 0, _seen: frozenset[int] = frozenset()) -> Any:
-    """Coerce one attr value into something ``json.dumps`` accepts.
-
-    JSON-native scalars pass through by reference; ``dict`` / ``list`` /
-    ``tuple`` are rebuilt element-wise with keys coerced to ``str``;
-    everything else — and anything past ``_MAX_JSON_DEPTH`` or already on
-    the current reference path — degrades to its ``str()``. Never raises.
-
-    Args:
-        value (Any): The attr value to coerce.
-        _depth (int): Current recursion depth. Internal.
-        _seen (frozenset[int]): ``id()``s of the containers on the path from
-            the root to ``value``, for cycle detection. Internal.
-
-    Returns:
-        Any: A value built only from ``str`` / ``int`` / ``float`` / ``bool`` /
-            ``None`` / ``list`` / ``dict``.
-    """
-    if isinstance(value, _JSON_SCALARS):
-        return value
-    if isinstance(value, (dict, list, tuple)):
-        if _depth >= _MAX_JSON_DEPTH or id(value) in _seen:
-            return _to_str(value)
-        _depth += 1
-        _seen = _seen | {id(value)}
-        if isinstance(value, dict):
-            return {_to_str(k): _json_safe(v, _depth, _seen) for k, v in value.items()}
-        return [_json_safe(v, _depth, _seen) for v in value]
-    return _to_str(value)
-
-
-def _safe_attrs(attrs: dict[str, Any]) -> dict[str, Any]:
-    """Return ``attrs`` with every value guaranteed JSON-serializable.
-
-    ``ci.scope`` / ``ci.mark`` adopt ``**attrs`` without validation — that
-    check is deliberately off the hot path — so numpy arrays, sets, tensors
-    and datetimes all land here. By the time a batch is serialized the
-    producer buffers are already drained, so a value ``json.dumps`` rejects
-    would take the whole tick's spans and marks with it. Sanitizing here
-    makes span and mark ``attrs`` safe at all three serialization sites
-    (spool, event stream, HTTP ingest). Other batch fields are *not*
-    covered: ``SpoolWriter.write`` passes ``default=str`` as a last resort,
-    but the transports do not, so anything bypassing this helper — snapshot
-    records — must be JSON-native on its own.
-
-    Fast path: attr dicts whose values are all JSON scalars — the
-    overwhelmingly common case — are returned by reference, uncopied.
-
-    Args:
-        attrs (dict[str, Any]): Attrs dict adopted from the hot path.
-
-    Returns:
-        dict[str, Any]: ``attrs`` itself, or a sanitized copy. Empty if a
-            nested container mutated underneath us mid-iteration — losing the
-            attrs beats losing the batch.
-    """
-    try:
-        for value in attrs.values():
-            if not isinstance(value, _JSON_SCALARS):
-                return {_to_str(k): _json_safe(v) for k, v in attrs.items()}
-    except Exception:
-        log.warning("cirron: attrs sanitization failed; dropping attrs", exc_info=True)
-        return {}
-    return attrs
-
-
 def _scope_to_dict(s: Scope) -> dict[str, Any]:
     """Serialize a ``Scope`` to its spool-format dict shape.
 
@@ -266,25 +183,46 @@ def _mark_to_dict(m: Mark) -> dict[str, Any]:
     Args:
         m (Mark): The mark to serialize.
 
+    ``attrs`` is sanitized (see :func:`_safe_attrs`). A finite ``value``
+    is not — ``ci.mark`` already rejects anything but ``float`` / ``int`` /
+    ``str`` / ``bool``, and platform ingest cross-checks it against
+    ``value_type``, so coercing a good value could only turn a good batch
+    into a rejected one.
+
+    The one exception is a non-finite float. ``json.dumps`` would emit the
+    bare token ``NaN`` / ``Infinity`` / ``-Infinity``, which is not valid
+    RFC 8259 JSON, and the platform parses the body before validating it,
+    so one diverged loss costs the entire batch. Those become
+    ``"value": null`` plus a sibling ``"value_nonfinite"`` carrying
+    ``"nan"`` / ``"inf"`` / ``"-inf"``. ``value_type`` deliberately stays
+    ``"float"``: the mark *is* a float mark, and a reader that ignores the
+    new field still sees a correctly typed record with a missing value
+    rather than a type contradiction. The key is absent on finite marks.
+
     Returns:
         dict[str, Any]: Mark dict with ``id`` / ``span_id`` / ``name`` /
             ``value_type`` / ``value`` / ``attrs`` / ``ts_ns`` / ``kind``
-            keys. ``attrs`` is sanitized (see :func:`_safe_attrs`); ``value``
-            is not — ``ci.mark`` already rejects anything but ``float`` /
-            ``int`` / ``str`` / ``bool``, and platform ingest cross-checks it
-            against ``value_type``, so coercing it here could only turn a
-            good batch into a rejected one.
+            keys, plus ``value_nonfinite`` when ``value`` was non-finite.
     """
-    return {
+    value = m.value
+    out: dict[str, Any] = {
         "id": m.id,
         "span_id": m.span_id,
         "name": m.name,
         "value_type": m.value_type,
-        "value": m.value,
+        "value": value,
         "attrs": _safe_attrs(m.attrs),
         "ts_ns": m.ts_ns,
         "kind": m.kind,
     }
+    # True for ``np.float64``, False for ``bool`` (an ``int`` subclass), so
+    # a finite numpy scalar is emitted unchanged as a JSON number.
+    if isinstance(value, float):
+        token = nonfinite_token(value)
+        if token is not None:
+            out["value"] = None
+            out["value_nonfinite"] = token
+    return out
 
 
 @dataclass
@@ -426,7 +364,7 @@ class SpoolWriter:
         # Encode once: ``write_bytes`` skips the re-encode ``write_text``
         # would do internally, hands us the exact on-disk size for the
         # running total, and sidesteps text-mode newline translation.
-        data = json.dumps(batch.to_json(), separators=(",", ":"), default=str).encode("utf-8")
+        data = dumps_utf8(batch.to_json())
         with self._lock:
             tmp = path.with_suffix(".json.tmp")
             tmp.write_bytes(data)
