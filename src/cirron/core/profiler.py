@@ -449,10 +449,12 @@ def _spool_dir_str() -> str | None:
 
 
 def _spool_bytes() -> int:
-    """Sum of all ``*.json`` file sizes in the spool directory.
+    """Bytes the spool directory holds, sealed batches and temp files alike.
 
-    Per-file ``stat`` failures (e.g. file rotated mid-iteration) are
-    silently skipped.
+    Delegates to ``SpoolWriter.disk_bytes`` rather than globbing here, so
+    this cannot drift from the number the cap is enforced against. The two
+    ran independent ``*.json`` globs and both missed orphaned ``*.json.tmp``
+    files, which meant a spool could report well under its real size.
 
     Returns:
         int: Total bytes on disk; ``0`` when no writer is active.
@@ -461,13 +463,7 @@ def _spool_bytes() -> int:
     writer = getattr(mod, "_writer", None)
     if writer is None:
         return 0
-    total = 0
-    for p in writer.spool_dir.glob("*.json"):
-        try:
-            total += p.stat().st_size
-        except OSError:
-            continue
-    return total
+    return int(writer.disk_bytes())
 
 
 def _flush_mode() -> str:
