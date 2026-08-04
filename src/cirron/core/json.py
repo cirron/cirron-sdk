@@ -104,6 +104,32 @@ def nonfinite_token(value: float) -> str | None:
         return None
 
 
+def _finite_or_token(value: float) -> Any:
+    """Return ``value`` when it is provably finite, else a safe string.
+
+    :func:`nonfinite_token` collapses two different answers into
+    ``None``: "this float is finite", and "this float could not be
+    classified" — a subclass whose comparisons raise. The second case
+    must not pass through. Handing an unclassifiable ``nan`` to the
+    encoder raises the very ``ValueError`` that :func:`dumps`'s scrubbed
+    retry is supposed to be immune to, and because the retry is the last
+    attempt, that costs the batch.
+
+    Args:
+        value (float): The float (or float subclass) to screen.
+
+    Returns:
+        Any: ``value`` itself when ``math.isfinite`` vouches for it,
+            otherwise its token or its ``str()``. Never raises.
+    """
+    try:
+        if _isfinite(value):
+            return value
+    except Exception:
+        return _to_str(value)
+    return nonfinite_token(value) or _to_str(value)
+
+
 def _json_safe(value: Any, _depth: int = 0, _seen: frozenset[int] = frozenset()) -> Any:
     """Coerce one attr value into something ``json.dumps`` accepts.
 
@@ -134,9 +160,7 @@ def _json_safe(value: Any, _depth: int = 0, _seen: frozenset[int] = frozenset())
         # ``bool`` is an ``int`` subclass, not a ``float``, so bools skip
         # the finiteness check for free.
         if isinstance(value, float):
-            token = nonfinite_token(value)
-            if token is not None:
-                return token
+            return _finite_or_token(value)
         return value
     if isinstance(value, (dict, list, tuple)):
         if _depth >= _MAX_JSON_DEPTH or id(value) in _seen:
@@ -294,12 +318,19 @@ def dumps(obj: Any, *, separators: tuple[str, str] | None = _COMPACT) -> str:
     straight into the C encoder, so refusing the non-standard constants
     costs nothing on a clean batch.
 
-    On ``ValueError`` — raised for a leaked non-finite float, and also for
-    a circular reference — the object is deep-scrubbed through
-    :func:`_json_safe` (which substitutes non-finite tokens, breaks cycles
-    via its path memo, bounds depth, and stringifies anything exotic) and
-    re-encoded. The retry sees only cycle-free, depth-bounded JSON natives,
-    so it cannot fail the same way twice.
+    When that raises — ``ValueError`` for a leaked non-finite float or a
+    circular reference, ``TypeError`` for an unencodable dict key — the
+    object is deep-scrubbed through :func:`_json_safe` (which substitutes
+    non-finite tokens, breaks cycles via its path memo, bounds depth, and
+    stringifies anything exotic) and re-encoded. The retry sees only
+    cycle-free, depth-bounded JSON natives with string keys and provably
+    finite floats, so the encoder has nothing left to reject.
+
+    That last guarantee rests on :func:`_finite_or_token` rather than on
+    :func:`nonfinite_token`: a float subclass whose comparisons raise
+    cannot be *classified*, and passing it through unchanged would make
+    the retry raise the same ``ValueError`` as the first attempt, with no
+    third attempt to catch it.
 
     Reaching the fallback means a field bypassed the substitution in
     ``_mark_to_dict`` / ``_safe_attrs`` / ``stats_to_wire``, which is an SDK
@@ -321,7 +352,7 @@ def dumps(obj: Any, *, separators: tuple[str, str] | None = _COMPACT) -> str:
     """
     try:
         return json.dumps(obj, separators=separators, default=_to_str, allow_nan=False)
-    except ValueError as exc:
+    except Exception as exc:
         _warn_fallback(exc)
         return json.dumps(_json_safe(obj), separators=separators, default=_to_str, allow_nan=False)
 
@@ -339,7 +370,7 @@ def dumps_utf8(obj: Any, *, separators: tuple[str, str] | None = _COMPACT) -> by
     return dumps(obj, separators=separators).encode("utf-8")
 
 
-def _warn_fallback(exc: ValueError) -> None:
+def _warn_fallback(exc: BaseException) -> None:
     """Log the strict-dumps fallback once per process, and count every hit.
 
     The latch is a plain module global rather than a lock: two threads
@@ -347,7 +378,7 @@ def _warn_fallback(exc: ValueError) -> None:
     that should never fire at all.
 
     Args:
-        exc (ValueError): The ``json.dumps`` failure that triggered the
+        exc (BaseException): The ``json.dumps`` failure that triggered the
             fallback.
     """
     global _fallback_warned

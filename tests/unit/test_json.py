@@ -222,3 +222,56 @@ def test_stats_to_wire_output_is_strict_json():
         "min": "-inf",
         "max": "inf",
     }
+
+
+# the strict-dumps guarantee under unclassifiable values
+
+
+class _HostileFloat(float):
+    """A non-finite float whose comparisons raise.
+
+    ``math.isfinite`` still works on it (it reads the underlying double),
+    but ``nonfinite_token`` cannot classify it, so it is the value that
+    distinguishes "provably finite" from "returned None".
+    """
+
+    def __ne__(self, other):
+        raise RuntimeError("hostile __ne__")
+
+    def __gt__(self, other):
+        raise RuntimeError("hostile __gt__")
+
+    __hash__ = None  # type: ignore[assignment]
+
+
+def test_json_safe_never_passes_through_an_unclassifiable_float():
+    # nonfinite_token returns None both for "finite" and for "could not
+    # tell". Passing the second case through would hand a raw nan to the
+    # encoder, which allow_nan=False rejects.
+    out = _json_safe({"a": _HostileFloat("nan")})
+    assert not isinstance(out["a"], float), "an unclassifiable float leaked through"
+    assert out["a"] == "nan"
+
+
+def test_dumps_retry_cannot_fail_on_an_unclassifiable_float():
+    # The retry is the last attempt; if it raises, the batch is lost.
+    # This is the exact payload that used to escape it.
+    reset_swallow_counts()
+    assert strict_loads(dumps({"a": _HostileFloat("nan"), "b": 1})) == {"a": "nan", "b": 1}
+    assert swallow_counts()["json.strict_dumps_fallback"] == 1
+
+
+def test_dumps_survives_an_unencodable_dict_key():
+    # json.dumps raises TypeError (not ValueError) for a key that is not a
+    # str/int/float/bool/None, so the fallback has to be wider than
+    # ValueError to keep the batch.
+    key = object()
+    out = strict_loads(dumps({key: 1}))
+    assert list(out.values()) == [1]
+    assert list(out)[0].startswith("<object object at")
+
+
+def test_safe_attrs_degrades_an_unclassifiable_float_without_raising():
+    out = _safe_attrs({"lr": _HostileFloat("inf"), "step": 3})
+    assert out["lr"] == "inf"
+    assert out["step"] == 3

@@ -762,7 +762,7 @@ def test_transport_receives_sanitized_batch(tmp_path):
     assert isinstance(sent[0]["marks"][0]["attrs"]["grad"], str)
 
 
-# non-finite floats 
+# non-finite floats
 
 
 def _marks_by_name(payload: dict) -> dict[str, dict]:
