@@ -8,6 +8,8 @@ restores the originals.
 
 from __future__ import annotations
 
+import weakref
+
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -560,3 +562,653 @@ def test_epoch_step_threshold_fallback(stack, tmp_path, ctx):
     # Two rotations on the optimizer path (after step 2 and 4 that never
     # fires — we only did 3 steps — so at least one epoch rotation).
     assert len(epochs) >= 1
+
+
+class _CountingModel(torch.nn.Module):
+    """Linear model that counts how often ``named_parameters`` is walked."""
+
+    def __init__(self):
+        super().__init__()
+        self.fc = torch.nn.Linear(2, 1)
+        self.named_parameters_calls = 0
+
+    def forward(self, x):
+        return self.fc(x)
+
+    def named_parameters(self, *args, **kwargs):
+        self.named_parameters_calls += 1
+        return super().named_parameters(*args, **kwargs)
+
+
+def _drive_step(model, opt):
+    """Run one forward/backward/optimizer cycle on ``model``."""
+    out = model(torch.zeros(1, 2))
+    out.sum().backward()
+    opt.step()
+
+
+def test_grad_stash_caches_named_parameters(stack, ci, ctx):
+    """The per-step grad stash walks named_parameters() once, not per step."""
+    import cirron as public_ci
+
+    model = _CountingModel()
+    opt = torch.optim.SGD(model.parameters(), lr=0.01)
+    # nn.Module.parameters() is itself implemented over named_parameters(),
+    # so building the optimizer already walks it. Measure from here.
+    base = model.named_parameters_calls
+
+    public_ci.watch(model)
+    h = torch_install(stack, ci, ctx)
+    try:
+        _drive_step(model, opt)
+        after_first = model.named_parameters_calls - base
+        _drive_step(model, opt)
+        after_second = model.named_parameters_calls - base
+        # Read the counter before uninstall: uninstall snapshots the final
+        # epoch, which legitimately walks the parameters again.
+        assert after_first == 1, "first step should populate the cache"
+        assert after_second == 1, f"second step re-walked the model ({after_second} walks)"
+    finally:
+        h.uninstall()
+        public_ci.watch(None)
+
+
+def test_grad_stash_snapshots_the_latest_step(stack, ci, ctx):
+    """Caching the parameter list must not cache the gradients themselves.
+
+    Drives two steps with different inputs, so the final step's grads are
+    distinguishable, then checks the epoch-boundary snapshot reports the
+    final step's values rather than the first step's.
+    """
+    import cirron as public_ci
+    from cirron.core.snapshot_buffer import (
+        _reset_default_for_tests,
+        get_default_snapshot_buffer,
+    )
+
+    _reset_default_for_tests()
+    model = _CountingModel()
+    opt = torch.optim.SGD(model.parameters(), lr=0.0)  # lr=0 keeps weights fixed
+    public_ci.watch(model)
+    h = torch_install(stack, ci, ctx)
+    try:
+        # Iterating a loader is what opens an epoch scope; without one there
+        # is no span for uninstall to attach the final snapshot to.
+        xs = torch.zeros(1, 2)
+        loader = torch.utils.data.DataLoader(
+            torch.utils.data.TensorDataset(xs, torch.zeros(1, 1)), batch_size=1
+        )
+        for _ in loader:
+            pass
+
+        # Step 1: small input, small grads.
+        out = model(torch.ones(1, 2))
+        out.sum().backward()
+        opt.step()
+        opt.zero_grad(set_to_none=True)
+
+        # Step 2: input scaled by 100, so the bias grad is unchanged but
+        # the weight grads are two orders of magnitude larger.
+        out = model(torch.ones(1, 2) * 100.0)
+        out.sum().backward()
+        expected = model.fc.weight.grad.mean().item()
+        opt.step()
+        opt.zero_grad(set_to_none=True)
+    finally:
+        h.uninstall()  # uninstall snapshots the open epoch
+        public_ci.watch(None)
+
+    records = get_default_snapshot_buffer().drain()
+    grads = {r.tensor_name: r for r in records if r.tensor_name.endswith(".grad")}
+    assert "fc.weight.grad" in grads, f"no weight grad snapshot in {sorted(grads)}"
+    got = grads["fc.weight.grad"].stats["mean"]
+    assert got == pytest.approx(expected), (
+        f"snapshot reports {got}, expected the final step's grads ({expected})"
+    )
+    _reset_default_for_tests()
+
+
+def test_grad_stash_rebuilds_on_new_model(stack, ci, ctx):
+    """Watching a different model invalidates the cached parameter pairs."""
+    import cirron as public_ci
+
+    model_a = _CountingModel()
+    opt_a = torch.optim.SGD(model_a.parameters(), lr=0.01)
+    model_b = _CountingModel()
+    opt_b = torch.optim.SGD(model_b.parameters(), lr=0.01)
+    # Optimizer construction already walked each model once (see above).
+    base_a = model_a.named_parameters_calls
+    base_b = model_b.named_parameters_calls
+
+    public_ci.watch(model_a)
+    h = torch_install(stack, ci, ctx)
+    try:
+        _drive_step(model_a, opt_a)
+        _drive_step(model_a, opt_a)
+        assert model_a.named_parameters_calls - base_a == 1
+
+        public_ci.watch(model_b)
+        _drive_step(model_b, opt_b)
+        _drive_step(model_b, opt_b)
+        assert model_b.named_parameters_calls - base_b == 1, (
+            "cache did not rebuild for the new model"
+        )
+        # A's cache entry was replaced, not consulted again.
+        assert model_a.named_parameters_calls - base_a == 1
+    finally:
+        h.uninstall()
+        public_ci.watch(None)
+
+
+def test_grad_stash_releases_cache_when_model_cleared(stack, ci, ctx):
+    """ci.watch(None) must drop the cached parameter references.
+
+    The cache holds every parameter tensor strongly, so retaining it past
+    the watched model would pin a full set of weights for the life of the
+    process.
+    """
+    import gc
+
+    import cirron as public_ci
+
+    model = _CountingModel()
+    opt = torch.optim.SGD(model.parameters(), lr=0.01)
+    public_ci.watch(model)
+    h = torch_install(stack, ci, ctx)
+    try:
+        _drive_step(model, opt)
+        public_ci.watch(None)
+        # Next step observes no watched model and releases the cache.
+        _drive_step(model, opt)
+        weight_ref = weakref.ref(model.fc.weight)
+        del model, opt
+        gc.collect()
+        assert weight_ref() is None, "cached parameter pairs kept the weights alive"
+    finally:
+        h.uninstall()
+        public_ci.watch(None)
+
+
+def test_should_reap_cadence():
+    """Reaping is periodic, with a backstop against unbounded growth."""
+    from cirron.hooks._torch_impl import _REAP_BACKSTOP, _REAP_INTERVAL, _should_reap
+
+    # Not every op close pays for a scan.
+    assert not _should_reap(1, 0)
+    assert not _should_reap(_REAP_INTERVAL - 1, 0)
+    # The periodic reap fires on the interval.
+    assert _should_reap(_REAP_INTERVAL, 0)
+    assert _should_reap(_REAP_INTERVAL * 2, 0)
+    # The backstop fires regardless of where we are in the interval, so a
+    # workload whose events resolve slowly still gets drained.
+    assert _should_reap(_REAP_INTERVAL + 1, _REAP_BACKSTOP)
+    assert _should_reap(_REAP_INTERVAL + 1, _REAP_BACKSTOP + 500)
+    assert not _should_reap(_REAP_INTERVAL + 1, _REAP_BACKSTOP - 1)
+
+
+def test_cuda_pending_starts_with_empty_pool():
+    """The event pool and op counter start clean on every install."""
+    from cirron.hooks._torch_impl import _CudaPending
+
+    pending = _CudaPending()
+    assert pending.items == []
+    assert pending.pool == []
+    assert pending.ops == 0
+
+
+def test_drain_recycles_events_after_reading_elapsed_time():
+    """Both events of a resolved pair return to the pool, exactly once."""
+    from cirron.hooks._torch_impl import _CudaPending, _drain_cuda
+
+    class _Scope:
+        gpu_ns = None
+        # Held scopes are always finalized before any drain sees them.
+        end_ns = 1
+
+    class _Event:
+        def __init__(self, ready=True):
+            self._ready = ready
+
+        def query(self):
+            return self._ready
+
+        def elapsed_time(self, other):
+            return 2.0
+
+    scope_obj = _Scope()
+    start_ev, end_ev = _Event(), _Event()
+    pending = _CudaPending()
+    pending.items.append((scope_obj, start_ev, end_ev))
+
+    _drain_cuda(pending, force=False)
+
+    assert scope_obj.gpu_ns == 2_000_000
+    assert pending.items == []
+    assert pending.pool == [start_ev, end_ev]
+
+
+def test_drain_keeps_unresolved_pairs_out_of_the_pool():
+    """An event still in flight is neither read nor recycled."""
+    from cirron.hooks._torch_impl import _CudaPending, _drain_cuda
+
+    class _Scope:
+        gpu_ns = None
+        # Held scopes are always finalized before any drain sees them.
+        end_ns = 1
+
+    class _PendingEvent:
+        def query(self):
+            return False
+
+        def elapsed_time(self, other):
+            raise AssertionError("elapsed_time read before the event resolved")
+
+    scope_obj = _Scope()
+    start_ev, end_ev = _PendingEvent(), _PendingEvent()
+    pending = _CudaPending()
+    pending.items.append((scope_obj, start_ev, end_ev))
+
+    _drain_cuda(pending, force=False)
+
+    assert scope_obj.gpu_ns is None
+    assert len(pending.items) == 1, "unresolved pair must stay pending"
+    assert pending.pool == [], "an event still in flight must never be reused"
+
+
+def test_drain_does_not_recycle_events_that_failed():
+    """A pair whose elapsed_time raised is dropped without being reused."""
+    from cirron.hooks._torch_impl import _CudaPending, _drain_cuda
+
+    class _Scope:
+        gpu_ns = None
+        # Held scopes are always finalized before any drain sees them.
+        end_ns = 1
+
+    class _BrokenEvent:
+        def query(self):
+            return True
+
+        def elapsed_time(self, other):
+            raise RuntimeError("device error")
+
+    scope_obj = _Scope()
+    pending = _CudaPending()
+    pending.items.append((scope_obj, _BrokenEvent(), _BrokenEvent()))
+
+    _drain_cuda(pending, force=False)
+
+    assert scope_obj.gpu_ns is None
+    assert pending.items == [], "the failed pair must not stay pending forever"
+    assert pending.pool == [], "a misbehaving event must not be handed to the next span"
+
+
+def test_event_pool_is_capped():
+    """The pool stops growing at its cap so a backlog cannot hoard events."""
+    from cirron.hooks._torch_impl import _EVENT_POOL_CAP, _CudaPending, _drain_cuda
+
+    class _Scope:
+        gpu_ns = None
+        # Held scopes are always finalized before any drain sees them.
+        end_ns = 1
+
+    class _Event:
+        def query(self):
+            return True
+
+        def elapsed_time(self, other):
+            return 1.0
+
+    pending = _CudaPending()
+    for _ in range(_EVENT_POOL_CAP):  # two events each, so well past the cap
+        pending.items.append((_Scope(), _Event(), _Event()))
+
+    _drain_cuda(pending, force=False)
+
+    assert pending.items == []
+    assert len(pending.pool) <= _EVENT_POOL_CAP
+
+
+def test_param_cache_released_when_model_is_collected_without_further_steps(stack, ci, ctx):
+    """The cache must not outlive the model it describes.
+
+    The opportunistic clear inside the stash only runs on a *later*
+    optimizer step. A run that simply stops stepping (training finished,
+    model dropped) would otherwise pin a full set of parameter tensors
+    until uninstall, so collection itself has to release them.
+    """
+    import gc
+
+    import cirron as public_ci
+
+    h = torch_install(stack, ci, ctx)
+    try:
+        model = _CountingModel()
+        opt = torch.optim.SGD(model.parameters(), lr=0.01)
+        public_ci.watch(model)
+        _drive_step(model, opt)  # populates the cache
+
+        weight_ref = weakref.ref(model.fc.weight)
+        assert weight_ref() is not None
+
+        # Drop the model and never step again.
+        del model, opt
+        gc.collect()
+
+        assert weight_ref() is None, (
+            "parameter tensors survived collection of the model; the cache pinned them"
+        )
+    finally:
+        h.uninstall()
+        public_ci.watch(None)
+
+
+def test_param_cache_survives_model_swap(stack, ci, ctx):
+    """Collecting a replaced model must not clear the new model's cache."""
+    import gc
+
+    import cirron as public_ci
+
+    h = torch_install(stack, ci, ctx)
+    try:
+        model_a = _CountingModel()
+        opt_a = torch.optim.SGD(model_a.parameters(), lr=0.01)
+        public_ci.watch(model_a)
+        _drive_step(model_a, opt_a)
+
+        model_b = _CountingModel()
+        opt_b = torch.optim.SGD(model_b.parameters(), lr=0.01)
+        public_ci.watch(model_b)
+        _drive_step(model_b, opt_b)
+        base_b = model_b.named_parameters_calls
+
+        # A's finalizer must have been detached when B took over; if it
+        # fires now it would wrongly clear B's cache.
+        del model_a, opt_a
+        gc.collect()
+
+        _drive_step(model_b, opt_b)
+        assert model_b.named_parameters_calls == base_b, (
+            "collecting the previous model invalidated the current model's cache"
+        )
+    finally:
+        h.uninstall()
+        public_ci.watch(None)
+
+
+# deferred close: CUDA-timed scopes wait for their events
+#
+# CI has no GPU, so pending_cuda is None in a real install and these paths
+# never run there. _drain_cuda only ever calls query() and elapsed_time()
+# on an event, so the holder is driven directly with fakes instead. No
+# torch.cuda internals are mocked.
+
+
+class _FakeEvent:
+    """Duck-typed stand-in for torch.cuda.Event."""
+
+    def __init__(self, ready=True, elapsed_ms=2.0, fail=False):
+        self.ready = ready
+        self.elapsed_ms = elapsed_ms
+        self.fail = fail
+
+    def query(self):
+        return self.ready
+
+    def elapsed_time(self, other):
+        if self.fail:
+            raise RuntimeError("device error")
+        return self.elapsed_ms
+
+
+def _held_scope(stack, pending, start_ev, end_ev):
+    """Push a scope, hold it the way the CUDA path does, and queue its pair."""
+    scope_obj = stack.push("forward")
+    stack.finalize_deferred(scope_obj)
+    pending.items.append((scope_obj, start_ev, end_ev))
+    return scope_obj
+
+
+def test_held_scope_is_not_drainable_until_its_event_resolves():
+    """The race this closes: a closed scope must not reach the flush thread
+    before its gpu_ns has been written."""
+    from cirron.hooks._torch_impl import _CudaPending, _drain_cuda
+
+    stack = ScopeStack()
+    pending = _CudaPending()
+    pending.scope_stack = stack
+    start_ev, end_ev = _FakeEvent(ready=False), _FakeEvent(ready=False)
+    scope_obj = _held_scope(stack, pending, start_ev, end_ev)
+
+    _drain_cuda(pending, force=False)
+    assert stack.drain_closed_all() == [], "scope drained before its GPU timing was known"
+    assert scope_obj.gpu_ns is None
+    assert len(pending.items) == 1
+
+    # The kernel finishes; now it resolves and becomes drainable.
+    start_ev.ready = end_ev.ready = True
+    _drain_cuda(pending, force=False)
+
+    drained = stack.drain_closed_all()
+    assert drained == [scope_obj]
+    assert scope_obj.gpu_ns == 2_000_000
+    assert pending.items == []
+
+
+def test_held_scope_is_emitted_exactly_once():
+    """A second drain must not emit the scope again."""
+    from cirron.hooks._torch_impl import _CudaPending, _drain_cuda
+
+    stack = ScopeStack()
+    pending = _CudaPending()
+    pending.scope_stack = stack
+    scope_obj = _held_scope(stack, pending, _FakeEvent(), _FakeEvent())
+
+    _drain_cuda(pending, force=False)
+    _drain_cuda(pending, force=False)
+
+    assert stack.drain_closed_all() == [scope_obj], "scope was emitted more than once"
+
+
+def test_held_scope_is_emitted_even_when_elapsed_time_fails():
+    """Losing GPU timing must not lose the span itself."""
+    from cirron.hooks._torch_impl import _CudaPending, _drain_cuda
+
+    stack = ScopeStack()
+    pending = _CudaPending()
+    pending.scope_stack = stack
+    scope_obj = _held_scope(stack, pending, _FakeEvent(fail=True), _FakeEvent())
+
+    _drain_cuda(pending, force=False)
+
+    drained = stack.drain_closed_all()
+    assert drained == [scope_obj], "a span was dropped because its GPU timing failed"
+    assert scope_obj.gpu_ns is None
+    assert scope_obj.end_ns is not None, "the span should still carry wall-clock timing"
+    assert pending.items == [], "the failed pair must not stay pending forever"
+
+
+def test_forced_drain_emits_every_held_scope():
+    """Uninstall forces a drain; nothing may be left held afterwards."""
+    from cirron.hooks._torch_impl import _CudaPending, _drain_cuda
+
+    stack = ScopeStack()
+    pending = _CudaPending()
+    pending.scope_stack = stack
+    held = [
+        _held_scope(stack, pending, _FakeEvent(ready=False), _FakeEvent(ready=False))
+        for _ in range(5)
+    ]
+
+    _drain_cuda(pending, force=True)
+
+    drained = stack.drain_closed_all()
+    assert len(drained) == len(held), f"{len(held) - len(drained)} held scopes were lost"
+    assert {id(s) for s in drained} == {id(s) for s in held}
+    assert pending.items == []
+
+
+def test_drain_without_a_scope_stack_does_not_raise():
+    """Defensive: a holder with no stack reference degrades quietly."""
+    from cirron.hooks._torch_impl import _CudaPending, _drain_cuda
+
+    class _Scope:
+        gpu_ns = None
+        # Held scopes are always finalized before any drain sees them.
+        end_ns = 1
+
+    pending = _CudaPending()  # scope_stack left as None
+    pending.items.append((_Scope(), _FakeEvent(), _FakeEvent()))
+
+    _drain_cuda(pending, force=True)
+
+    assert pending.items == []
+
+
+def test_drain_will_not_emit_a_scope_that_is_not_finalized_yet():
+    """A pair is queued a moment before its scope is finalized.
+
+    If a drain runs in that window and the event already reads complete,
+    emitting would put a span with no end_ns in front of the flush
+    thread, which is exactly the race the deferred path exists to close.
+    The pair must simply stay pending.
+    """
+    from cirron.hooks._torch_impl import _CudaPending, _drain_cuda
+
+    stack = ScopeStack()
+    pending = _CudaPending()
+    pending.scope_stack = stack
+
+    scope_obj = stack.push("forward")  # queued, but NOT finalized
+    pending.items.append((scope_obj, _FakeEvent(), _FakeEvent()))
+    assert scope_obj.end_ns is None
+
+    _drain_cuda(pending, force=True)  # force: the worst case for ordering
+
+    assert stack.drain_closed_all() == [], "emitted a scope before it was finalized"
+    assert len(pending.items) == 1, "the pair should stay pending until the scope is finalized"
+
+    # Once finalized, the very next drain emits it normally.
+    stack.finalize_deferred(scope_obj)
+    _drain_cuda(pending, force=True)
+
+    assert stack.drain_closed_all() == [scope_obj]
+    assert scope_obj.gpu_ns == 2_000_000
+
+
+def test_discard_pending_prevents_a_double_emit_after_fallback_close():
+    """If deferral fails and the scope is closed normally, the stale pair
+    must not emit it a second time."""
+    from cirron.hooks._torch_impl import _CudaPending, _discard_pending, _drain_cuda
+
+    stack = ScopeStack()
+    pending = _CudaPending()
+    pending.scope_stack = stack
+
+    scope_obj = stack.push("optimizer_step")
+    pending.items.append((scope_obj, _FakeEvent(), _FakeEvent()))
+
+    # The fallback path: drop the queued pair, then close normally.
+    _discard_pending(pending, scope_obj)
+    stack.close_scope(scope_obj)
+
+    _drain_cuda(pending, force=True)
+
+    drained = stack.drain_closed_all()
+    assert len(drained) == 1, f"scope emitted {len(drained)} times, expected once"
+    assert drained[0] is scope_obj
+
+
+def test_discard_pending_leaves_other_scopes_queued():
+    """Discarding one scope's pairs must not disturb its neighbours."""
+    from cirron.hooks._torch_impl import _CudaPending, _discard_pending
+
+    stack = ScopeStack()
+    pending = _CudaPending()
+    pending.scope_stack = stack
+    keep_me = stack.push("forward")
+    drop_me = stack.push("backward")
+    pending.items.append((keep_me, _FakeEvent(), _FakeEvent()))
+    pending.items.append((drop_me, _FakeEvent(), _FakeEvent()))
+
+    _discard_pending(pending, drop_me)
+
+    assert [item[0] for item in pending.items] == [keep_me]
+
+
+# epoch fallback latch
+
+
+def _epoch_indices(stack):
+    return [s.index for s in stack.drain_closed_all() if s.name == "epoch"]
+
+
+def _tiny_loader(n=1):
+    xs = torch.zeros(n, 2)
+    ys = torch.zeros(n, 1)
+    return torch.utils.data.DataLoader(torch.utils.data.TensorDataset(xs, ys), batch_size=1)
+
+
+def test_long_epoch_not_chopped_by_step_fallback(stack, tmp_path, ctx):
+    """An epoch longer than epoch_steps stays one epoch.
+
+    Real epochs run to thousands of optimizer steps. Once a DataLoader is
+    driving epoch boundaries, the step counter must not invent extra ones.
+    """
+    ci = Cirron(output_dir=str(tmp_path))
+    ci._profile_config = {"torch": {"epoch_steps": 5}}
+    h = torch_install(stack, ci, ctx)
+    try:
+        model = torch.nn.Linear(2, 1)
+        opt = torch.optim.SGD(model.parameters(), lr=0.01)
+        for _ in _tiny_loader():  # one loader pass opens epoch 0
+            pass
+        for _ in range(8):  # comfortably past epoch_steps=5
+            _drive_step(model, opt)
+    finally:
+        h.uninstall()
+
+    indices = _epoch_indices(stack)
+    assert indices == [0], f"the fallback chopped one epoch into {len(indices)}: {indices}"
+
+
+def test_fallback_still_rotates_without_a_dataloader(stack, tmp_path, ctx):
+    """Loops that never touch a DataLoader keep the old behavior."""
+    ci = Cirron(output_dir=str(tmp_path))
+    ci._profile_config = {"torch": {"epoch_steps": 5}}
+    h = torch_install(stack, ci, ctx)
+    try:
+        model = torch.nn.Linear(2, 1)
+        opt = torch.optim.SGD(model.parameters(), lr=0.01)
+        for _ in range(10):  # exactly two thresholds
+            _drive_step(model, opt)
+    finally:
+        h.uninstall()
+
+    indices = _epoch_indices(stack)
+    assert len(indices) == 2, f"expected 2 fallback rotations, got {len(indices)}: {indices}"
+    assert indices == [0, 1], "epoch indices should be gapless"
+
+
+def test_fallback_stays_disabled_after_the_first_dataloader_pass(stack, tmp_path, ctx):
+    """The latch is permanent: later loader passes still rotate, the
+    counter still doesn't."""
+    ci = Cirron(output_dir=str(tmp_path))
+    ci._profile_config = {"torch": {"epoch_steps": 5}}
+    h = torch_install(stack, ci, ctx)
+    try:
+        model = torch.nn.Linear(2, 1)
+        opt = torch.optim.SGD(model.parameters(), lr=0.01)
+        loader = _tiny_loader()
+        for _ in loader:  # epoch 0
+            pass
+        for _ in range(7):  # past the threshold, must not rotate
+            _drive_step(model, opt)
+        for _ in loader:  # epoch 1, loader-driven
+            pass
+        for _ in range(7):  # again past the threshold
+            _drive_step(model, opt)
+    finally:
+        h.uninstall()
+
+    indices = _epoch_indices(stack)
+    assert indices == [0, 1], f"expected exactly the 2 loader-driven epochs, got {indices}"
