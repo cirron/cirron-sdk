@@ -874,10 +874,12 @@ def test_every_sink_encodes_the_same_hostile_batch(tmp_path):
     assert len(captured) == 1
     batch = captured[0]
 
-    # Bare ``json.dumps`` — no ``default=``, no ``allow_nan`` escape. This is
-    # the whole assertion: it raises on any value the substitution layer
-    # missed, which is exactly what the encoders' own fallbacks paper over.
-    json.dumps(batch)
+    # No ``default=``, so an unencodable value raises TypeError, and
+    # ``allow_nan=False``, so a leaked non-finite float raises ValueError.
+    # Both are needed: the stdlib default permits ``NaN`` / ``Infinity`` and
+    # would let a leak through as a token no conforming parser accepts. This
+    # is the assertion the encoders' own fallbacks would otherwise paper over.
+    json.dumps(batch, allow_nan=False)
 
     assert isinstance(batch["spans"][0]["attrs"]["tags"], str)
     assert isinstance(batch["marks"][0]["attrs"]["grad"], str)
