@@ -6,6 +6,14 @@
 # `labels` replaces Dependabot's defaults, so its PRs carry no release
 # meaning. Security updates run without this file, so each ecosystem is
 # declared here to bring them under the same policy.
+#
+# The `uv` ecosystem is split into two groups rather than one. A single
+# `*` group means one unmergeable framework bump strands every other
+# update in the same PR, which is how #84 held five security fixes
+# behind a torch bump that segfaulted CI (see #89). Dependabot assigns a
+# dependency to the first group it matches, so `ml-frameworks` must stay
+# above `python-dependencies`; the `exclude-patterns` restates the list
+# so the split doesn't rest on ordering alone.
 version: 2
 
 updates:
@@ -17,10 +25,36 @@ updates:
       interval: weekly
     labels:
       - dependencies
+    # Order is load-bearing; see the header.
     groups:
+      ml-frameworks:
+        patterns:
+          - "torch"
+          - "torchvision"
+          - "triton"
+          - "nvidia-*"
+          - "cuda-*"
+          - "tensorflow"
+          - "tensorflow-*"
+          - "keras"
+          - "tf-keras"
+          - "transformers"
+          - "accelerate"
       python-dependencies:
         patterns:
           - "*"
+        exclude-patterns:
+          - "torch"
+          - "torchvision"
+          - "triton"
+          - "nvidia-*"
+          - "cuda-*"
+          - "tensorflow"
+          - "tensorflow-*"
+          - "keras"
+          - "tf-keras"
+          - "transformers"
+          - "accelerate"
 
   - package-ecosystem: github-actions
     directory: /
