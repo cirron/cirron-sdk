@@ -858,3 +858,70 @@ def test_event_pool_is_capped():
 
     assert pending.items == []
     assert len(pending.pool) <= _EVENT_POOL_CAP
+
+
+def test_param_cache_released_when_model_is_collected_without_further_steps(stack, ci, ctx):
+    """The cache must not outlive the model it describes.
+
+    The opportunistic clear inside the stash only runs on a *later*
+    optimizer step. A run that simply stops stepping (training finished,
+    model dropped) would otherwise pin a full set of parameter tensors
+    until uninstall, so collection itself has to release them.
+    """
+    import gc
+
+    import cirron as public_ci
+
+    h = torch_install(stack, ci, ctx)
+    try:
+        model = _CountingModel()
+        opt = torch.optim.SGD(model.parameters(), lr=0.01)
+        public_ci.watch(model)
+        _drive_step(model, opt)  # populates the cache
+
+        weight_ref = weakref.ref(model.fc.weight)
+        assert weight_ref() is not None
+
+        # Drop the model and never step again.
+        del model, opt
+        gc.collect()
+
+        assert weight_ref() is None, (
+            "parameter tensors survived collection of the model; the cache pinned them"
+        )
+    finally:
+        h.uninstall()
+        public_ci.watch(None)
+
+
+def test_param_cache_survives_model_swap(stack, ci, ctx):
+    """Collecting a replaced model must not clear the new model's cache."""
+    import gc
+
+    import cirron as public_ci
+
+    h = torch_install(stack, ci, ctx)
+    try:
+        model_a = _CountingModel()
+        opt_a = torch.optim.SGD(model_a.parameters(), lr=0.01)
+        public_ci.watch(model_a)
+        _drive_step(model_a, opt_a)
+
+        model_b = _CountingModel()
+        opt_b = torch.optim.SGD(model_b.parameters(), lr=0.01)
+        public_ci.watch(model_b)
+        _drive_step(model_b, opt_b)
+        base_b = model_b.named_parameters_calls
+
+        # A's finalizer must have been detached when B took over; if it
+        # fires now it would wrongly clear B's cache.
+        del model_a, opt_a
+        gc.collect()
+
+        _drive_step(model_b, opt_b)
+        assert model_b.named_parameters_calls == base_b, (
+            "collecting the previous model invalidated the current model's cache"
+        )
+    finally:
+        h.uninstall()
+        public_ci.watch(None)

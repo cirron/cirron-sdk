@@ -90,10 +90,11 @@ class _CudaPending:
     def __init__(self) -> None:
         self.items: list[tuple[Any, Any, Any]] = []
         # Events whose elapsed_time has already been read, kept for reuse.
+        # Allocating a CUDA event is the cost being avoided here;
         # ``Event.record()`` overwrites the previous capture, so a fully
-        # consumed event is as good as a fresh one and costs nothing to
-        # allocate. Only :func:`_drain_cuda` puts events here, and only
-        # once the pair has left ``items``.
+        # consumed event can be re-recorded and is as good as a fresh one.
+        # Only :func:`_drain_cuda` puts events here, and only once the
+        # pair has left ``items``.
         self.pool: list[Any] = []
         # Timed ops closed so far, driving the reap cadence.
         self.ops: int = 0
@@ -644,7 +645,7 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
     # holds the watched model weakly, and comparing identity through a
     # weakref both sidesteps id reuse after collection and lets a dead
     # model be noticed.
-    param_cache: dict[str, Any] = {"ref": None, "pairs": []}
+    param_cache: dict[str, Any] = {"ref": None, "pairs": [], "finalizer": None}
 
     def _cached_param_pairs(model: Any) -> list[tuple[str, Any]] | None:
         """Return ``(name, parameter)`` pairs for ``model``, rebuilding on change.
@@ -668,12 +669,23 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
         # stash below doesn't re-coerce them.
         pairs = list(named())
         try:
-            param_cache["ref"] = weakref.ref(model)
+            ref = weakref.ref(model)
+            # Release the pairs the moment the model is collected, instead
+            # of waiting for a later step to notice. Without this a run
+            # that stops stepping (training finished, model dropped) would
+            # pin a full set of parameter tensors until uninstall, which
+            # is exactly the retention the weakref keying exists to avoid.
+            finalizer = weakref.finalize(model, _drop_param_cache)
         except TypeError:
             # Not weakref-able. Skip caching rather than hold the model
             # strongly; the traversal is then paid per step, as before.
             _drop_param_cache()
             return pairs
+        # Detach the outgoing model's finalizer first: it would otherwise
+        # fire later and clear the incoming model's cache.
+        _drop_param_cache()
+        param_cache["ref"] = ref
+        param_cache["finalizer"] = finalizer
         param_cache["pairs"] = pairs
         return pairs
 
@@ -683,7 +695,15 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
         The cache holds every parameter tensor strongly, so keeping it
         past the watched model's lifetime would pin a full set of weights
         (device memory included) for the rest of the process.
+
+        Safe to call from a ``weakref.finalize`` callback: it only touches
+        the cache dict, never the model.
         """
+        finalizer = param_cache["finalizer"]
+        if finalizer is not None:
+            # Idempotent, and a no-op when we are being called *by* it.
+            finalizer.detach()
+        param_cache["finalizer"] = None
         param_cache["ref"] = None
         param_cache["pairs"] = []
 
