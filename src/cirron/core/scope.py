@@ -595,6 +595,84 @@ class ScopeStack:
             _note_closed_overflow(state)
         closed.append(scope_obj)
 
+    # deferred close (hook-internal)
+    #
+    # ``finalize_deferred`` + ``emit_closed`` split what ``pop`` and
+    # ``close_scope`` do in one step: stop the clock now, become drainable
+    # later. They exist for asynchronous timing sources, where a span's
+    # wall-clock end is known immediately but part of its payload is not.
+    #
+    # The torch hook's CUDA timing is the motivating case. GPU time comes
+    # from event pairs that resolve after the op has already returned, so a
+    # normally-closed scope can be serialized by the flush thread before its
+    # ``gpu_ns`` is written, and the late write then lands on an object
+    # nobody will read again. Holding the scope back until its event
+    # resolves closes that window.
+    #
+    # These are hook-internal API, not user surface. A caller that uses
+    # ``finalize_deferred`` owns the obligation to call ``emit_closed``
+    # exactly once on every path, including error paths, or the span is
+    # never emitted at all.
+
+    def finalize_deferred(self, scope_obj: Scope) -> None:
+        """Stop a scope's clock without making it drainable yet.
+
+        Does everything :meth:`pop` / :meth:`close_scope` do (remove from
+        the owning thread's stack, derive ``cpu_ns``, set ``end_ns``)
+        except the append to the drainable deque. The caller must later
+        hand the scope to :meth:`emit_closed`.
+
+        Removing it from the stack here is what stops later ``push``es
+        from nesting under a scope that has conceptually ended. As in
+        :meth:`close_and_remove`, the stack list is only touched from the
+        owning thread; ``list.remove`` is not atomic and a concurrent
+        ``push`` / ``pop`` on that thread would race.
+
+        Args:
+            scope_obj (Scope): The scope to finalize. Already-finalized
+                scopes (``end_ns is not None``) are left alone.
+        """
+        if threading.get_ident() == scope_obj.thread_id:
+            try:
+                self._state.stack.remove(scope_obj)
+            except ValueError:
+                # Already off the stack (popped, rotated, or pushed under a
+                # different state). Finalizing in place is still correct.
+                pass
+        if scope_obj.end_ns is not None:
+            return
+        if scope_obj.cpu_start_ns is not None:
+            scope_obj.cpu_ns = _process_time_ns() - scope_obj.cpu_start_ns
+        # Written last so a reader observing ``end_ns`` also sees ``cpu_ns``,
+        # matching the ordering ``close_scope`` documents.
+        scope_obj.end_ns = _time_ns()
+
+    def emit_closed(self, scope_obj: Scope) -> None:
+        """Make an already-finalized scope drainable.
+
+        The append half of :meth:`finalize_deferred`. Appends to the
+        *owning* thread's deque (not the caller's), so a scope resolved on
+        a consumer thread still drains as its producer's work.
+
+        There is no double-emit guard here: ``Scope`` is slotted and
+        carries no "emitted" bit, and ``end_ns`` is already set by
+        ``finalize_deferred`` so it cannot serve as one. Callers get
+        single-emission structurally instead, by removing the scope from
+        their own pending collection at the moment they emit it.
+
+        Args:
+            scope_obj (Scope): A scope previously passed to
+                :meth:`finalize_deferred`.
+        """
+        with self._states_lock:
+            state = self._states.get(scope_obj.thread_id)
+        if state is None:
+            return
+        closed = state.closed
+        if len(closed) == CLOSED_BUFFER_CAP:
+            _note_closed_overflow(state)
+        closed.append(scope_obj)
+
     @contextmanager
     def isolated_state(self, key: str) -> Iterator[_ScopeState]:
         """Enter a fresh per-context ``_ScopeState`` for the duration of the

@@ -925,3 +925,130 @@ def test_param_cache_survives_model_swap(stack, ci, ctx):
     finally:
         h.uninstall()
         public_ci.watch(None)
+
+
+# deferred close: CUDA-timed scopes wait for their events
+#
+# CI has no GPU, so pending_cuda is None in a real install and these paths
+# never run there. _drain_cuda only ever calls query() and elapsed_time()
+# on an event, so the holder is driven directly with fakes instead. No
+# torch.cuda internals are mocked.
+
+
+class _FakeEvent:
+    """Duck-typed stand-in for torch.cuda.Event."""
+
+    def __init__(self, ready=True, elapsed_ms=2.0, fail=False):
+        self.ready = ready
+        self.elapsed_ms = elapsed_ms
+        self.fail = fail
+
+    def query(self):
+        return self.ready
+
+    def elapsed_time(self, other):
+        if self.fail:
+            raise RuntimeError("device error")
+        return self.elapsed_ms
+
+
+def _held_scope(stack, pending, start_ev, end_ev):
+    """Push a scope, hold it the way the CUDA path does, and queue its pair."""
+    scope_obj = stack.push("forward")
+    stack.finalize_deferred(scope_obj)
+    pending.items.append((scope_obj, start_ev, end_ev))
+    return scope_obj
+
+
+def test_held_scope_is_not_drainable_until_its_event_resolves():
+    """The race this closes: a closed scope must not reach the flush thread
+    before its gpu_ns has been written."""
+    from cirron.hooks._torch_impl import _CudaPending, _drain_cuda
+
+    stack = ScopeStack()
+    pending = _CudaPending()
+    pending.scope_stack = stack
+    start_ev, end_ev = _FakeEvent(ready=False), _FakeEvent(ready=False)
+    scope_obj = _held_scope(stack, pending, start_ev, end_ev)
+
+    _drain_cuda(pending, force=False)
+    assert stack.drain_closed_all() == [], "scope drained before its GPU timing was known"
+    assert scope_obj.gpu_ns is None
+    assert len(pending.items) == 1
+
+    # The kernel finishes; now it resolves and becomes drainable.
+    start_ev.ready = end_ev.ready = True
+    _drain_cuda(pending, force=False)
+
+    drained = stack.drain_closed_all()
+    assert drained == [scope_obj]
+    assert scope_obj.gpu_ns == 2_000_000
+    assert pending.items == []
+
+
+def test_held_scope_is_emitted_exactly_once():
+    """A second drain must not emit the scope again."""
+    from cirron.hooks._torch_impl import _CudaPending, _drain_cuda
+
+    stack = ScopeStack()
+    pending = _CudaPending()
+    pending.scope_stack = stack
+    scope_obj = _held_scope(stack, pending, _FakeEvent(), _FakeEvent())
+
+    _drain_cuda(pending, force=False)
+    _drain_cuda(pending, force=False)
+
+    assert stack.drain_closed_all() == [scope_obj], "scope was emitted more than once"
+
+
+def test_held_scope_is_emitted_even_when_elapsed_time_fails():
+    """Losing GPU timing must not lose the span itself."""
+    from cirron.hooks._torch_impl import _CudaPending, _drain_cuda
+
+    stack = ScopeStack()
+    pending = _CudaPending()
+    pending.scope_stack = stack
+    scope_obj = _held_scope(stack, pending, _FakeEvent(fail=True), _FakeEvent())
+
+    _drain_cuda(pending, force=False)
+
+    drained = stack.drain_closed_all()
+    assert drained == [scope_obj], "a span was dropped because its GPU timing failed"
+    assert scope_obj.gpu_ns is None
+    assert scope_obj.end_ns is not None, "the span should still carry wall-clock timing"
+    assert pending.items == [], "the failed pair must not stay pending forever"
+
+
+def test_forced_drain_emits_every_held_scope():
+    """Uninstall forces a drain; nothing may be left held afterwards."""
+    from cirron.hooks._torch_impl import _CudaPending, _drain_cuda
+
+    stack = ScopeStack()
+    pending = _CudaPending()
+    pending.scope_stack = stack
+    held = [
+        _held_scope(stack, pending, _FakeEvent(ready=False), _FakeEvent(ready=False))
+        for _ in range(5)
+    ]
+
+    _drain_cuda(pending, force=True)
+
+    drained = stack.drain_closed_all()
+    assert len(drained) == len(held), f"{len(held) - len(drained)} held scopes were lost"
+    assert {id(s) for s in drained} == {id(s) for s in held}
+    assert pending.items == []
+
+
+def test_drain_without_a_scope_stack_does_not_raise():
+    """Defensive: a holder with no stack reference degrades quietly."""
+    from cirron.hooks._torch_impl import _CudaPending, _drain_cuda
+
+    class _Scope:
+        gpu_ns = None
+
+    pending = _CudaPending()  # scope_stack left as None
+    pending.items.append((_Scope(), _FakeEvent(), _FakeEvent()))
+
+    _drain_cuda(pending, force=True)
+
+    assert pending.items == []

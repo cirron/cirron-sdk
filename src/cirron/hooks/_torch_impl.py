@@ -98,6 +98,9 @@ class _CudaPending:
         self.pool: list[Any] = []
         # Timed ops closed so far, driving the reap cadence.
         self.ops: int = 0
+        # Scope stack the held scopes belong to, so the drain can emit them
+        # once their events resolve. Set by ``install``.
+        self.scope_stack: Any = None
 
 
 class TorchHookHandle:
@@ -188,9 +191,17 @@ def _drain_cuda(pending: _CudaPending, *, force: bool = False) -> None:
             scope_obj.gpu_ns = int(elapsed_ms * 1_000_000)
         except Exception:
             log.warning("cirron.hooks.torch: elapsed_time failed", exc_info=True)
+            # The pair leaves ``items`` either way, so emit here too. A
+            # span must never be lost just because its GPU timing was:
+            # better a span with gpu_ns unset than no span at all.
+            _emit_deferred(pending, scope_obj)
             # Deliberately not recycled: an event that misbehaved once is
             # not worth handing to the next span.
             continue
+        # Emission is what makes the scope visible to the flush thread, and
+        # it happens only now that gpu_ns is written. Dropping the pair from
+        # ``items`` in the same pass is what guarantees exactly one emit.
+        _emit_deferred(pending, scope_obj)
         # The only place events re-enter the pool. Reaching here means the
         # pair is leaving ``items`` and its elapsed_time has been read, so
         # nothing else still refers to either event.
@@ -198,6 +209,26 @@ def _drain_cuda(pending: _CudaPending, *, force: bool = False) -> None:
             pending.pool.append(start_ev)
             pending.pool.append(end_ev)
     pending.items = keep
+
+
+def _emit_deferred(pending: _CudaPending, scope_obj: Any) -> None:
+    """Make a held scope drainable, if it was held in the first place.
+
+    Scopes only enter the deferred path when a CUDA end event was recorded
+    for them; everything else was closed normally and must not be emitted
+    twice.
+
+    Args:
+        pending (_CudaPending): Holder carrying the scope stack reference.
+        scope_obj (Any): The scope whose CUDA pair just resolved.
+    """
+    stack = pending.scope_stack
+    if stack is None:
+        return
+    try:
+        stack.emit_closed(scope_obj)
+    except Exception:
+        log.warning("cirron.hooks.torch: deferred scope emit failed", exc_info=True)
 
 
 def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> TorchHookHandle:
@@ -228,6 +259,8 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
     except Exception:
         cuda_available = False
     pending_cuda = _CudaPending() if cuda_available else None
+    if pending_cuda is not None:
+        pending_cuda.scope_stack = scope_stack
     handle._cuda = pending_cuda
 
     # Checked at runtime (inside ``_dl_iter`` / ``_opt_post``) so torch
@@ -329,21 +362,29 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
             log.warning("cirron.hooks.torch: cuda Event.record failed", exc_info=True)
             return None
 
-    def _maybe_end_cuda(scope_obj: Scope | None, start_ev: Any) -> None:
+    def _maybe_end_cuda(scope_obj: Scope | None, start_ev: Any) -> bool:
         """Record the CUDA end event paired with ``start_ev`` and reap finished pairs.
 
         Args:
             scope_obj (Scope | None): The span being timed.
             start_ev (Any): The matching start event from
                 :func:`_maybe_start_cuda`.
+
+        Returns:
+            bool: ``True`` when the scope was queued for deferred close,
+                meaning the caller must NOT close it: the drain will
+                finish it once the GPU timing is readable. ``False`` on
+                every non-CUDA path, where the caller closes as usual.
         """
         if scope_obj is None or start_ev is None or pending_cuda is None:
-            return
+            return False
+        deferred = False
         try:
             pool = pending_cuda.pool
             end_ev = pool.pop() if pool else torch.cuda.Event(enable_timing=True)
             end_ev.record()
             pending_cuda.items.append((scope_obj, start_ev, end_ev))
+            deferred = True
         except Exception:
             log.warning("cirron.hooks.torch: cuda end record failed", exc_info=True)
         # Reap finished events periodically rather than on every close, so
@@ -351,7 +392,31 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
         # amortized instead of paid per op.
         pending_cuda.ops += 1
         if _should_reap(pending_cuda.ops, len(pending_cuda.items)):
-            _drain_cuda(pending_cuda, force=False)
+            # A reap triggered by the backstop has to actually shrink the
+            # list, so it synchronizes rather than skipping pairs that
+            # merely have not resolved yet.
+            force = len(pending_cuda.items) >= _REAP_BACKSTOP
+            _drain_cuda(pending_cuda, force=force)
+        return deferred
+
+    def _close_or_defer(scope_obj: Scope | None, start_ev: Any) -> None:
+        """End a timed span, holding it back when GPU timing is still pending.
+
+        Args:
+            scope_obj (Scope | None): The span being closed.
+            start_ev (Any): The matching CUDA start event, if any.
+        """
+        if _maybe_end_cuda(scope_obj, start_ev):
+            # Held: finalize the clock now, but stay out of the drainable
+            # deque until _drain_cuda has written gpu_ns.
+            if scope_obj is not None:
+                try:
+                    scope_stack.finalize_deferred(scope_obj)
+                except Exception:
+                    log.warning("cirron.hooks.torch: deferred finalize failed", exc_info=True)
+                    _close(scope_obj)
+            return
+        _close(scope_obj)
 
     # forward hooks
 
@@ -402,8 +467,7 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
                 stk = getattr(fwd_cuda_stack, "ev", None)
                 if stk:
                     start_ev = stk.pop()
-                _maybe_end_cuda(scope_obj, start_ev)
-                _close(scope_obj)
+                _close_or_defer(scope_obj, start_ev)
                 fwd_depth.scope = None
         finally:
             if fwd_depth.n > 0:
@@ -466,8 +530,7 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
         try:
             return orig_tensor_backward(self, *a, **kw)
         finally:
-            _maybe_end_cuda(scope_obj, start_ev)
-            _close(scope_obj)
+            _close_or_defer(scope_obj, start_ev)
 
     try:
         torch.Tensor.backward = _tensor_backward  # type: ignore[method-assign,assignment]
@@ -503,8 +566,7 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
             return orig_autograd_backward(*a, **kw)
         finally:
             if not already:
-                _maybe_end_cuda(scope_obj, start_ev)
-                _close(scope_obj)
+                _close_or_defer(scope_obj, start_ev)
 
     try:
         torch.autograd.backward = _autograd_backward  # type: ignore[assignment]
@@ -554,8 +616,7 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
         start_ev = None
         if entries:
             scope_obj, start_ev = entries.pop()
-        _maybe_end_cuda(scope_obj, start_ev)
-        _close(scope_obj)
+        _close_or_defer(scope_obj, start_ev)
         # Capture grad references while ``.grad`` is still populated —
         # the user's ``zero_grad`` runs after ``optimizer.step`` returns
         # and would otherwise strip the grads before the epoch boundary.
@@ -801,6 +862,12 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
                 _close(lingering)
                 step_state["scope"] = None
                 step_state["index"] += 1
+        # Resolve any scope still held for CUDA timing before the epoch
+        # closes. Without this a held span could outlive the epoch it
+        # belongs to, and an epoch boundary is a natural sync point: the
+        # ops in question have long since been submitted.
+        if pending_cuda is not None and pending_cuda.items:
+            _drain_cuda(pending_cuda, force=True)
         prev = epoch_state["scope"]
         # Capture weight + gradient stats against the outgoing epoch span
         # *before* we unwind it — the span id is what the snapshots link
