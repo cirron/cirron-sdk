@@ -46,8 +46,12 @@ def swallowed(context: str, exc: BaseException) -> None:
             if first:
                 _logged.add(context)
         if first:
+            # %r rather than %s: it carries the exception type, and it
+            # keeps the line renderable when a caller's exception has a
+            # broken __str__ — which is exactly the sort of thing that
+            # reaches this module.
             log.debug(
-                "cirron swallowed an internal error in %s: %s",
+                "cirron swallowed an internal error in %s: %r",
                 context,
                 exc,
                 exc_info=exc,

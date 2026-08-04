@@ -204,6 +204,9 @@ def test_health_reports_swallowed_errors():
     assert h["swallowed_errors"]["test.ctx"] == 2
     assert h["swallowed_errors"]["other.ctx"] == 1
     assert h["swallowed_error_count"] == 3
+    # Both fields come from one snapshot, so the total always equals the
+    # sum of the map beside it.
+    assert h["swallowed_error_count"] == sum(h["swallowed_errors"].values())
 
 
 def test_shutdown_resets_swallow_counts():

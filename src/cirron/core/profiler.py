@@ -249,13 +249,17 @@ class Profiler:
                 "installed_hooks": [],
                 "platform_context": {},
             }
+        # One snapshot for both fields. Reading twice would take the lock
+        # twice and could report a count that doesn't equal the sum of the
+        # map beside it, if a swallow landed between the two reads.
+        swallowed_errors = _safe(swallow_counts, {})
         return {
             "enabled": True,
             "scope_drop_count": _safe(lambda: get_default_stack().drop_count_all(), 0),
             "mark_drop_count": _safe(lambda: get_default_mark_buffer().drop_count_all(), 0),
             "spool_drop_count": _safe(_spool_drop_count, 0),
-            "swallowed_error_count": _safe(lambda: sum(swallow_counts().values()), 0),
-            "swallowed_errors": _safe(swallow_counts, {}),
+            "swallowed_error_count": sum(swallowed_errors.values()),
+            "swallowed_errors": swallowed_errors,
             "spool_dir": _safe(_spool_dir_str, None),
             "spool_bytes": _safe(_spool_bytes, 0),
             "flush_mode": _safe(_flush_mode, "stopped"),
