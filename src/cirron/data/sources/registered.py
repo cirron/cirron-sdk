@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from cirron.core.errors import CirronDatasetNotFound, CirronPlatformRequired
+from cirron.core.swallow import swallowed
 from cirron.core.version import _sdk_version
 from cirron.data.sources import DataSource, SourceConfig
 
@@ -357,8 +358,8 @@ def _materialize_file_handles(result: Any) -> Any:
         detached = img.copy()
         try:
             img.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            swallowed("registered.image_close", exc)
         return detached
 
     if isinstance(result, Image.Image):

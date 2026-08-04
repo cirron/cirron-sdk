@@ -17,6 +17,8 @@ import threading
 import weakref
 from typing import TYPE_CHECKING, Any
 
+from cirron.core.swallow import swallowed
+
 if TYPE_CHECKING:
     from cirron.core.config import Cirron
     from cirron.core.scope import Scope, ScopeStack
@@ -250,7 +252,8 @@ def _emit_deferred(pending: _CudaPending, scope_obj: Any) -> None:
         return
     try:
         stack.emit_closed(scope_obj)
-    except Exception:
+    except Exception as exc:
+        swallowed("torch.emit_deferred", exc)
         log.warning("cirron.hooks.torch: deferred scope emit failed", exc_info=True)
 
 
@@ -453,7 +456,8 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
             # deque until _drain_cuda has written gpu_ns.
             try:
                 scope_stack.finalize_deferred(scope_obj)
-            except Exception:
+            except Exception as exc:
+                swallowed("torch.finalize_deferred", exc)
                 log.warning("cirron.hooks.torch: deferred finalize failed", exc_info=True)
                 # Discard the queued pair before falling back, or the drain
                 # would emit this scope a second time once it resolves.
@@ -491,8 +495,8 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
         mode = "train"
         try:
             mode = "train" if bool(module.training) else "eval"
-        except Exception:
-            pass
+        except Exception as exc:
+            swallowed("torch.forward_mode_probe", exc)
         scope_obj = _open("forward", mode=mode)
         fwd_depth.scope = scope_obj
         start_ev = _maybe_start_cuda(scope_obj)
@@ -1005,8 +1009,8 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
                 if scope_obj is not None:
                     try:
                         scope_obj.attrs["data_load_ns"] = dt
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        swallowed("torch.data_load_attr", exc)
                 _close(scope_obj)
                 return item
 
