@@ -135,10 +135,24 @@ def driver(module_name: str, extra_name: str) -> Any:
     extensions. Uses ``importlib.import_module`` (not ``__import__``) so
     dotted names like ``"databricks.sql"`` return the leaf module.
 
-    Every optional-dependency site in the SDK routes through this helper.
-    A bare ``ImportError`` for an optional dep is a bug: callers can't
-    catch it uniformly, and its hand-written install string drifts away
-    from :data:`EXTRAS`.
+    Use this at **backend entry points** — the first import of an optional
+    backend on a ``load()`` path, where absence is a hard stop the caller
+    needs to act on. Those sites must not raise a bare ``ImportError``:
+    callers can't catch it uniformly, and a hand-written install string
+    drifts away from :data:`EXTRAS`.
+
+    Not every optional import belongs here, and the SDK has ~35 that
+    deliberately stay plain:
+
+    * Imports reached only *after* an entry point already checked — e.g.
+      ``NumpyAdapter.to_pandas`` runs downstream of ``ci.load(as_=...)``'s
+      guard, so a second check would be noise.
+    * Imports used as control flow — ``_concat_parts`` asks "is pandas
+      installed *and* is this a DataFrame?", where absence selects a branch
+      rather than failing.
+    * ``validate()`` on the object-store sources, which wraps everything in
+      ``except Exception: return False`` — the error type is unobservable
+      there by design.
 
     Args:
         module_name (str): Driver module to import (e.g. ``"psycopg"``,
