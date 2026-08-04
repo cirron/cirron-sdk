@@ -23,8 +23,8 @@ from cirron.data.sql import (
     SqlUri,
     build_query,
     driver,
-    execute_to_pandas,
     parse_sql_uri,
+    run_select,
 )
 
 if TYPE_CHECKING:
@@ -53,7 +53,7 @@ class DatabricksDataSource(DataSource):
         return a DataFrame.
 
         Returns:
-            Any: A pandas DataFrame produced by :func:`execute_to_pandas`.
+            Any: A pandas DataFrame produced by :func:`run_select`.
 
         Raises:
             CirronDependencyError: If ``databricks-sql-connector`` is not
@@ -81,16 +81,13 @@ class DatabricksDataSource(DataSource):
             columns=self.request.columns if self.request else None,
         )
 
-        conn = databricks_sql.connect(
-            server_hostname=creds.host,
-            http_path=http_path,
-            access_token=creds.token,
-        )
-        try:
-            with conn.cursor() as cursor:
-                return execute_to_pandas(cursor, query)
-        finally:
-            conn.close()
+        conn_kwargs: dict[str, Any] = {
+            "server_hostname": creds.host,
+            "http_path": http_path,
+            "access_token": creds.token,
+        }
+
+        return run_select(databricks_sql.connect, conn_kwargs, query)
 
 
 def build_source(uri_str: str, cirron: Cirron, request: LoadRequest | None) -> DatabricksDataSource:

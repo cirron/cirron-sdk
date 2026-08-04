@@ -2,7 +2,7 @@
 
 Thin shim over :mod:`cirron.data.sql`: parse the ``mysql://`` URI,
 resolve credentials, connect via ``PyMySQL``, run the composed
-``SELECT`` through :func:`execute_to_pandas`. PyMySQL is pure-Python
+``SELECT`` through :func:`run_select`. PyMySQL is pure-Python
 (no libmysqlclient build) and works against PlanetScale — the platform
 runs MySQL here, so first-class MySQL support is consistent with
  "no new infrastructure".
@@ -18,8 +18,8 @@ from cirron.data.sql import (
     SqlUri,
     build_query,
     driver,
-    execute_to_pandas,
     parse_sql_uri,
+    run_select,
 )
 
 if TYPE_CHECKING:
@@ -47,7 +47,7 @@ class MySqlDataSource(DataSource):
         """Open a MySQL connection, run the composed ``SELECT``, return a DataFrame.
 
         Returns:
-            Any: A pandas DataFrame produced by :func:`execute_to_pandas`.
+            Any: A pandas DataFrame produced by :func:`run_select`.
 
         Raises:
             CirronDependencyError: If ``pymysql`` is not installed.
@@ -71,12 +71,7 @@ class MySqlDataSource(DataSource):
         if creds.database:
             conn_kwargs["database"] = creds.database
 
-        conn = pymysql.connect(**conn_kwargs)
-        try:
-            with conn.cursor() as cursor:
-                return execute_to_pandas(cursor, query)
-        finally:
-            conn.close()
+        return run_select(pymysql.connect, conn_kwargs, query)
 
 
 def build_source(uri_str: str, cirron: Cirron, request: LoadRequest | None) -> MySqlDataSource:

@@ -693,3 +693,46 @@ def execute_to_pandas(cursor: Any, query: str) -> Any:
     description = cursor.description or []
     columns = [col[0] for col in description]
     return pd.DataFrame(rows, columns=columns)
+
+
+def run_select(
+    connect: Callable[..., Any],
+    conn_kwargs: dict[str, Any],
+    query: str,
+    *,
+    cursor_close: bool = False,
+) -> Any:
+    """Connect, run ``query``, and tear everything down deterministically.
+
+    The shared tail for all four per-driver shims. What genuinely differs
+    between drivers is the import name, the ``conn_kwargs`` mapping, and
+    the connect callable — those stay in the shims. The
+    connect/cursor/cleanup skeleton does not differ, and when each shim
+    hand-rolled it they drifted into three different cleanup styles.
+
+    Plain ``close()`` rather than ``with connect(...)``: psycopg's context
+    manager also commits or rolls back the transaction, which is
+    meaningless for the read-only ``SELECT``s this module composes, and
+    the other three drivers don't offer equivalent semantics.
+
+    Args:
+        connect (Callable[..., Any]): The driver's ``connect`` callable.
+        conn_kwargs (dict[str, Any]): Driver-specific connect keywords.
+        query (str): The composed ``SELECT``.
+        cursor_close (bool): Close the cursor explicitly before the
+            connection. Snowflake requires this; drivers that clean up
+            their own cursors on ``conn.close()`` leave it ``False``.
+
+    Returns:
+        Any: The pandas DataFrame from :func:`execute_to_pandas`.
+    """
+    conn = connect(**conn_kwargs)
+    try:
+        cursor = conn.cursor()
+        try:
+            return execute_to_pandas(cursor, query)
+        finally:
+            if cursor_close:
+                cursor.close()
+    finally:
+        conn.close()

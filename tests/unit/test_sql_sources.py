@@ -30,6 +30,7 @@ from cirron.data.sql import (
     driver,
     execute_to_pandas,
     parse_sql_uri,
+    run_select,
 )
 
 
@@ -341,6 +342,60 @@ class TestExecuteToPandas:
 # driver
 
 
+class TestRunSelect:
+    """The shared connect/cursor/cleanup tail for all four driver shims."""
+
+    def _fake(self, events: list[str]):
+        cursor = _FakeCursor([(1,)], [("id", None)])
+        real_close = getattr(cursor, "close", None)
+
+        def _cursor_close():
+            events.append("cursor")
+            if real_close:
+                real_close()
+
+        cursor.close = _cursor_close  # type: ignore[attr-defined]
+
+        class _Conn:
+            def cursor(self):
+                return cursor
+
+            def close(self):
+                events.append("conn")
+
+        return lambda **kw: _Conn()
+
+    def test_closes_connection_and_leaves_cursor_alone_by_default(self):
+        events: list[str] = []
+        df = self._fake(events)
+        result = run_select(df, {"host": "h"}, "SELECT 1")
+        assert list(result["id"]) == [1]
+        assert events == ["conn"]
+
+    def test_cursor_close_flag_closes_cursor_before_connection(self):
+        events: list[str] = []
+        run_select(self._fake(events), {}, "SELECT 1", cursor_close=True)
+        assert events == ["cursor", "conn"]
+
+    def test_connection_is_closed_even_when_the_query_raises(self):
+        events: list[str] = []
+
+        class _Cursor:
+            def execute(self, q):
+                raise RuntimeError("query blew up")
+
+        class _Conn:
+            def cursor(self):
+                return _Cursor()
+
+            def close(self):
+                events.append("conn")
+
+        with pytest.raises(RuntimeError, match="query blew up"):
+            run_select(lambda **kw: _Conn(), {}, "SELECT 1")
+        assert events == ["conn"], "a failed query must not leak the connection"
+
+
 class TestDriver:
     def test_missing_driver_raises(self):
         with pytest.raises(CirronDependencyError, match="cirron-sdk\\[postgres\\]"):
@@ -366,27 +421,15 @@ class TestPostgresDataSource:
         from cirron.data.sources.postgres import PostgresDataSource
 
         connect_calls: dict[str, Any] = {}
+        closed: list[bool] = []
         cursor = _FakeCursor([(1,)], [("id", None)])
 
         class _FakeConn:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *exc):
-                return False
-
             def cursor(self):
-                return _Cm(cursor)
+                return cursor
 
-        class _Cm:
-            def __init__(self, inner):
-                self._inner = inner
-
-            def __enter__(self):
-                return self._inner
-
-            def __exit__(self, *exc):
-                return False
+            def close(self):
+                closed.append(True)
 
         fake_psycopg = types.ModuleType("psycopg")
 
@@ -413,6 +456,9 @@ class TestPostgresDataSource:
         }
         assert cursor.executed == 'SELECT "id" FROM "events" WHERE id > 0'
         assert list(df["id"]) == [1]
+        # ``run_select`` replaced psycopg's ``with connect(...)`` form, so the
+        # connection is now closed explicitly rather than by __exit__.
+        assert closed == [True]
 
     def test_missing_driver(self, monkeypatch):
         from cirron.data.sources.postgres import PostgresDataSource
@@ -433,20 +479,10 @@ class TestMySqlDataSource:
 
         class _FakeConn:
             def cursor(self):
-                return _Cm(cursor)
+                return cursor
 
             def close(self):
                 connect_calls["closed"] = True
-
-        class _Cm:
-            def __init__(self, inner):
-                self._inner = inner
-
-            def __enter__(self):
-                return self._inner
-
-            def __exit__(self, *exc):
-                return False
 
         fake_pymysql = types.ModuleType("pymysql")
 
@@ -532,24 +568,11 @@ class TestEndToEnd:
         cursor = _FakeCursor([(1,)], [("id", None)])
 
         class _FakeConn:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *exc):
-                return False
-
             def cursor(self):
-                return _Cm(cursor)
+                return cursor
 
-        class _Cm:
-            def __init__(self, inner):
-                self._inner = inner
-
-            def __enter__(self):
-                return self._inner
-
-            def __exit__(self, *exc):
-                return False
+            def close(self):
+                captured["closed"] = True
 
         fake_psycopg = types.ModuleType("psycopg")
 
@@ -595,4 +618,5 @@ def test_sql_module_surface():
     assert hasattr(sql_mod, "CredentialResolver")
     assert hasattr(sql_mod, "build_query")
     assert hasattr(sql_mod, "execute_to_pandas")
+    assert hasattr(sql_mod, "run_select")
     assert hasattr(sql_mod, "driver")
