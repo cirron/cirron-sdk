@@ -760,3 +760,161 @@ def test_transport_receives_sanitized_batch(tmp_path):
     assert len(sent) == 1, "transport.send failed on an unsanitized batch"
     assert isinstance(sent[0]["spans"][0]["attrs"]["tags"], str)
     assert isinstance(sent[0]["marks"][0]["attrs"]["grad"], str)
+
+
+# non-finite floats 
+
+
+def _marks_by_name(payload: dict) -> dict[str, dict]:
+    return {m["name"]: m for m in payload["marks"]}
+
+
+def test_nan_mark_value_becomes_null_with_token(tmp_path):
+    # A diverged loss is exactly what you profile for. It must arrive, and
+    # it must not be a bare ``NaN`` token that no conforming parser reads.
+    writer = _make_writer(tmp_path)
+    thread = _make_thread(tmp_path, writer=writer)
+    with ci.scope("epoch"):
+        ci.mark("loss", float("nan"))
+    thread._tick()
+
+    m = json.loads(next(writer.spool_dir.glob("*.json")).read_text())["marks"][0]
+    assert m["value"] is None
+    assert m["value_nonfinite"] == "nan"
+    assert m["value_type"] == "float", "the mark is still a float mark"
+
+
+def test_inf_and_negative_inf_mark_tokens(tmp_path):
+    writer = _make_writer(tmp_path)
+    thread = _make_thread(tmp_path, writer=writer)
+    with ci.scope("epoch"):
+        ci.mark("up", float("inf"))
+        ci.mark("down", float("-inf"))
+    thread._tick()
+
+    marks = _marks_by_name(json.loads(next(writer.spool_dir.glob("*.json")).read_text()))
+    assert marks["up"]["value_nonfinite"] == "inf"
+    assert marks["down"]["value_nonfinite"] == "-inf"
+    assert marks["up"]["value"] is None and marks["down"]["value"] is None
+
+
+def test_finite_mark_has_no_nonfinite_key(tmp_path):
+    # Absence of the key is the only test a reader needs, so it must not
+    # appear as a null on every ordinary mark.
+    writer = _make_writer(tmp_path)
+    thread = _make_thread(tmp_path, writer=writer)
+    with ci.scope("epoch"):
+        ci.mark("loss", 0.5)
+        ci.mark("step", 3)
+    thread._tick()
+
+    payload = json.loads(next(writer.spool_dir.glob("*.json")).read_text())
+    for m in payload["marks"]:
+        assert "value_nonfinite" not in m
+
+
+def test_spool_file_is_strict_rfc8259_json(tmp_path):
+    # The headline regression. Python's json.loads accepts NaN/Infinity by
+    # default, which is why this bug survived a Python-only suite; the
+    # platform's JSON.parse does not, and it runs before schema validation,
+    # so an unparseable file costs the whole batch.
+    writer = _make_writer(tmp_path)
+    thread = _make_thread(tmp_path, writer=writer)
+    with ci.scope("epoch", drift=float("inf")):
+        ci.mark("loss", float("nan"), grad=float("-inf"))
+    thread._tick()
+
+    text = next(writer.spool_dir.glob("*.json")).read_text()
+
+    def _reject(token: str) -> None:
+        raise AssertionError(f"non-standard JSON constant in spool file: {token}")
+
+    json.loads(text, parse_constant=_reject)
+
+
+def test_nonfinite_batch_is_not_lost(tmp_path):
+    # The data-loss half of the bug: the producer buffers are drained
+    # before serialization, so an unencodable batch took every span and
+    # mark of the tick with it.
+    writer = _make_writer(tmp_path)
+    thread = _make_thread(tmp_path, writer=writer)
+    with ci.scope("epoch"):
+        ci.mark("loss", float("nan"))
+        ci.mark("acc", 0.9)
+    with ci.scope("eval"):
+        ci.mark("val", float("inf"))
+    thread._tick()
+
+    files = list(writer.spool_dir.glob("*.json"))
+    assert len(files) == 1, "batch was dropped instead of substituted"
+    payload = json.loads(files[0].read_text())
+    assert {s["name"] for s in payload["spans"]} >= {"epoch", "eval"}
+    assert set(_marks_by_name(payload)) == {"loss", "acc", "val"}
+
+
+def test_nonfinite_attrs_become_token_strings(tmp_path):
+    # attrs are free-form and user-owned, so a companion field has nowhere
+    # to live; they take the same str() degradation as everything else.
+    writer = _make_writer(tmp_path)
+    thread = _make_thread(tmp_path, writer=writer)
+    with ci.scope("epoch", drift=float("inf"), deep={"a": [float("nan")]}):
+        ci.mark("loss", 0.5, g=float("nan"))
+    thread._tick()
+
+    payload = json.loads(next(writer.spool_dir.glob("*.json")).read_text())
+    span = next(s for s in payload["spans"] if s["name"] == "epoch")
+    assert span["attrs"]["drift"] == "inf"
+    assert span["attrs"]["deep"] == {"a": ["nan"]}
+    assert payload["marks"][0]["attrs"]["g"] == "nan"
+
+
+def test_transport_receives_strict_json_batch(tmp_path):
+    # The transport serializes independently of the spool sink, so it must
+    # be handed a dict that is already free of non-finite floats.
+    sent: list[dict] = []
+
+    class FakeTransport:
+        def send(self, payload: dict) -> bool:
+            json.dumps(payload, allow_nan=False)  # raises on a non-finite float
+            sent.append(payload)
+            return True
+
+        def close(self) -> None:
+            return None
+
+    thread = _make_thread(tmp_path, transport=FakeTransport())
+    with ci.scope("epoch", drift=float("nan")):
+        ci.mark("loss", float("nan"))
+    thread._tick()
+
+    assert len(sent) == 1, "transport.send failed on a non-finite batch"
+    assert sent[0]["marks"][0]["value_nonfinite"] == "nan"
+
+
+def test_every_batch_assembly_site_substitutes_identically(tmp_path):
+    # Four call sites assemble batches; all of them go through the same
+    # three _*_to_dict helpers, which is why fixing those covers them all.
+    # _tick is covered above, so this pins the other three.
+    thread = _make_thread(tmp_path)
+    with ci.scope("epoch"):
+        ci.mark("loss", float("nan"))
+    batch = thread.drain_once()
+    assert batch is not None
+    drained = batch.to_json()["marks"][0]
+    assert drained["value"] is None
+    assert drained["value_nonfinite"] == "nan"
+
+    # flush_to_trace_buffer with no supervisor drains straight into the
+    # in-process buffer that ci.trace() reads, bypassing the spool.
+    from cirron.core.flush import flush_to_trace_buffer
+    from cirron.core.trace_buffer import get_default_trace_buffer
+
+    get_default_trace_buffer().clear()
+    with ci.scope("epoch2"):
+        ci.mark("loss", float("-inf"))
+    flush_to_trace_buffer()
+    _, marks_by_span = get_default_trace_buffer().snapshot()
+    buffered = [m for bucket in marks_by_span.values() for m in bucket]
+    assert len(buffered) == 1
+    assert buffered[0]["value"] is None
+    assert buffered[0]["value_nonfinite"] == "-inf"

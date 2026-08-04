@@ -323,9 +323,7 @@ def dumps(obj: Any, *, separators: tuple[str, str] | None = _COMPACT) -> str:
         return json.dumps(obj, separators=separators, default=_to_str, allow_nan=False)
     except ValueError as exc:
         _warn_fallback(exc)
-        return json.dumps(
-            _json_safe(obj), separators=separators, default=_to_str, allow_nan=False
-        )
+        return json.dumps(_json_safe(obj), separators=separators, default=_to_str, allow_nan=False)
 
 
 def dumps_utf8(obj: Any, *, separators: tuple[str, str] | None = _COMPACT) -> bytes:
