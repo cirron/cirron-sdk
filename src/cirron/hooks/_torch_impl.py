@@ -694,9 +694,15 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
         # spans, inflate the epoch indices, and re-run the expensive
         # end-of-epoch weight and gradient snapshot every ``epoch_steps``
         # steps instead of once per real epoch.
-        epoch_state["step_count"] += 1
-        if not epoch_state["dl_driven"] and epoch_state["step_count"] >= epoch_steps:
-            _rotate_epoch()
+        #
+        # The counter is only maintained while the fallback is live. Once
+        # latched off, nothing reads it again, so incrementing would be
+        # pure per-step cost on the hot path (and would grow unbounded
+        # across a long loader-driven run).
+        if not epoch_state["dl_driven"]:
+            epoch_state["step_count"] += 1
+            if epoch_state["step_count"] >= epoch_steps:
+                _rotate_epoch()
 
     def _opt_pre_safe(*a: Any, **kw: Any) -> Any:
         """Exception-swallowing wrapper around :func:`_opt_pre`.
