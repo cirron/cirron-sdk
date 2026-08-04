@@ -79,6 +79,14 @@ DEFAULT_INTERVAL_SEC = 1.0
 # write.
 SPOOL_RESCAN_EVERY_WRITES = 256
 
+# Age gate for sweeping orphaned ``.json.tmp`` files, left behind when a
+# writer is hard-killed between ``write_bytes`` and ``os.replace``. They
+# cannot be swept on sight: ranks share one spool directory, so a fresh
+# temp file may be a peer's in-flight write. A live write is milliseconds
+# wide, so an hour-old one can only be an orphan, and an hour dwarfs any
+# plausible clock skew. Read at call time so tests can patch it.
+SPOOL_TMP_STALE_SEC = 3600.0
+
 
 class Transport(Protocol):
     """Minimal transport interface the flush thread hands batches to.
@@ -258,6 +266,26 @@ class Batch:
         }
 
 
+@dataclass(frozen=True)
+class _SpoolScan:
+    """One directory pass over the spool.
+
+    Attributes:
+        batches (list[tuple[Path, int]]): ``(path, size)`` for sealed
+            ``*.json``, oldest-first. The eviction candidates.
+        tmps (list[tuple[Path, int, float]]): ``(path, size, mtime)`` for
+            unsealed ``*.json.tmp``. Held apart because they occupy disk
+            but are never evicted to make room. The mtime rides along from
+            the ``stat`` already performed.
+        total (int): Bytes held by both kinds, which is what ``max_bytes``
+            is enforced against.
+    """
+
+    batches: list[tuple[Path, int]]
+    tmps: list[tuple[Path, int, float]]
+    total: int
+
+
 class SpoolWriter:
     """Writes one batch per file to ``<spool_dir>/<created_ns>-<id>.json``.
 
@@ -265,6 +293,12 @@ class SpoolWriter:
     eviction is a sorted ``glob``. The total-byte cap is enforced on every
     write; dropped files bump ``drop_count`` so ``Profiler.health()``
     can surface it.
+
+    Unsealed ``*.json.tmp`` files count toward the cap too, since they hold
+    real disk. Ones older than :data:`SPOOL_TMP_STALE_SEC` are orphans from
+    a hard-killed writer and are swept before any batch is evicted; younger
+    ones are left alone because they may belong to a peer rank sharing the
+    directory.
     """
 
     def __init__(self, spool_dir: str | Path, max_bytes: int = DEFAULT_SPOOL_MAX_BYTES) -> None:
@@ -276,9 +310,15 @@ class SpoolWriter:
         # Running byte total so an under-cap write costs O(1) syscalls
         # rather than O(files). Seeded once here and re-derived from real
         # ``stat`` data by every cap-enforcement pass. This only *seeds* —
-        # constructing a writer must never evict anyone's spool files.
+        # constructing a writer must never evict anyone's spool files, nor
+        # sweep anyone's temp files: it has no idea whether the process that
+        # left them is still alive. Deletion waits for the first cap pass,
+        # which by construction runs from a process actively writing.
         self._writes_since_scan = 0
-        self._total_bytes = self._scan_locked()[1]
+        # Latched when temp files alone meet the cap, so an over-cap state we
+        # have already decided we cannot fix stops re-scanning on every write.
+        self._cap_blocked_by_tmp = False
+        self._total_bytes = self._scan_locked().total
 
     @property
     def spool_dir(self) -> Path:
@@ -309,7 +349,10 @@ class SpoolWriter:
 
     @property
     def total_bytes(self) -> int:
-        """Running byte total of ``*.json`` in the spool directory.
+        """Running byte total of the spool directory.
+
+        Covers sealed ``*.json`` batches and unsealed ``*.json.tmp`` alike,
+        since both occupy disk and both count against ``max_bytes``.
 
         Exact immediately after any cap-enforcement pass. Between passes it
         may over-count files deleted out of band and under-count files
@@ -321,34 +364,85 @@ class SpoolWriter:
         """
         return self._total_bytes
 
-    def _scan_locked(self) -> tuple[list[tuple[Path, int]], int]:
-        """Stat every spool file. Caller holds ``self._lock`` (or is ``__init__``).
+    def disk_bytes(self) -> int:
+        """Freshly ``stat``-ed byte total of the spool directory.
+
+        Unlike :attr:`total_bytes` this re-reads the directory, so it also
+        sees what other ranks wrote since the last cap pass. Counts
+        ``*.json`` and ``*.json.tmp`` alike, so ``ci.health()`` reports the
+        same number the cap is enforced against.
+
+        Deliberately lock-free. :meth:`_scan_locked` mutates nothing and
+        already tolerates files vanishing mid-scan, whereas taking
+        ``self._lock`` here could deadlock: :func:`flush_now` runs from the
+        SIGTERM/SIGINT handler on the main thread and may interrupt a
+        main-thread ``ci.health()`` holding this non-reentrant lock.
 
         Returns:
-            tuple[list[tuple[Path, int]], int]: ``(path, size)`` pairs sorted
-                oldest-first — the zero-padded ``created_ns`` filename prefix
-                makes the lexicographic sort chronological — and their total
-                size. Sizes are returned alongside the paths so the eviction
-                loop never has to re-``stat``, which both halves the syscalls
-                and lets it correct ``total`` by a known size when a file
-                turns out to be already gone. Entries that vanish or aren't
-                regular files are skipped: a second process sharing the spool
-                dir can evict between the ``glob`` and the ``stat``, and an
-                unguarded ``stat`` there would raise out of ``write()`` and
-                cost a whole batch that is already safely on disk.
+            int: Total bytes on disk.
         """
-        entries: list[tuple[Path, int]] = []
+        return self._scan_locked().total
+
+    def _scan_locked(self) -> _SpoolScan:
+        """Stat every spool file.
+
+        The ``_locked`` suffix marks where this sits in the locking scheme,
+        not a precondition: the scan itself is read-only, touches no
+        instance state, and already tolerates the directory changing
+        underneath it, so holding ``self._lock`` is optional. Callers that
+        go on to *act* on the result take the lock, because eviction and
+        the running-total update must not interleave with a concurrent
+        ``write``. Callers that only read a number, :meth:`disk_bytes` and
+        ``__init__``, deliberately do not, and :meth:`disk_bytes` must not:
+        see its docstring for the deadlock that would introduce.
+
+        Deliberately zero-argument: the test suite replaces this on the
+        instance with a call-counting wrapper, so a parameter added here
+        breaks that at a distance. Staleness needs a clock, which is why
+        mtimes come back raw and the cutoff is applied by the sweep.
+
+        Sizes are returned alongside the paths so the eviction loop never
+        has to re-``stat``, which both halves the syscalls and lets it
+        correct ``total`` by a known size when a file turns out to be
+        already gone. Entries that vanish or aren't regular files are
+        skipped: a second process sharing the spool dir can evict between
+        the ``glob`` and the ``stat``, and an unguarded ``stat`` there
+        would raise out of ``write()`` and cost a whole batch that is
+        already safely on disk.
+
+        Returns:
+            _SpoolScan: Sealed batches oldest-first (the zero-padded
+                ``created_ns`` filename prefix makes the lexicographic sort
+                chronological), unsealed temp files, and the bytes they hold
+                between them.
+        """
+        batches: list[tuple[Path, int]] = []
+        tmps: list[tuple[Path, int, float]] = []
         total = 0
-        for p in sorted(self._dir.glob("*.json")):
+        # One ``readdir`` for both kinds; the spool may be shared by hundreds
+        # of ranks, so a second pass is real cost. The explicit classification
+        # matters because ``*.json*`` also matches ``*.jsonl`` / ``*.json.bak``,
+        # and the cap must only account for what this SDK wrote.
+        for p in sorted(self._dir.glob("*.json*")):
+            name = p.name
+            if name.endswith(".json"):
+                is_tmp = False
+            elif name.endswith(".json.tmp"):
+                is_tmp = True
+            else:
+                continue
             try:
                 st = p.stat()
             except OSError:
                 continue
             if not S_ISREG(st.st_mode):
                 continue
-            entries.append((p, st.st_size))
+            if is_tmp:
+                tmps.append((p, st.st_size, st.st_mtime))
+            else:
+                batches.append((p, st.st_size))
             total += st.st_size
-        return entries, total
+        return _SpoolScan(batches, tmps, total)
 
     def write(self, batch: Batch) -> Path:
         """Atomically write one batch as ``<created_ns>-<id>.json``.
@@ -373,10 +467,13 @@ class SpoolWriter:
             # write or replace leaves the counter untouched.
             self._total_bytes += len(data)
             self._writes_since_scan += 1
+            # ``_cap_blocked_by_tmp`` suppresses only the over-cap trigger: a
+            # state we already decided we cannot fix must not re-scan the
+            # whole directory on every subsequent write. The periodic trigger
+            # still retries it within ``SPOOL_RESCAN_EVERY_WRITES`` writes.
             if (
-                self._total_bytes > self._max_bytes
-                or self._writes_since_scan >= SPOOL_RESCAN_EVERY_WRITES
-            ):
+                self._total_bytes > self._max_bytes and not self._cap_blocked_by_tmp
+            ) or self._writes_since_scan >= SPOOL_RESCAN_EVERY_WRITES:
                 self._enforce_cap_locked()
         return path
 
@@ -384,26 +481,95 @@ class SpoolWriter:
         """Run cap enforcement out-of-band.
 
         Also the manual reconciliation entry point: the pass re-derives
-        ``total_bytes`` from real ``stat`` data even when it evicts nothing.
+        ``total_bytes`` from real ``stat`` data even when it evicts nothing,
+        and sweeps orphaned temp files.
 
         Returns:
-            int: Number of files evicted by this call.
+            int: Number of batch files evicted by this call. Swept temp
+                files are excluded: they are garbage no reader could have
+                consumed, not lost data.
         """
         with self._lock:
             return self._enforce_cap_locked()
 
+    def _sweep_stale_tmps_locked(self, tmps: list[tuple[Path, int, float]]) -> tuple[int, int]:
+        """Delete temp files older than ``SPOOL_TMP_STALE_SEC``.
+
+        Caller holds ``self._lock``.
+
+        Args:
+            tmps (list[tuple[Path, int, float]]): ``(path, size, mtime)``
+                triples from the current scan.
+
+        Returns:
+            tuple[int, int]: ``(files_swept, bytes_reclaimed)``. Reclaimed
+                bytes also cover files a peer rank unlinked first, since
+                those bytes are off disk either way and must come off the
+                running total; the count covers only our own deletions.
+        """
+        cutoff = time.time() - SPOOL_TMP_STALE_SEC
+        swept = 0
+        reclaimed = 0
+        for f, size, mtime in tmps:
+            if mtime > cutoff:
+                continue
+            try:
+                f.unlink()
+            except FileNotFoundError:
+                # Two ranks swept the same orphan. Benign: both agree the
+                # bytes are gone, only one did the deleting.
+                reclaimed += size
+                continue
+            except OSError:
+                # Still on disk (PermissionError, a reader holding it open on
+                # Windows), so its bytes stay accounted for.
+                continue
+            reclaimed += size
+            swept += 1
+        if swept:
+            # INFO, not WARNING: an eviction warns because user data was
+            # lost. This is housekeeping.
+            log.info("cirron swept %d orphaned temp file(s) from %s", swept, self._dir)
+        return swept, reclaimed
+
     def _enforce_cap_locked(self) -> int:
         """Drop oldest-first until total bytes fit under ``max_bytes``.
 
-        Also reconciles ``_total_bytes`` from real ``stat`` data, correcting
-        whatever drift the running counter accumulated since the last pass.
+        Sweeps orphaned temp files first: reclaiming one is free, whereas
+        every byte reclaimed by eviction costs a real batch. Also reconciles
+        ``_total_bytes`` from real ``stat`` data, correcting whatever drift
+        the running counter accumulated since the last pass.
 
         Returns:
-            int: Number of files dropped this pass.
+            int: Number of batch files dropped this pass.
         """
-        entries, total = self._scan_locked()
+        scan = self._scan_locked()
+        total = scan.total
+        tmp_bytes = sum(size for _, size, _ in scan.tmps)
+        _, reclaimed = self._sweep_stale_tmps_locked(scan.tmps)
+        total -= reclaimed
+        tmp_bytes -= reclaimed
+
         dropped = 0
-        for f, size in entries:
+        if tmp_bytes >= self._max_bytes:
+            # Whatever survived the sweep is a peer rank's in-flight write:
+            # real disk, but not ours to delete. Evicting here cannot reach
+            # the target however many batches it drops, so it would be pure
+            # loss for no benefit. Defer instead; those files are sealed or
+            # sweepable within the hour.
+            self._cap_blocked_by_tmp = True
+            log.warning(
+                "cirron spool over cap but %d byte(s) are in-flight .json.tmp files in %s; "
+                "evicting nothing this pass",
+                tmp_bytes,
+                self._dir,
+            )
+            self._total_bytes = total
+            self._writes_since_scan = 0
+            return 0
+
+        self._cap_blocked_by_tmp = False
+        for f, size in scan.batches:
             if total <= self._max_bytes:
                 break
             try:

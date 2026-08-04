@@ -7,12 +7,17 @@ Covers the acceptance criteria on ``drain_once`` empties both buffers into a wel
 - three deaths in the window latches spool-only mode
 - buffer-full event wakes the thread ahead of the interval
 - empty drain is a no-op
+- every sink encodes the same batch, so a record the spool accepts is a
+  record the transports can ship
 """
 
 from __future__ import annotations
 
+import gzip
+import io
 import json
 import logging
+import os
 import threading
 import time
 from pathlib import Path
@@ -36,9 +41,27 @@ from cirron.core.flush import (
     start_flush_thread,
     stop_flush_thread,
 )
+from cirron.core.ingest import IngestClient
 from cirron.core.mark import MarkBuffer, get_default_mark_buffer
 from cirron.core.scope import ScopeStack, get_default_stack
-from cirron.core.transport import Transport
+from cirron.core.snapshot_buffer import SnapshotBuffer
+from cirron.core.transport import EventStreamTransport, Transport
+from cirron.snapshots.types import TraceSnapshot
+
+
+def strict_loads(text: str) -> Any:
+    """``json.loads`` that rejects the non-standard JSON constants.
+
+    CPython's decoder accepts ``NaN`` / ``Infinity`` / ``-Infinity``, so a
+    plain ``json.loads`` round-trip cannot tell whether the platform's
+    ``JSON.parse`` would have taken the payload. ``tests/unit/test_json.py``
+    keeps its own copy for the same reason.
+    """
+
+    def _reject(token: str) -> None:
+        raise AssertionError(f"non-standard JSON constant in payload: {token}")
+
+    return json.loads(text, parse_constant=_reject)
 
 
 @pytest.fixture(autouse=True)
@@ -65,6 +88,9 @@ def _make_thread(tmp_path: Path, **kwargs) -> FlushThread:
         kwargs.pop("transport", None),
         kwargs.pop("interval", 60.0),
         kwargs.pop("wake_event", None),
+        # ``snapshot_buffer=None`` leaves the worker draining no snapshots,
+        # which is what every test that predates snapshot coverage expects.
+        snapshot_buffer=kwargs.pop("snapshot_buffer", None),
         # ``sinks=None`` makes FlushThread build its own ``[SpoolSink(writer)]``,
         # so callers that don't pass sinks behave exactly as before.
         sinks=kwargs.pop("sinks", None),
@@ -215,6 +241,20 @@ def _on_disk(writer: SpoolWriter) -> int:
     return sum(p.stat().st_size for p in writer.spool_dir.glob("*.json"))
 
 
+def _on_disk_all(writer: SpoolWriter) -> int:
+    """Sealed batches plus unsealed temp files, which is what the cap counts."""
+    return sum(p.stat().st_size for p in writer.spool_dir.glob("*.json*"))
+
+
+def _orphan_tmp(writer: SpoolWriter, name: str, size: int, age_sec: float) -> Path:
+    """Drop a ``*.json.tmp`` into the spool dir with a backdated mtime."""
+    p = writer.spool_dir / name
+    p.write_bytes(b"x" * size)
+    stamp = time.time() - age_sec
+    os.utime(p, (stamp, stamp))
+    return p
+
+
 def _big_batch(i: int) -> Batch:
     return Batch(
         batch_id=f"batch{i:02d}",
@@ -350,6 +390,199 @@ def test_spool_files_sort_chronologically(tmp_path):
     # Lexicographic sort must match chronological created_ns sort.
     extracted = [int(n.split("-", 1)[0]) for n in names]
     assert extracted == sorted(extracted)
+
+
+# orphaned .json.tmp files
+
+
+def test_spool_seed_scan_counts_tmp_bytes_without_deleting(tmp_path):
+    """A hard-killed writer leaves a ``.json.tmp`` behind. It holds real disk,
+    so it must be counted immediately; but a fresh writer has no idea whether
+    the process that left it is still alive, so it must not delete it."""
+    seed = _make_writer(tmp_path)
+    orphan = _orphan_tmp(seed, "00000000000000000001-dead.json.tmp", 512, age_sec=7200)
+
+    writer = SpoolWriter(seed.spool_dir)
+
+    assert orphan.exists(), "__init__ must never delete anyone's temp files"
+    assert writer.total_bytes == _on_disk_all(writer)
+    assert writer.total_bytes >= 512
+    assert writer.drop_count == 0
+
+
+def test_spool_stale_tmp_is_swept_by_cap_enforcement(tmp_path):
+    """Under cap, so nothing needs evicting: the sweep still has to run, which
+    is what makes the periodic rescan reclaim orphans on a long-lived job."""
+    writer = _make_writer(tmp_path)
+    kept = writer.write(_big_batch(0))
+    orphan = _orphan_tmp(writer, "00000000000000000001-dead.json.tmp", 512, age_sec=7200)
+
+    writer.enforce_cap()
+
+    assert not orphan.exists(), "the stale orphan was not swept"
+    assert kept.exists(), "a live batch was collateral damage"
+    assert writer.drop_count == 0, "a swept orphan is not lost user data"
+    assert writer.total_bytes == _on_disk_all(writer)
+
+
+def test_spool_fresh_tmp_counts_but_is_never_swept(tmp_path):
+    """A young temp file is a peer rank's in-flight write. Deleting it would
+    cost that rank a batch, so it is counted and left alone."""
+    writer = _make_writer(tmp_path)
+    peer = _orphan_tmp(writer, "00000000000000000009-peer.json.tmp", 512, age_sec=0)
+
+    writer.enforce_cap()
+
+    assert peer.exists(), "swept a temp file that could still be in flight"
+    assert writer.total_bytes == _on_disk_all(writer)
+    assert writer.total_bytes >= 512
+
+
+def test_spool_stale_tmp_sweep_runs_before_evicting_batches(tmp_path):
+    """Ordering is the assertion. Reclaiming an orphan is free; every byte
+    reclaimed by eviction costs a real batch, so sweeping second would drop a
+    batch to make room for garbage."""
+    writer = _make_writer(tmp_path, max_bytes=3_000)
+    kept = [writer.write(_big_batch(i)) for i in range(2)]
+    _orphan_tmp(writer, "00000000000000000001-dead.json.tmp", 2_000, age_sec=7200)
+
+    writer.enforce_cap()
+
+    assert list(writer.spool_dir.glob("*.json.tmp")) == []
+    assert all(p.exists() for p in kept), "a batch was evicted to make room for garbage"
+    assert writer.drop_count == 0
+    assert writer.total_bytes <= 3_000
+
+
+def test_spool_fresh_tmp_over_cap_does_not_evict_every_batch(tmp_path, caplog):
+    """The guard. Temp files count toward the total but are not eviction
+    candidates, so once they alone meet the cap the loop's exit condition is
+    unsatisfiable and it would unlink every batch and still be over cap."""
+    writer = _make_writer(tmp_path, max_bytes=3_000)
+    kept = [writer.write(_big_batch(i)) for i in range(2)]
+    _orphan_tmp(writer, "00000000000000000009-peer.json.tmp", 4_000, age_sec=0)
+
+    with caplog.at_level(logging.WARNING, logger="cirron.flush"):
+        dropped = writer.enforce_cap()
+
+    assert dropped == 0
+    assert all(p.exists() for p in kept), "evicted batches it could never get under cap by"
+    assert writer.drop_count == 0
+    assert any(".json.tmp" in r.getMessage() for r in caplog.records)
+
+
+def test_spool_over_cap_from_fresh_tmp_does_not_rescan_every_write(tmp_path, monkeypatch):
+    """Hysteresis. The guard leaves the total legitimately above the cap, so
+    without the latch every subsequent write would rescan the whole directory
+    on every rank for up to an hour."""
+    writer = _make_writer(tmp_path, max_bytes=3_000)
+    _orphan_tmp(writer, "00000000000000000009-peer.json.tmp", 4_000, age_sec=0)
+    writer.enforce_cap()  # trips the guard and latches
+
+    calls = {"n": 0}
+    real = writer._scan_locked
+
+    def counting():
+        calls["n"] += 1
+        return real()
+
+    # Patched after the latching pass, so that scan isn't counted.
+    monkeypatch.setattr(writer, "_scan_locked", counting)
+    for i in range(5):
+        writer.write(Batch(batch_id=f"b{i}", created_ns=i + 1, spans=[], marks=[]))
+
+    assert calls["n"] == 0, "the latch did not suppress the over-cap rescan"
+
+
+def test_spool_tmp_sweep_tolerates_concurrent_unlink(tmp_path, monkeypatch):
+    """Two ranks sweeping the same orphan: the loser's unlink raises, but the
+    bytes are off disk either way and must come off the running total."""
+    writer = _make_writer(tmp_path)
+    writer.write(_big_batch(0))
+    _orphan_tmp(writer, "00000000000000000001-dead.json.tmp", 512, age_sec=7200)
+
+    real_unlink = Path.unlink
+    raised: list[str] = []
+
+    def racing_unlink(self, *args, **kwargs):
+        if self.name.endswith(".json.tmp") and not raised:
+            raised.append(self.name)
+            real_unlink(self, *args, **kwargs)
+            raise FileNotFoundError(self.name)
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", racing_unlink)
+    writer.enforce_cap()
+
+    assert raised, "the racing unlink never fired; test would be vacuous"
+    assert writer.total_bytes == _on_disk_all(writer)
+    assert writer.drop_count == 0
+
+
+def test_spool_tmp_sweep_keeps_bytes_when_unlink_denied(tmp_path, monkeypatch):
+    """A non-FileNotFoundError failure means the file is still there, so its
+    bytes must stay in the total."""
+    writer = _make_writer(tmp_path)
+    orphan = _orphan_tmp(writer, "00000000000000000001-dead.json.tmp", 512, age_sec=7200)
+
+    def denied_unlink(self, *args, **kwargs):
+        raise PermissionError(self.name)
+
+    monkeypatch.setattr(Path, "unlink", denied_unlink)
+    writer.enforce_cap()
+
+    assert orphan.exists()
+    assert writer.total_bytes == _on_disk_all(writer)
+    assert writer.drop_count == 0
+
+
+def test_spool_tmp_with_future_mtime_is_not_swept(tmp_path):
+    """Clock skew toward the unsafe direction. A negative age is never stale,
+    which is the way this should be wrong."""
+    writer = _make_writer(tmp_path)
+    future = _orphan_tmp(writer, "00000000000000000001-skew.json.tmp", 512, age_sec=-86_400)
+
+    writer.enforce_cap()
+
+    assert future.exists()
+
+
+def test_spool_stale_threshold_is_patchable_at_module_level(tmp_path, monkeypatch):
+    """The constant must be read at call time. Binding it in a default
+    argument or on the instance would silently defeat this patch, and with it
+    every sweep test that doesn't want to wait an hour."""
+    monkeypatch.setattr(flush_mod, "SPOOL_TMP_STALE_SEC", 0.0)
+    writer = _make_writer(tmp_path)
+    fresh = _orphan_tmp(writer, "00000000000000000001-dead.json.tmp", 512, age_sec=0)
+
+    writer.enforce_cap()
+
+    assert not fresh.exists()
+
+
+def test_spool_scan_ignores_non_batch_files(tmp_path):
+    """The scan glob is ``*.json*``, which also matches things this SDK never
+    wrote. The cap must neither count nor delete them."""
+    writer = _make_writer(tmp_path)
+    notes = writer.spool_dir / "notes.jsonl"
+    notes.write_bytes(b"y" * 4_000)
+    backup = writer.spool_dir / "00000000000000000001-old.json.bak"
+    backup.write_bytes(b"z" * 4_000)
+    batch = writer.write(_big_batch(0))
+
+    writer.enforce_cap()
+
+    assert notes.exists() and backup.exists()
+    assert writer.total_bytes == _on_disk(writer) == batch.stat().st_size
+
+
+def test_spool_disk_bytes_matches_writer_accounting(tmp_path):
+    writer = _make_writer(tmp_path)
+    for i in range(3):
+        writer.write(_big_batch(i))
+    _orphan_tmp(writer, "00000000000000000009-peer.json.tmp", 512, age_sec=0)
+
+    assert writer.disk_bytes() == _on_disk_all(writer)
 
 
 # FlushThread lifecycle
@@ -766,6 +999,113 @@ def test_transport_receives_sanitized_batch(tmp_path):
     assert len(sent) == 1, "transport.send failed on an unsanitized batch"
     assert isinstance(sent[0]["spans"][0]["attrs"]["tags"], str)
     assert isinstance(sent[0]["marks"][0]["attrs"]["grad"], str)
+
+
+def _snapshot(**overrides) -> TraceSnapshot:
+    """A ``mode="stats"`` snapshot record, overridable field by field."""
+    fields: dict[str, Any] = {
+        "id": "snap1",
+        "span_id": "span1",
+        "tensor_name": "layer1.weight",
+        "shape": [2, 2],
+        "dtype": "float32",
+        "mode": "stats",
+        "stats": {"mean": 0.0, "std": 1.0, "min": -1.0, "max": 1.0, "norm": 2.0},
+        "ts_ns": 1_700_000_000_000_000_000,
+    }
+    fields.update(overrides)
+    return TraceSnapshot(**fields)
+
+
+def test_transport_receives_sanitized_snapshots(tmp_path):
+    # Snapshots reach the batch through ``snapshot_to_dict``, not through the
+    # span/mark path, so they need their own guard: a field the sanitizer never
+    # saw would write to the spool fine and raise in both transport paths,
+    # producing complete local traces and silently missing platform data.
+    sent: list[dict] = []
+
+    class FakeTransport:
+        def send(self, payload: dict) -> bool:
+            json.dumps(payload)  # raises on a dirty batch
+            sent.append(payload)
+            return True
+
+        def close(self) -> None:
+            return None
+
+    snapshots = SnapshotBuffer()
+    snapshots.append(
+        _snapshot(
+            stats={"mean": float("nan"), "std": 1.0},
+            attrs={"device": object()},
+        )
+    )
+    thread = _make_thread(tmp_path, transport=FakeTransport(), snapshot_buffer=snapshots)
+    thread._tick()
+
+    assert len(sent) == 1, "transport.send failed on an unsanitized snapshot"
+    snap = sent[0]["snapshots"][0]
+    assert isinstance(snap["attrs"]["device"], str)
+    assert snap["stats"]["mean"] is None
+    assert snap["stats"]["nonfinite"] == {"mean": "nan"}
+
+
+def test_every_sink_encodes_the_same_hostile_batch(tmp_path):
+    # The invariant behind issue #57: a batch the spool can write is a batch
+    # the transports can ship. Assertions run against the *in-memory* dict the
+    # worker handed each sink, never a copy read back from the spool file — a
+    # JSON round-trip launders the batch, so reading the file back would make
+    # this pass even with sanitization removed.
+    writer = _make_writer(tmp_path)
+    captured: list[dict] = []
+
+    class CapturingTransport:
+        def send(self, payload: dict) -> bool:
+            captured.append(payload)
+            return True
+
+        def close(self) -> None:
+            return None
+
+    snapshots = SnapshotBuffer()
+    snapshots.append(_snapshot(attrs={"device": object()}))
+    thread = _make_thread(
+        tmp_path,
+        writer=writer,
+        transport=CapturingTransport(),
+        snapshot_buffer=snapshots,
+    )
+    with ci.scope("epoch", tags={"a", "b"}):
+        ci.mark("loss", float("nan"), grad=object())
+    thread._tick()
+
+    assert len(captured) == 1
+    batch = captured[0]
+
+    # No ``default=``, so an unencodable value raises TypeError, and
+    # ``allow_nan=False``, so a leaked non-finite float raises ValueError.
+    # Both are needed: the stdlib default permits ``NaN`` / ``Infinity`` and
+    # would let a leak through as a token no conforming parser accepts. This
+    # is the assertion the encoders' own fallbacks would otherwise paper over.
+    json.dumps(batch, allow_nan=False)
+
+    assert isinstance(batch["spans"][0]["attrs"]["tags"], str)
+    assert isinstance(batch["marks"][0]["attrs"]["grad"], str)
+    assert batch["marks"][0]["value_nonfinite"] == "nan"
+    assert isinstance(batch["snapshots"][0]["attrs"]["device"], str)
+
+    # The spool file must equal that dict rather than a scrubbed rewrite of
+    # it, which is what proves the writer's encoder never had to rescue it.
+    assert strict_loads(next(writer.spool_dir.glob("*.json")).read_text()) == batch
+
+    stream = io.StringIO()
+    assert EventStreamTransport(stream).send(batch) is True
+    assert strict_loads(stream.getvalue().strip())["payload"] == batch
+
+    body, headers = IngestClient("https://example.invalid", "k")._build_request(batch)
+    if headers.get("Content-Encoding") == "gzip":
+        body = gzip.decompress(body)
+    assert strict_loads(body.decode("utf-8")) == batch
 
 
 # non-finite floats
