@@ -75,22 +75,28 @@ def _run_training(loader) -> None:
             opt.step()
 
 
-def _ratio(overhead: float, base: float) -> float:
-    return (overhead - base) / base
+#: The two ratcheted reference-loop metrics: (config key, metric name, label).
+_RATIO_METRICS = (
+    ("no_hooks", "profile_no_hooks_ratio", "profile() scaffold overhead"),
+    ("torch_hooks", "profile_torch_hooks_ratio", "torch hook overhead"),
+)
 
 
 def test_reference_loop_overhead(
-    measure, record_result, baseline_metrics, regression_tolerance
+    measure_interleaved,
+    paired_ratio,
+    record_result,
+    baseline_metrics,
+    regression_tolerance,
+    clear_spool,
 ) -> None:
     expected = baseline_metrics
 
     loader = _build_loader()
 
-    # Baseline: no profiling at all. One warmup iteration burns in the
-    # torch allocator / MKL kernels so the three timed runs share the
-    # same steady-state cost.
-    base_wall = measure(lambda: _run_training(loader), warmup=1, repeats=3)
-    record_result("baseline_wall_seconds", base_wall, "s")
+    # Baseline: no profiling at all.
+    def run_base() -> None:
+        _run_training(loader)
 
     # profile() with zero framework hooks — isolates scaffold cost
     # (flush thread, root scope, transport selection).
@@ -100,16 +106,6 @@ def test_reference_loop_overhead(
             _run_training(loader)
         finally:
             ci.shutdown()
-
-    no_hooks_wall = measure(run_no_hooks, warmup=1, repeats=3)
-    no_hooks_ratio = _ratio(no_hooks_wall, base_wall)
-    record_result(
-        "profile_no_hooks_ratio",
-        no_hooks_ratio,
-        "ratio",
-        baseline=expected.get("profile_no_hooks_ratio"),
-        extra={"wall_seconds": no_hooks_wall, "baseline_wall_seconds": base_wall},
-    )
 
     # profile() with torch auto-hooks installed — the full user-visible
     # overhead: forward/backward/optimizer/data_load spans plus scope
@@ -121,35 +117,61 @@ def test_reference_loop_overhead(
         finally:
             ci.shutdown()
 
-    torch_hooks_wall = measure(run_torch_hooks, warmup=1, repeats=3)
-    torch_hooks_ratio = _ratio(torch_hooks_wall, base_wall)
+    # Interleaved rather than one configuration at a time: the metric is a
+    # ratio between configurations, so anything that changes between the
+    # windows they were measured in shows up as profiling overhead. Warmup
+    # rounds burn in the torch allocator / MKL kernels for all three.
+    # ``clear_spool`` runs untimed between rounds. Without it the two
+    # profiled configurations accumulate one spool batch per cycle and pay
+    # a growing startup scan, while the unprofiled baseline in the
+    # denominator does not — a one-sided drift that inflates the ratio.
+    m = measure_interleaved(
+        {"baseline": run_base, "no_hooks": run_no_hooks, "torch_hooks": run_torch_hooks},
+        warmup=2,
+        between_rounds=clear_spool,
+    )
+
     record_result(
-        "profile_torch_hooks_ratio",
-        torch_hooks_ratio,
-        "ratio",
-        baseline=expected.get("profile_torch_hooks_ratio"),
-        extra={"wall_seconds": torch_hooks_wall, "baseline_wall_seconds": base_wall},
+        "baseline_wall_seconds", m["baseline"].median, "s", extra=m["baseline"].as_extra()
     )
 
-    # Regression gate. Compare against the committed baseline, not the
-    # documented budget (CLAUDE.md explains why: the hot path is known
-    # to miss today; we ratchet from where we are).
-    ceiling_no_hooks = expected["profile_no_hooks_ratio"] * regression_tolerance
-    assert no_hooks_ratio <= ceiling_no_hooks, (
-        f"profile() scaffold overhead regressed: {no_hooks_ratio * 100:.2f}% "
-        f"(baseline {expected['profile_no_hooks_ratio'] * 100:.2f}%, "
-        f"tolerance +{(regression_tolerance - 1) * 100:.0f}% → ceiling "
-        f"{ceiling_no_hooks * 100:.2f}%). "
-        f"Wall: {base_wall:.2f}s → {no_hooks_wall:.2f}s. "
-        "If this is intentional, regenerate tests/overhead/baseline.json."
-    )
+    for key, name, label in _RATIO_METRICS:
+        ratio = paired_ratio(m[key], m["baseline"])
+        record_result(
+            name,
+            ratio.median,
+            "ratio",
+            baseline=expected.get(name),
+            extra={
+                # These two keys are load-bearing for trend analysis across
+                # archived artifacts. Do not drop them.
+                "wall_seconds": m[key].median,
+                "baseline_wall_seconds": m["baseline"].median,
+                "ratio_spread": ratio.as_extra(),
+                "wall_spread": m[key].as_extra(),
+                "baseline_spread": m["baseline"].as_extra(),
+            },
+        )
 
-    ceiling_torch_hooks = expected["profile_torch_hooks_ratio"] * regression_tolerance
-    assert torch_hooks_ratio <= ceiling_torch_hooks, (
-        f"torch hook overhead regressed: {torch_hooks_ratio * 100:.2f}% "
-        f"(baseline {expected['profile_torch_hooks_ratio'] * 100:.2f}%, "
-        f"tolerance +{(regression_tolerance - 1) * 100:.0f}% → ceiling "
-        f"{ceiling_torch_hooks * 100:.2f}%). "
-        f"Wall: {base_wall:.2f}s → {torch_hooks_wall:.2f}s. "
-        "If this is intentional, regenerate tests/overhead/baseline.json."
-    )
+        # Regression gate. Compare against the committed baseline, not the
+        # documented budget (CLAUDE.md explains why: the hot path is known
+        # to miss today; we ratchet from where we are).
+        #
+        # Absent key means dormant, matching _assert_no_regression's
+        # documented contract. Previously this indexed the mapping directly
+        # and raised KeyError, so demoting an over-noisy metric to
+        # informational required a code change rather than a baseline edit.
+        baseline = expected.get(name)
+        if baseline is None:
+            continue
+        ceiling = baseline * regression_tolerance
+        assert ratio.median <= ceiling, (
+            f"{label} regressed: {ratio.median * 100:.2f}% "
+            f"(baseline {baseline * 100:.2f}%, "
+            f"tolerance +{(regression_tolerance - 1) * 100:.0f}% → ceiling "
+            f"{ceiling * 100:.2f}%). "
+            f"Wall: {m['baseline'].median:.4f}s → {m[key].median:.4f}s; "
+            f"ratio spread over {ratio.n} rounds: "
+            f"min {ratio.minimum * 100:.2f}% max {ratio.maximum * 100:.2f}%. "
+            "If this is intentional, regenerate tests/overhead/baseline.json."
+        )
