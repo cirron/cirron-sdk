@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from importlib import metadata as _metadata
 from importlib import util as _util
+from typing import Any
 
 from cirron.core.errors import CirronDependencyError
 
@@ -124,6 +125,41 @@ def install_hint(extras: Iterable[str]) -> str:
         return "pip install 'cirron-sdk'"
     joined = ",".join(sorted(extra_set))
     return f"pip install 'cirron-sdk[{joined}]'"
+
+
+def driver(module_name: str, extra_name: str) -> Any:
+    """Import an optional backend driver or raise :class:`CirronDependencyError`.
+
+    Backend imports are lazy because none of them are hard dependencies —
+    a user who only hits S3 never pays the cost of ``psycopg``'s C
+    extensions. Uses ``importlib.import_module`` (not ``__import__``) so
+    dotted names like ``"databricks.sql"`` return the leaf module.
+
+    Every optional-dependency site in the SDK routes through this helper.
+    A bare ``ImportError`` for an optional dep is a bug: callers can't
+    catch it uniformly, and its hand-written install string drifts away
+    from :data:`EXTRAS`.
+
+    Args:
+        module_name (str): Driver module to import (e.g. ``"psycopg"``,
+            ``"databricks.sql"``, ``"google.cloud.storage"``).
+        extra_name (str): Cirron extra name used in the install hint.
+
+    Returns:
+        Any: The imported driver module (the leaf, for dotted names).
+
+    Raises:
+        CirronDependencyError: If the driver isn't installed.
+    """
+    import importlib
+
+    try:
+        return importlib.import_module(module_name)
+    except ImportError as e:
+        raise CirronDependencyError(
+            f"the {extra_name!r} source backend requires the {module_name!r} "
+            f"driver. Install with: {install_hint([extra_name])}"
+        ) from e
 
 
 def _resolve_to_import_name(name: str) -> str:

@@ -22,9 +22,9 @@ from cirron.data.sql import (
     CredentialResolver,
     SqlUri,
     build_query,
+    driver,
     execute_to_pandas,
     parse_sql_uri,
-    require_driver,
 )
 
 if TYPE_CHECKING:
@@ -63,7 +63,7 @@ class SnowflakeDataSource(DataSource):
                 not installed.
             CirronPlatformRequired: If credential resolution fails.
         """
-        snowflake_connector = require_driver("snowflake.connector", "snowflake")
+        snowflake_connector = driver("snowflake.connector", "snowflake")
         creds = CredentialResolver(self.cirron, self.uri).resolve()
 
         conn_kwargs: dict[str, Any] = {

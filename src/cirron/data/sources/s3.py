@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from cirron.core.deps import driver
 from cirron.data.match import apply_match
 from cirron.data.sources import DataSource
 
@@ -34,12 +35,9 @@ class S3DataSource(DataSource):
                 ``[]``.
 
         Raises:
-            ImportError: If ``boto3`` is not installed.
+            CirronDependencyError: If ``boto3`` is not installed.
         """
-        try:
-            import boto3
-        except ImportError as e:
-            raise ImportError("boto3 is required. Install with: pip install boto3") from e
+        boto3 = driver("boto3", "s3")
 
         client = boto3.client("s3")
 

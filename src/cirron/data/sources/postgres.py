@@ -15,9 +15,9 @@ from cirron.data.sql import (
     CredentialResolver,
     SqlUri,
     build_query,
+    driver,
     execute_to_pandas,
     parse_sql_uri,
-    require_driver,
 )
 
 if TYPE_CHECKING:
@@ -51,7 +51,7 @@ class PostgresDataSource(DataSource):
             CirronDependencyError: If ``psycopg`` is not installed.
             CirronPlatformRequired: If credential resolution fails.
         """
-        psycopg = require_driver("psycopg", "postgres")
+        psycopg = driver("psycopg", "postgres")
         creds = CredentialResolver(self.cirron, self.uri).resolve()
         query = build_query(
             self.uri,

@@ -27,9 +27,9 @@ from cirron.data.sql import (
     CredentialResolver,
     SqlUri,
     build_query,
+    driver,
     execute_to_pandas,
     parse_sql_uri,
-    require_driver,
 )
 
 
@@ -338,13 +338,13 @@ class TestExecuteToPandas:
         assert len(df) == 0
 
 
-# require_driver
+# driver
 
 
-class TestRequireDriver:
+class TestDriver:
     def test_missing_driver_raises(self):
         with pytest.raises(CirronDependencyError, match="cirron-sdk\\[postgres\\]"):
-            require_driver("not_a_real_driver_xyz", "postgres")
+            driver("not_a_real_driver_xyz", "postgres")
 
     def test_dotted_name_returns_leaf(self, monkeypatch):
         """``databricks.sql`` should come back as the leaf module."""
@@ -354,7 +354,7 @@ class TestRequireDriver:
         parent.leaf = leaf  # type: ignore[attr-defined]
         monkeypatch.setitem(sys.modules, "fake_pkg_parent", parent)
         monkeypatch.setitem(sys.modules, "fake_pkg_parent.leaf", leaf)
-        result = require_driver("fake_pkg_parent.leaf", "x")
+        result = driver("fake_pkg_parent.leaf", "x")
         assert result is leaf
 
 
@@ -595,4 +595,4 @@ def test_sql_module_surface():
     assert hasattr(sql_mod, "CredentialResolver")
     assert hasattr(sql_mod, "build_query")
     assert hasattr(sql_mod, "execute_to_pandas")
-    assert hasattr(sql_mod, "require_driver")
+    assert hasattr(sql_mod, "driver")

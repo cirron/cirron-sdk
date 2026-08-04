@@ -22,9 +22,9 @@ from cirron.data.sql import (
     CredentialResolver,
     SqlUri,
     build_query,
+    driver,
     execute_to_pandas,
     parse_sql_uri,
-    require_driver,
 )
 
 if TYPE_CHECKING:
@@ -62,7 +62,7 @@ class DatabricksDataSource(DataSource):
                 from the platform integration or ``DATABRICKS_HTTP_PATH``,
                 or if credential resolution fails.
         """
-        databricks_sql = require_driver("databricks.sql", "databricks")
+        databricks_sql = driver("databricks.sql", "databricks")
         creds = CredentialResolver(self.cirron, self.uri).resolve()
 
         http_path = creds.extra.get("http_path") if creds.extra else None

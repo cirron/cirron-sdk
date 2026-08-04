@@ -34,6 +34,9 @@ from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError, version
 from typing import TYPE_CHECKING, Any
 
+# Re-exported: ``driver`` lives in ``core.deps`` next to the EXTRAS registry it
+# reads, but the four SQL shims (and their tests) import it from here.
+from cirron.core.deps import driver as driver
 from cirron.core.errors import (
     CirronDependencyError,
     CirronPlatformRequired,
@@ -690,40 +693,3 @@ def execute_to_pandas(cursor: Any, query: str) -> Any:
     description = cursor.description or []
     columns = [col[0] for col in description]
     return pd.DataFrame(rows, columns=columns)
-
-
-# driver helpers
-
-
-def require_driver(module_name: str, extra_name: str) -> Any:
-    """Import a SQL driver or raise :class:`CirronDependencyError`.
-
-    Driver imports are lazy because none of them are hard dependencies —
-    a user who only hits S3 never pays the cost of ``psycopg``'s C
-    extensions. Uses ``importlib.import_module`` (not ``__import__``)
-    so dotted names like ``"databricks.sql"`` return the leaf module.
-    The error message names the pip extra so users can copy-paste the
-    fix.
-
-    Args:
-        module_name (str): Driver module to import (e.g. ``"psycopg"``,
-            ``"databricks.sql"``).
-        extra_name (str): Cirron extra name used in the install hint.
-
-    Returns:
-        Any: The imported driver module.
-
-    Raises:
-        CirronDependencyError: If the driver isn't installed.
-    """
-    import importlib
-
-    try:
-        return importlib.import_module(module_name)
-    except ImportError as e:
-        from cirron.core.deps import install_hint
-
-        raise CirronDependencyError(
-            f"the {extra_name!r} source backend requires the {module_name!r} "
-            f"driver. Install with: {install_hint([extra_name])}"
-        ) from e

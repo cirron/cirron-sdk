@@ -17,9 +17,9 @@ from cirron.data.sql import (
     CredentialResolver,
     SqlUri,
     build_query,
+    driver,
     execute_to_pandas,
     parse_sql_uri,
-    require_driver,
 )
 
 if TYPE_CHECKING:
@@ -53,7 +53,7 @@ class MySqlDataSource(DataSource):
             CirronDependencyError: If ``pymysql`` is not installed.
             CirronPlatformRequired: If credential resolution fails.
         """
-        pymysql = require_driver("pymysql", "mysql")
+        pymysql = driver("pymysql", "mysql")
         creds = CredentialResolver(self.cirron, self.uri).resolve()
         query = build_query(
             self.uri,

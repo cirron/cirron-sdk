@@ -518,6 +518,48 @@ def test_s3_paginator_walks_all_pages(monkeypatch):
     assert all(k.startswith("prefix/a") for k in fetched_keys)
 
 
+@pytest.mark.parametrize(
+    ("module_name", "extra", "factory"),
+    [
+        (
+            "boto3",
+            "s3",
+            lambda: ("cirron.data.sources.s3", "S3DataSource", {"bucket_name": "b", "path": "k"}),
+        ),
+        (
+            "google.cloud.storage",
+            "gcs",
+            lambda: ("cirron.data.sources.gcs", "GCSDataSource", {"bucket_name": "b", "path": "k"}),
+        ),
+        (
+            "azure.storage.blob",
+            "azure",
+            lambda: (
+                "cirron.data.sources.azure",
+                "AzureDataSource",
+                {"account_name": "acct", "container_name": "c", "path": "k"},
+            ),
+        ),
+    ],
+)
+def test_object_store_missing_driver_raises_dependency_error(
+    monkeypatch, module_name, extra, factory
+):
+    """Object-store backends must raise the same structured error the SQL
+    shims do — a bare ImportError can't be caught uniformly and its
+    hand-written pip string drifts away from the EXTRAS registry."""
+    import sys
+
+    module_path, class_name, cfg_kwargs = factory()
+    monkeypatch.setitem(sys.modules, module_name, None)
+
+    source_cls = getattr(importlib.import_module(module_path), class_name)
+    src = source_cls(SourceConfig(source_type=extra, **cfg_kwargs))
+
+    with pytest.raises(CirronDependencyError, match=rf"cirron-sdk\[{extra}\]"):
+        src.load()
+
+
 def test_s3_validate_returns_false_on_error(monkeypatch):
     import sys
     import types
