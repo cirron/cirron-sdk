@@ -29,13 +29,23 @@ a named artifact `overhead-<sha>` with 90-day retention.
 - `test_scope_overhead.py`, `test_mark_overhead.py`,
   `test_wrappers_overhead.py`, `test_snapshots_overhead.py` —
   per-primitive micro-budgets from SDK-9/10/14/24. Kept as
-  informational tripwires alongside the reference loop.
+  informational tripwires alongside the reference loop. The first
+  three also ratchet against `baseline.json` once their metrics are
+  armed (see below).
+- `test_baseline_ratchet.py` tests the ratchet itself. A gate that is
+  dormant and a gate that works both look green, so the comparison
+  helper is exercised directly against synthetic baselines.
 
 ## Budgets and latest numbers
 
-Each micro-benchmark asserts a fixed budget in its test file; the
-reference-loop test ratchets against `baseline.json` with a +20%
-regression tolerance.
+Each micro-benchmark asserts a fixed budget in its test file as a hard
+ceiling. That budget carries roughly 2x headroom over what the code
+actually costs, so on its own it only catches catastrophic regressions.
+A change that doubles the cost of `ci.mark` still passes it. The
+baseline ratchet closes that gap: `scope_push_pop_us_per_cycle`,
+`mark_us_per_call`, and `batches_us_per_iter` are additionally
+compared against `baseline.json` with the same +20% tolerance the
+reference loop uses, **whenever a value for them is committed there**.
 
 | Test                                    | Budget        | Latest observed (x86_64) |
 |-----------------------------------------|---------------|---------------------------------|
@@ -74,3 +84,28 @@ it), update `baseline.json` in the same PR:
 
 The first SDK-44 PR bootstraps the baseline this way — initial values
 are intentionally generous placeholders.
+
+### Arming a per-primitive ratchet
+
+`scope_push_pop_us_per_cycle`, `mark_us_per_call`, and
+`batches_us_per_iter` compare against `baseline.json` only when it
+carries a value for them. Absent a value the comparison is a no-op, so
+the gate can ship before the numbers exist. To arm one, follow the
+regeneration steps above and copy its `us` value out of the artifact's
+`results` into `baseline.json`'s `metrics`.
+
+Two constraints, both load-bearing:
+
+- **CI-runner numbers only.** These are wall-clock microsecond
+  measurements, not ratios, so they are hardware-specific in a way the
+  reference-loop ratios are not. A developer machine's numbers (Apple
+  silicon runs these primitives roughly 2x faster than the x86_64 CI
+  runner) would arm the gate against hardware CI never sees, failing
+  every run. Take the values from the `overhead-<sha>` artifact.
+- **Max of two consecutive runs on the release branch**, matching the
+  existing ratios, so one run's jitter does not become the ceiling.
+
+If CI shows more than 20% run-to-run variance on these metrics, raise
+the tolerance for the per-primitive keys rather than padding the
+committed values; the reference-loop ratios should stay at +20%.
+Whoever proposes that change should bring the variance data.

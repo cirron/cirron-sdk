@@ -23,7 +23,7 @@ from cirron.core.mark import get_default_mark_buffer
 _BUDGET_S = 5.0  # 5 μs × 1M calls
 
 
-def test_1m_marks_under_budget(record_result) -> None:
+def test_1m_marks_under_budget(record_result, baseline_metrics, assert_no_regression) -> None:
     buf = get_default_mark_buffer()
     buf.drain()
 
@@ -40,8 +40,24 @@ def test_1m_marks_under_budget(record_result) -> None:
         elapsed = time.perf_counter() - start
 
     per_call_us = (elapsed / N) * 1_000_000
-    record_result("mark_us_per_call", per_call_us, "us", budget=_BUDGET_S)
+    record_result(
+        "mark_us_per_call",
+        per_call_us,
+        "us",
+        budget=_BUDGET_S,
+        baseline=baseline_metrics.get("mark_us_per_call"),
+    )
+    # Hard ceiling: the documented budget, independent of any baseline.
     assert elapsed < _BUDGET_S, (
         f"ci.mark overhead regression: {elapsed:.2f}s for {N} calls "
         f"(~{per_call_us:.2f}μs/call, budget {_BUDGET_S}μs)"
+    )
+    # Ratchet: as the docstring above notes, the real cost sits well under
+    # the 5μs trip point, so the budget alone can't catch a 2x regression.
+    assert_no_regression(
+        baseline_metrics,
+        "mark_us_per_call",
+        per_call_us,
+        unit="μs/call",
+        label="ci.mark",
     )
