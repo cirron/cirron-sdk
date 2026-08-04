@@ -18,7 +18,6 @@ just means the batch will be re-sent by a later flush.
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 import threading
@@ -31,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 # (this module already depends on flush for SPOOL_SCHEMA_VERSION).
 from cirron.core.flush import SPOOL_SCHEMA_VERSION, Transport
 from cirron.core.ingest import DEFAULT_INGEST_PATH, IngestClient
+from cirron.core.json import dumps
 from cirron.core.version import _sdk_version
 
 if TYPE_CHECKING:
@@ -156,7 +156,7 @@ class EventStreamTransport:
             bool: ``True`` on success, ``False`` on broken pipe / closed
                 stream.
         """
-        line = json.dumps(envelope, separators=(",", ":"))
+        line = dumps(envelope)
         try:
             with self._lock:
                 self._stream.write(line + "\n")

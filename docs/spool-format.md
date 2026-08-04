@@ -4,12 +4,20 @@ Public-API schema written by the SDK flush thread (SDK-11). Third-party
 tools and the platform ingestion worker both consume this format; it must
 stay stable within a major SDK version.
 
+Every spool file is valid RFC 8259 JSON. The SDK never emits the bare
+`NaN`, `Infinity` or `-Infinity` tokens that Python's `json` module
+produces by default, so any conforming parser in any language can read a
+spool file without a non-standard constant hook. Non-finite floats are
+substituted instead; see `marks[].value_nonfinite` and
+`snapshots[].stats.nonfinite` below.
+
 ## Directory layout
 
 ```
 ./.cirron/
   spool/
     <created_ns>-<batch_id>.json      # one batch per file
+    <created_ns>-<batch_id>.json.tmp  # in-flight write, not a readable batch
   snapshots/
     <span_id>/
       weights.safetensors             # one multi-tensor file per epoch (SDK-25)
@@ -23,6 +31,15 @@ stay stable within a major SDK version.
 - `<batch_id>`: 32-char lowercase hex (UUID4 without dashes).
 - Files are written via a `.json.tmp` → `os.replace()` handoff so a reader
   that opens a `*.json` file always sees a complete batch.
+- Readers MUST ignore `*.json.tmp`. A temp file is either a write currently in
+  flight or, if its writer was hard-killed between the write and the rename
+  (SIGKILL, OOM kill, node preemption, ENOSPC), an orphan holding a partial
+  batch. Either way it is not a readable batch. Its bytes do count toward
+  `spool_max_bytes`, and the SDK deletes any it finds older than one hour
+  during a cap-enforcement pass. The age gate matters because every rank of a
+  distributed run shares one spool directory, so a recent `.json.tmp` may be
+  another rank's in-flight write; an operator cleaning up by hand should apply
+  the same rule.
 
 ## Batch JSON schema
 
@@ -79,9 +96,15 @@ nested values degrade to a string at that point rather than recursing. A
 value that cannot be serialized therefore costs you that one attr, never the
 batch it belongs to. Note that `str()` output is a debugging aid, not a
 stable format: prefer passing values that are already JSON-native when you
-intend to query them later. This conversion applies to `attrs`, the only
-user-controlled part of the record; every other field is emitted by the SDK
-itself.
+intend to query them later.
+
+Non-finite floats (`nan`, `inf`, `-inf`) anywhere in `attrs`, at any
+nesting depth, are replaced by the strings `"nan"` / `"inf"` / `"-inf"`.
+This is the same `str()` degradation described above, applied for the same
+reason: `attrs` is free-form and user-owned, so a companion field naming
+the substitution has nowhere to live without risking a collision with one
+of your own keys. Fields the SDK owns, such as a mark's `value` and a
+snapshot's `stats`, use a companion field instead.
 
 ### `marks[]`
 
@@ -92,6 +115,7 @@ itself.
   "name": "loss",
   "value_type": "float | int | string | bool",
   "value": 0.5,
+  "value_nonfinite": "nan | inf | -inf",
   "attrs": { "step": 10 },
   "ts_ns": 0,
   "kind": "point | summary"
@@ -117,6 +141,16 @@ no scope is open, it attaches to the `cirron.session` scope opened by
 - `"summary"` — a canonical end-of-span value (final loss for epoch,
   epoch-level validation metric). Viewers typically render point marks
   as a time series and summary marks as a single value on the span.
+
+**Non-finite values.** A diverged loss is legitimate data, and
+`ci.mark("loss", float("nan"))` records it. A float mark whose value is
+`nan`, `inf` or `-inf` is written as `"value": null` with a sibling
+`"value_nonfinite"` naming which one it was. `value_type` stays `"float"`:
+the mark is still a float mark, and a reader that ignores the new field
+sees a correctly typed record with a missing value rather than a type
+contradiction. `value_nonfinite` is **absent** on every finite mark, so
+its presence is the only test a reader needs. Only `value_type: "float"`
+marks can carry it; ints, bools and strings have no non-finite forms.
 
 ### `snapshots[]`
 
@@ -154,6 +188,36 @@ Per-tensor statistics captured at epoch boundaries by framework hooks
   `mode="stats"` with a null `blob_uri`.
 - `"full"` — same as sampled with the roll short-circuited; every epoch
   writes a blob. Debug-only; not recommended for 100M+ parameter models.
+
+**Non-finite statistics.** A diverged model produces `nan` / `inf`
+statistics, which is precisely the run you enabled snapshots to debug.
+Any of `mean` / `std` / `min` / `max` / `norm` that is non-finite is
+written as `null`, and a companion `nonfinite` object inside `stats`
+records which fields were affected and what they were:
+
+```json
+"stats": {
+  "mean": null,
+  "std": 0.02,
+  "min": null,
+  "max": null,
+  "norm": null,
+  "nonfinite": { "mean": "nan", "min": "nan", "max": "nan" }
+}
+```
+
+`nonfinite` is absent when every statistic is finite. `norm` can be `inf`
+on its own: it is derived algebraically rather than by a second pass, so
+it can overflow on a large but entirely finite tensor while the other
+statistics stay meaningful.
+
+The `histogram` key is **omitted entirely** when the tensor's extremes are
+non-finite. `bins` is a fixed-length array of numbers, so nulls inside it
+are not representable, and a histogram over a non-finite range carries no
+information anyway. The omission stays explicable through `nonfinite`,
+which records the affected `min` / `max`, or a `"histogram"` entry when
+the histogram alone was unusable. When `histogram` is present it always
+has exactly 17 `bins` and 16 `counts`, as before.
 
 Sampled and full write **one safetensors file per (span, kind)** — all
 weight tensors into `./.cirron/snapshots/<span_id>/weights.safetensors`
@@ -224,11 +288,19 @@ Dropped records are counted and surfaced via `ci.health()`
 (`scope_drop_count`, `mark_drop_count`, `spool_drop_count`). The first
 in-memory drop on a thread also emits a `UserWarning`. A non-zero count
 means the producing run was under-instrumented, not that the file is
-malformed.
+malformed. `spool_drop_count` counts evicted batch files only; sweeping an
+orphaned temp file never bumps it, because a temp file is garbage no reader
+could have consumed.
 
 Whole batch files can also disappear from the spool directory: it is
 capped (`spool_max_bytes`, 1 GB by default) and evicts oldest-first,
-logging to the `cirron.flush` logger each time it does.
+logging to the `cirron.flush` logger each time it does. The cap counts every
+byte the SDK put in the directory, sealed `*.json` and unsealed `*.json.tmp`
+alike, and orphaned temp files are swept before any batch is evicted so a
+batch is never dropped to make room for garbage. In the rare case where
+in-flight temp files alone meet or exceed the cap, the SDK logs a warning and
+evicts nothing: dropping batches could not get the directory under the cap
+anyway, and those files are sealed or sweepable within the hour.
 
 ## Forward compatibility
 
@@ -237,3 +309,13 @@ fields so that minor SDK bumps can add optional metadata. Removing or
 renaming existing fields, or changing their types, requires a
 `schema_version` bump and follows the SDK's SemVer contract. Every batch
 file also carries the producing SDK version in `sdk_version`.
+
+Three fields are nullable or optional in ways a reader must handle:
+`marks[].value` is `null` when the mark's float value was non-finite,
+each of the five `snapshots[].stats` scalars is `null` under the same
+rule, and `snapshots[].stats.histogram` is absent when the tensor's
+extremes were non-finite. These arrived within `schema_version` 1 rather
+than behind a bump, because the SDK is pre-stable and the records they
+affect are records whose files did not parse at all beforehand, so no
+working reader could regress. Once the SDK reaches 1.0, changes of this
+shape take a bump.

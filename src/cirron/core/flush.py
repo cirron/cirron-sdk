@@ -22,7 +22,6 @@ Design notes:
 from __future__ import annotations
 
 import atexit
-import json
 import logging
 import os
 import signal
@@ -43,6 +42,13 @@ from cirron.core.blob_queue import (
     PendingBlob,
     get_default_blob_queue,
 )
+
+# The JSON policy lives in ``core/json.py``. It was defined in this module
+# historically and had to move to a leaf so ``transport.py`` (which already
+# imports from this one) and ``snapshots/types.py`` (which this one imports
+# from) can both reach it without a cycle. ``from cirron.core.flush import
+# _safe_attrs`` keeps working through this import.
+from cirron.core.json import _safe_attrs, dumps_utf8, nonfinite_token
 from cirron.core.mark import Mark, MarkBuffer, get_default_mark_buffer
 from cirron.core.scope import Scope, ScopeStack, get_default_stack
 from cirron.core.snapshot_buffer import SnapshotBuffer, get_default_snapshot_buffer
@@ -72,6 +78,14 @@ DEFAULT_INTERVAL_SEC = 1.0
 # default ~1 write/sec that is one scan per few minutes instead of one per
 # write.
 SPOOL_RESCAN_EVERY_WRITES = 256
+
+# Age gate for sweeping orphaned ``.json.tmp`` files, left behind when a
+# writer is hard-killed between ``write_bytes`` and ``os.replace``. They
+# cannot be swept on sight: ranks share one spool directory, so a fresh
+# temp file may be a peer's in-flight write. A live write is milliseconds
+# wide, so an hour-old one can only be an orphan, and an hour dwarfs any
+# plausible clock skew. Read at call time so tests can patch it.
+SPOOL_TMP_STALE_SEC = 3600.0
 
 
 class Transport(Protocol):
@@ -118,95 +132,6 @@ class Transport(Protocol):
     def close(self) -> None:
         """Release any underlying network resources."""
         ...
-
-
-_JSON_SCALARS = (str, int, float, bool, type(None))
-
-# Bounds recursion so a deeply nested attr can't raise RecursionError out of
-# ``_scope_to_dict`` and cost the whole tick — the failure this sanitizer
-# exists to prevent. Cycles are caught separately, by the ``_seen`` path memo.
-_MAX_JSON_DEPTH = 32
-
-
-def _to_str(value: Any) -> str:
-    """Best-effort ``str()`` that never raises.
-
-    Args:
-        value (Any): Object with a possibly hostile ``__str__``.
-
-    Returns:
-        str: ``str(value)``, or ``"<unserializable>"`` if that raised.
-    """
-    try:
-        return str(value)
-    except Exception:
-        return "<unserializable>"
-
-
-def _json_safe(value: Any, _depth: int = 0, _seen: frozenset[int] = frozenset()) -> Any:
-    """Coerce one attr value into something ``json.dumps`` accepts.
-
-    JSON-native scalars pass through by reference; ``dict`` / ``list`` /
-    ``tuple`` are rebuilt element-wise with keys coerced to ``str``;
-    everything else — and anything past ``_MAX_JSON_DEPTH`` or already on
-    the current reference path — degrades to its ``str()``. Never raises.
-
-    Args:
-        value (Any): The attr value to coerce.
-        _depth (int): Current recursion depth. Internal.
-        _seen (frozenset[int]): ``id()``s of the containers on the path from
-            the root to ``value``, for cycle detection. Internal.
-
-    Returns:
-        Any: A value built only from ``str`` / ``int`` / ``float`` / ``bool`` /
-            ``None`` / ``list`` / ``dict``.
-    """
-    if isinstance(value, _JSON_SCALARS):
-        return value
-    if isinstance(value, (dict, list, tuple)):
-        if _depth >= _MAX_JSON_DEPTH or id(value) in _seen:
-            return _to_str(value)
-        _depth += 1
-        _seen = _seen | {id(value)}
-        if isinstance(value, dict):
-            return {_to_str(k): _json_safe(v, _depth, _seen) for k, v in value.items()}
-        return [_json_safe(v, _depth, _seen) for v in value]
-    return _to_str(value)
-
-
-def _safe_attrs(attrs: dict[str, Any]) -> dict[str, Any]:
-    """Return ``attrs`` with every value guaranteed JSON-serializable.
-
-    ``ci.scope`` / ``ci.mark`` adopt ``**attrs`` without validation — that
-    check is deliberately off the hot path — so numpy arrays, sets, tensors
-    and datetimes all land here. By the time a batch is serialized the
-    producer buffers are already drained, so a value ``json.dumps`` rejects
-    would take the whole tick's spans and marks with it. Sanitizing here
-    makes span and mark ``attrs`` safe at all three serialization sites
-    (spool, event stream, HTTP ingest). Other batch fields are *not*
-    covered: ``SpoolWriter.write`` passes ``default=str`` as a last resort,
-    but the transports do not, so anything bypassing this helper — snapshot
-    records — must be JSON-native on its own.
-
-    Fast path: attr dicts whose values are all JSON scalars — the
-    overwhelmingly common case — are returned by reference, uncopied.
-
-    Args:
-        attrs (dict[str, Any]): Attrs dict adopted from the hot path.
-
-    Returns:
-        dict[str, Any]: ``attrs`` itself, or a sanitized copy. Empty if a
-            nested container mutated underneath us mid-iteration — losing the
-            attrs beats losing the batch.
-    """
-    try:
-        for value in attrs.values():
-            if not isinstance(value, _JSON_SCALARS):
-                return {_to_str(k): _json_safe(v) for k, v in attrs.items()}
-    except Exception:
-        log.warning("cirron: attrs sanitization failed; dropping attrs", exc_info=True)
-        return {}
-    return attrs
 
 
 def _scope_to_dict(s: Scope) -> dict[str, Any]:
@@ -266,25 +191,46 @@ def _mark_to_dict(m: Mark) -> dict[str, Any]:
     Args:
         m (Mark): The mark to serialize.
 
+    ``attrs`` is sanitized (see :func:`_safe_attrs`). A finite ``value``
+    is not — ``ci.mark`` already rejects anything but ``float`` / ``int`` /
+    ``str`` / ``bool``, and platform ingest cross-checks it against
+    ``value_type``, so coercing a good value could only turn a good batch
+    into a rejected one.
+
+    The one exception is a non-finite float. ``json.dumps`` would emit the
+    bare token ``NaN`` / ``Infinity`` / ``-Infinity``, which is not valid
+    RFC 8259 JSON, and the platform parses the body before validating it,
+    so one diverged loss costs the entire batch. Those become
+    ``"value": null`` plus a sibling ``"value_nonfinite"`` carrying
+    ``"nan"`` / ``"inf"`` / ``"-inf"``. ``value_type`` deliberately stays
+    ``"float"``: the mark *is* a float mark, and a reader that ignores the
+    new field still sees a correctly typed record with a missing value
+    rather than a type contradiction. The key is absent on finite marks.
+
     Returns:
         dict[str, Any]: Mark dict with ``id`` / ``span_id`` / ``name`` /
             ``value_type`` / ``value`` / ``attrs`` / ``ts_ns`` / ``kind``
-            keys. ``attrs`` is sanitized (see :func:`_safe_attrs`); ``value``
-            is not — ``ci.mark`` already rejects anything but ``float`` /
-            ``int`` / ``str`` / ``bool``, and platform ingest cross-checks it
-            against ``value_type``, so coercing it here could only turn a
-            good batch into a rejected one.
+            keys, plus ``value_nonfinite`` when ``value`` was non-finite.
     """
-    return {
+    value = m.value
+    out: dict[str, Any] = {
         "id": m.id,
         "span_id": m.span_id,
         "name": m.name,
         "value_type": m.value_type,
-        "value": m.value,
+        "value": value,
         "attrs": _safe_attrs(m.attrs),
         "ts_ns": m.ts_ns,
         "kind": m.kind,
     }
+    # True for ``np.float64``, False for ``bool`` (an ``int`` subclass), so
+    # a finite numpy scalar is emitted unchanged as a JSON number.
+    if isinstance(value, float):
+        token = nonfinite_token(value)
+        if token is not None:
+            out["value"] = None
+            out["value_nonfinite"] = token
+    return out
 
 
 @dataclass
@@ -320,6 +266,44 @@ class Batch:
         }
 
 
+def _sealed_counterpart(tmp: Path) -> Path:
+    """Sealed batch path a temp file becomes once ``os.replace`` runs.
+
+    ``SpoolWriter.write`` derives the temp name as ``<batch>.json`` ->
+    ``<batch>.json.tmp``, so dropping the trailing suffix inverts it. Both
+    names are generated, never user-supplied: ``created_ns`` is digits and
+    ``batch_id`` is uuid4 hex, so neither carries a dot that would make
+    this ambiguous.
+
+    Args:
+        tmp (Path): A ``*.json.tmp`` path.
+
+    Returns:
+        Path: The corresponding ``*.json`` path.
+    """
+    return tmp.with_suffix("")
+
+
+@dataclass(frozen=True)
+class _SpoolScan:
+    """One directory pass over the spool.
+
+    Attributes:
+        batches (list[tuple[Path, int]]): ``(path, size)`` for sealed
+            ``*.json``, oldest-first. The eviction candidates.
+        tmps (list[tuple[Path, int, float]]): ``(path, size, mtime)`` for
+            unsealed ``*.json.tmp``. Held apart because they occupy disk
+            but are never evicted to make room. The mtime rides along from
+            the ``stat`` already performed.
+        total (int): Bytes held by both kinds, which is what ``max_bytes``
+            is enforced against.
+    """
+
+    batches: list[tuple[Path, int]]
+    tmps: list[tuple[Path, int, float]]
+    total: int
+
+
 class SpoolWriter:
     """Writes one batch per file to ``<spool_dir>/<created_ns>-<id>.json``.
 
@@ -327,6 +311,12 @@ class SpoolWriter:
     eviction is a sorted ``glob``. The total-byte cap is enforced on every
     write; dropped files bump ``drop_count`` so ``Profiler.health()``
     can surface it.
+
+    Unsealed ``*.json.tmp`` files count toward the cap too, since they hold
+    real disk. Ones older than :data:`SPOOL_TMP_STALE_SEC` are orphans from
+    a hard-killed writer and are swept before any batch is evicted; younger
+    ones are left alone because they may belong to a peer rank sharing the
+    directory.
     """
 
     def __init__(self, spool_dir: str | Path, max_bytes: int = DEFAULT_SPOOL_MAX_BYTES) -> None:
@@ -338,9 +328,15 @@ class SpoolWriter:
         # Running byte total so an under-cap write costs O(1) syscalls
         # rather than O(files). Seeded once here and re-derived from real
         # ``stat`` data by every cap-enforcement pass. This only *seeds* —
-        # constructing a writer must never evict anyone's spool files.
+        # constructing a writer must never evict anyone's spool files, nor
+        # sweep anyone's temp files: it has no idea whether the process that
+        # left them is still alive. Deletion waits for the first cap pass,
+        # which by construction runs from a process actively writing.
         self._writes_since_scan = 0
-        self._total_bytes = self._scan_locked()[1]
+        # Latched when temp files alone meet the cap, so an over-cap state we
+        # have already decided we cannot fix stops re-scanning on every write.
+        self._cap_blocked_by_tmp = False
+        self._total_bytes = self._scan_locked().total
 
     @property
     def spool_dir(self) -> Path:
@@ -371,7 +367,10 @@ class SpoolWriter:
 
     @property
     def total_bytes(self) -> int:
-        """Running byte total of ``*.json`` in the spool directory.
+        """Running byte total of the spool directory.
+
+        Covers sealed ``*.json`` batches and unsealed ``*.json.tmp`` alike,
+        since both occupy disk and both count against ``max_bytes``.
 
         Exact immediately after any cap-enforcement pass. Between passes it
         may over-count files deleted out of band and under-count files
@@ -383,34 +382,85 @@ class SpoolWriter:
         """
         return self._total_bytes
 
-    def _scan_locked(self) -> tuple[list[tuple[Path, int]], int]:
-        """Stat every spool file. Caller holds ``self._lock`` (or is ``__init__``).
+    def disk_bytes(self) -> int:
+        """Freshly ``stat``-ed byte total of the spool directory.
+
+        Unlike :attr:`total_bytes` this re-reads the directory, so it also
+        sees what other ranks wrote since the last cap pass. Counts
+        ``*.json`` and ``*.json.tmp`` alike, so ``ci.health()`` reports the
+        same number the cap is enforced against.
+
+        Deliberately lock-free. :meth:`_scan_locked` mutates nothing and
+        already tolerates files vanishing mid-scan, whereas taking
+        ``self._lock`` here could deadlock: :func:`flush_now` runs from the
+        SIGTERM/SIGINT handler on the main thread and may interrupt a
+        main-thread ``ci.health()`` holding this non-reentrant lock.
 
         Returns:
-            tuple[list[tuple[Path, int]], int]: ``(path, size)`` pairs sorted
-                oldest-first — the zero-padded ``created_ns`` filename prefix
-                makes the lexicographic sort chronological — and their total
-                size. Sizes are returned alongside the paths so the eviction
-                loop never has to re-``stat``, which both halves the syscalls
-                and lets it correct ``total`` by a known size when a file
-                turns out to be already gone. Entries that vanish or aren't
-                regular files are skipped: a second process sharing the spool
-                dir can evict between the ``glob`` and the ``stat``, and an
-                unguarded ``stat`` there would raise out of ``write()`` and
-                cost a whole batch that is already safely on disk.
+            int: Total bytes on disk.
         """
-        entries: list[tuple[Path, int]] = []
+        return self._scan_locked().total
+
+    def _scan_locked(self) -> _SpoolScan:
+        """Stat every spool file.
+
+        The ``_locked`` suffix marks where this sits in the locking scheme,
+        not a precondition: the scan itself is read-only, touches no
+        instance state, and already tolerates the directory changing
+        underneath it, so holding ``self._lock`` is optional. Callers that
+        go on to *act* on the result take the lock, because eviction and
+        the running-total update must not interleave with a concurrent
+        ``write``. Callers that only read a number, :meth:`disk_bytes` and
+        ``__init__``, deliberately do not, and :meth:`disk_bytes` must not:
+        see its docstring for the deadlock that would introduce.
+
+        Deliberately zero-argument: the test suite replaces this on the
+        instance with a call-counting wrapper, so a parameter added here
+        breaks that at a distance. Staleness needs a clock, which is why
+        mtimes come back raw and the cutoff is applied by the sweep.
+
+        Sizes are returned alongside the paths so the eviction loop never
+        has to re-``stat``, which both halves the syscalls and lets it
+        correct ``total`` by a known size when a file turns out to be
+        already gone. Entries that vanish or aren't regular files are
+        skipped: a second process sharing the spool dir can evict between
+        the ``glob`` and the ``stat``, and an unguarded ``stat`` there
+        would raise out of ``write()`` and cost a whole batch that is
+        already safely on disk.
+
+        Returns:
+            _SpoolScan: Sealed batches oldest-first (the zero-padded
+                ``created_ns`` filename prefix makes the lexicographic sort
+                chronological), unsealed temp files, and the bytes they hold
+                between them.
+        """
+        batches: list[tuple[Path, int]] = []
+        tmps: list[tuple[Path, int, float]] = []
         total = 0
-        for p in sorted(self._dir.glob("*.json")):
+        # One ``readdir`` for both kinds; the spool may be shared by hundreds
+        # of ranks, so a second pass is real cost. The explicit classification
+        # matters because ``*.json*`` also matches ``*.jsonl`` / ``*.json.bak``,
+        # and the cap must only account for what this SDK wrote.
+        for p in sorted(self._dir.glob("*.json*")):
+            name = p.name
+            if name.endswith(".json"):
+                is_tmp = False
+            elif name.endswith(".json.tmp"):
+                is_tmp = True
+            else:
+                continue
             try:
                 st = p.stat()
             except OSError:
                 continue
             if not S_ISREG(st.st_mode):
                 continue
-            entries.append((p, st.st_size))
+            if is_tmp:
+                tmps.append((p, st.st_size, st.st_mtime))
+            else:
+                batches.append((p, st.st_size))
             total += st.st_size
-        return entries, total
+        return _SpoolScan(batches, tmps, total)
 
     def write(self, batch: Batch) -> Path:
         """Atomically write one batch as ``<created_ns>-<id>.json``.
@@ -426,7 +476,7 @@ class SpoolWriter:
         # Encode once: ``write_bytes`` skips the re-encode ``write_text``
         # would do internally, hands us the exact on-disk size for the
         # running total, and sidesteps text-mode newline translation.
-        data = json.dumps(batch.to_json(), separators=(",", ":"), default=str).encode("utf-8")
+        data = dumps_utf8(batch.to_json())
         with self._lock:
             tmp = path.with_suffix(".json.tmp")
             tmp.write_bytes(data)
@@ -435,10 +485,13 @@ class SpoolWriter:
             # write or replace leaves the counter untouched.
             self._total_bytes += len(data)
             self._writes_since_scan += 1
+            # ``_cap_blocked_by_tmp`` suppresses only the over-cap trigger: a
+            # state we already decided we cannot fix must not re-scan the
+            # whole directory on every subsequent write. The periodic trigger
+            # still retries it within ``SPOOL_RESCAN_EVERY_WRITES`` writes.
             if (
-                self._total_bytes > self._max_bytes
-                or self._writes_since_scan >= SPOOL_RESCAN_EVERY_WRITES
-            ):
+                self._total_bytes > self._max_bytes and not self._cap_blocked_by_tmp
+            ) or self._writes_since_scan >= SPOOL_RESCAN_EVERY_WRITES:
                 self._enforce_cap_locked()
         return path
 
@@ -446,26 +499,100 @@ class SpoolWriter:
         """Run cap enforcement out-of-band.
 
         Also the manual reconciliation entry point: the pass re-derives
-        ``total_bytes`` from real ``stat`` data even when it evicts nothing.
+        ``total_bytes`` from real ``stat`` data even when it evicts nothing,
+        and sweeps orphaned temp files.
 
         Returns:
-            int: Number of files evicted by this call.
+            int: Number of batch files evicted by this call. Swept temp
+                files are excluded: they are garbage no reader could have
+                consumed, not lost data.
         """
         with self._lock:
             return self._enforce_cap_locked()
 
+    def _sweep_stale_tmps_locked(self, tmps: list[tuple[Path, int, float]]) -> tuple[int, int]:
+        """Delete temp files older than ``SPOOL_TMP_STALE_SEC``.
+
+        Caller holds ``self._lock``.
+
+        Args:
+            tmps (list[tuple[Path, int, float]]): ``(path, size, mtime)``
+                triples from the current scan.
+
+        Returns:
+            tuple[int, int]: ``(files_swept, bytes_reclaimed)``. Reclaimed
+                bytes also cover files a peer rank unlinked first, since
+                those bytes are off disk either way and must come off the
+                running total; the count covers only our own deletions.
+        """
+        cutoff = time.time() - SPOOL_TMP_STALE_SEC
+        swept = 0
+        reclaimed = 0
+        for f, size, mtime in tmps:
+            if mtime > cutoff:
+                continue
+            try:
+                f.unlink()
+            except FileNotFoundError:
+                # The temp file left between our scan and now, but "gone" and
+                # "renamed" are different outcomes and only the first frees
+                # disk. A peer that finally completed its ``os.replace`` moved
+                # these same bytes into the sealed batch, so crediting them
+                # would undercount the directory and stop eviction short.
+                # Checking the counterpart distinguishes the two.
+                if not _sealed_counterpart(f).exists():
+                    reclaimed += size
+                continue
+            except OSError:
+                # Still on disk (PermissionError, a reader holding it open on
+                # Windows), so its bytes stay accounted for.
+                continue
+            reclaimed += size
+            swept += 1
+        if swept:
+            # INFO, not WARNING: an eviction warns because user data was
+            # lost. This is housekeeping.
+            log.info("cirron swept %d orphaned temp file(s) from %s", swept, self._dir)
+        return swept, reclaimed
+
     def _enforce_cap_locked(self) -> int:
         """Drop oldest-first until total bytes fit under ``max_bytes``.
 
-        Also reconciles ``_total_bytes`` from real ``stat`` data, correcting
-        whatever drift the running counter accumulated since the last pass.
+        Sweeps orphaned temp files first: reclaiming one is free, whereas
+        every byte reclaimed by eviction costs a real batch. Also reconciles
+        ``_total_bytes`` from real ``stat`` data, correcting whatever drift
+        the running counter accumulated since the last pass.
 
         Returns:
-            int: Number of files dropped this pass.
+            int: Number of batch files dropped this pass.
         """
-        entries, total = self._scan_locked()
+        scan = self._scan_locked()
+        total = scan.total
+        tmp_bytes = sum(size for _, size, _ in scan.tmps)
+        _, reclaimed = self._sweep_stale_tmps_locked(scan.tmps)
+        total -= reclaimed
+        tmp_bytes -= reclaimed
+
         dropped = 0
-        for f, size in entries:
+        if tmp_bytes >= self._max_bytes:
+            # Whatever survived the sweep is a peer rank's in-flight write:
+            # real disk, but not ours to delete. Evicting here cannot reach
+            # the target however many batches it drops, so it would be pure
+            # loss for no benefit. Defer instead; those files are sealed or
+            # sweepable within the hour.
+            self._cap_blocked_by_tmp = True
+            log.warning(
+                "cirron spool over cap but %d byte(s) are in-flight .json.tmp files in %s; "
+                "evicting nothing this pass",
+                tmp_bytes,
+                self._dir,
+            )
+            self._total_bytes = total
+            self._writes_since_scan = 0
+            return 0
+
+        self._cap_blocked_by_tmp = False
+        for f, size in scan.batches:
             if total <= self._max_bytes:
                 break
             try:
@@ -916,6 +1043,8 @@ _state_lock = threading.Lock()
 _supervisor: _Supervisor | None = None
 _writer: SpoolWriter | None = None
 _wake_event: threading.Event | None = None
+_spool_settings: tuple[Path, int] | None = None
+_fallback_writer_cache: SpoolWriter | None = None
 _exit_handlers_registered = False
 _prior_sigterm: Any = None
 _prior_sigint: Any = None
@@ -961,7 +1090,7 @@ def start_flush_thread(
     """
     from cirron.core.sinks import build_sinks
 
-    global _supervisor, _writer, _wake_event
+    global _supervisor, _writer, _wake_event, _spool_settings
     with _state_lock:
         if _supervisor is not None:
             return _supervisor
@@ -983,6 +1112,9 @@ def start_flush_thread(
         # safe ad-hoc fallback target, even when ``output="none"`` opts
         # the live tick out of writing to it.
         _writer = SpoolWriter(spool_dir, max_bytes=spool_max_bytes)
+        # Recorded alongside the writer so the resolved settings survive
+        # ``stop_flush_thread`` clearing ``_writer``.
+        _spool_settings = (spool_dir, spool_max_bytes)
         _wake_event = threading.Event()
         stack = get_default_stack()
         buf = get_default_mark_buffer()
@@ -1031,21 +1163,43 @@ def start_flush_thread(
 def stop_flush_thread(timeout: float = 5.0) -> None:
     """Stop the singleton flush thread. No-op if none is running.
 
+    ``_spool_settings`` is deliberately *not* cleared here: a trailing
+    :func:`flush_now` has to keep writing to the spool directory and byte
+    cap this run resolved, rather than falling back to module defaults.
+
     Args:
         timeout (float): Seconds to wait for the worker / watcher to
             join. Default ``5.0``.
     """
-    global _supervisor, _writer, _wake_event
+    global _supervisor, _writer, _wake_event, _fallback_writer_cache
     with _state_lock:
         sup = _supervisor
         _supervisor = None
         _writer = None
+        # Drop any cached fallback writer with it. Its running byte total
+        # was seeded when it was built, so reusing it across a flush-thread
+        # lifecycle would enforce the cap against a stale number and could
+        # leave the directory over cap. The first post-shutdown flush pays
+        # one rebuild scan; repeated ones still hit the cache.
+        _fallback_writer_cache = None
         # Detach the wake hookup so a dangling reference can't poke a
         # stopped supervisor's event.
         get_default_mark_buffer().set_wake_event(None)
         _wake_event = None
     if sup is not None:
         sup.stop(timeout=timeout)
+
+
+def _reset_for_tests() -> None:
+    """Test-only: forget the remembered spool settings and cached fallback writer.
+
+    ``stop_flush_thread`` intentionally leaves both in place, so without this
+    a test that pointed the spool at its own ``tmp_path`` would leak that
+    directory into the next test's fallback flush.
+    """
+    global _spool_settings, _fallback_writer_cache
+    _spool_settings = None
+    _fallback_writer_cache = None
 
 
 def flush_to_trace_buffer() -> int:
@@ -1097,12 +1251,55 @@ def flush_to_trace_buffer() -> int:
     return len(batch.spans)
 
 
+def _fallback_writer() -> SpoolWriter:
+    """Ad-hoc spool writer for flushes with no live flush thread.
+
+    Reuses the ``(spool_dir, max_bytes)`` the last :func:`start_flush_thread`
+    resolved, so a post-shutdown flush writes where the user configured and
+    enforces the cap they configured. Only a process that never started a
+    flush thread at all falls back to ``./.cirron/spool/`` at
+    ``DEFAULT_SPOOL_MAX_BYTES`` — there those *are* the resolved settings.
+
+    The writer is cached because ``SpoolWriter.__init__`` seeds its running
+    byte total with a full glob + ``stat`` of the directory; rebuilding per
+    call would make repeated post-shutdown flushes O(files) each. The cache
+    is keyed on the settings themselves, so a later run against a different
+    directory rebuilds rather than writing to the old one, and
+    ``stop_flush_thread`` drops it so a cached writer's byte total can never
+    survive a flush-thread lifecycle (or another rank's writes) and enforce
+    the cap against a stale number.
+
+    Deliberately lock-free: :func:`flush_now` runs from the SIGTERM/SIGINT
+    handler on the main thread, which may be interrupted while holding the
+    non-reentrant ``_state_lock``. A benign race just builds the writer
+    twice, and ``SpoolWriter`` already tolerates sharing a directory with
+    another writer.
+
+    Returns:
+        SpoolWriter: Writer targeting the configured (or default) spool.
+    """
+    global _fallback_writer_cache
+    settings = _spool_settings
+    if settings is None:
+        spool_dir, max_bytes = Path("./.cirron/spool/"), DEFAULT_SPOOL_MAX_BYTES
+    else:
+        spool_dir, max_bytes = settings
+    cached = _fallback_writer_cache
+    if cached is not None and cached.spool_dir == spool_dir and cached.max_bytes == max_bytes:
+        return cached
+    writer = SpoolWriter(spool_dir, max_bytes=max_bytes)
+    _fallback_writer_cache = writer
+    return writer
+
+
 def flush_now() -> Path | None:
     """Drain every producer thread's buffers and write one batch synchronously.
 
     Safe from any thread and from ``atexit``. If no flush thread is running
-    an ad-hoc writer at ``./.cirron/spool/`` is used so data from short-lived
-    scripts isn't lost.
+    an ad-hoc writer is used so data from short-lived scripts isn't lost; it
+    targets the spool directory and byte cap the last ``start_flush_thread()``
+    resolved, or ``./.cirron/spool/`` at ``DEFAULT_SPOOL_MAX_BYTES`` when this
+    process never started one (see :func:`_fallback_writer`).
 
     Also feeds the in-memory trace buffer (so ``ci.trace()`` works
     after a sync flush) and dispatches through the active worker's sinks
@@ -1156,9 +1353,9 @@ def flush_now() -> Path | None:
         # ``ci.trace()`` reads from it.
         return None
     # No active worker (atexit / short script) — fall back to the spool
-    # writer if one is present, or build an ad-hoc writer at ``.cirron/spool/``
-    # so trailing data from a profile-less run isn't lost.
-    writer = _writer if _writer is not None else SpoolWriter(Path("./.cirron/spool/"))
+    # writer if one is present, or build an ad-hoc writer against this run's
+    # resolved spool settings so trailing data isn't lost.
+    writer = _writer if _writer is not None else _fallback_writer()
     return writer.write(batch)
 
 

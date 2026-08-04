@@ -10,10 +10,10 @@ between the last tick and the call are visible.
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING, Any, Literal
 
 from cirron.core.errors import CirronDependencyError
+from cirron.core.json import dumps
 from cirron.core.render import (
     build_tree,
     flatten_for_df,
@@ -236,7 +236,7 @@ def trace(
     if format == "json":
         roots = build_tree(spans, marks_by_span_id)
         tree = to_dict_tree(roots)
-        return json.dumps({"roots": tree, "span_count": len(spans)}, default=str)
+        return dumps({"roots": tree, "span_count": len(spans)}, separators=None)
     if format == "df":
         try:
             import pandas as pd
