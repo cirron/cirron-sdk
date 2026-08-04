@@ -226,6 +226,11 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
                 if last:
                     return float(last[0])
             except Exception:
+                # Probe, not a failure: plenty of schedulers have no
+                # get_last_lr, and this falls through to args below. Not
+                # routed through swallowed() because a miss here is the
+                # normal answer, and counting it would report ordinary
+                # operation as an internal error.
                 pass
         try:
             return float(args.learning_rate)
