@@ -180,7 +180,7 @@ def clear_spool(isolated_output_dir) -> Callable[[], None]:
 def reset_profiler(isolated_output_dir):
     """Isolate every overhead test from residual global profiler state.
 
-    Depends on ``_isolated_output_dir`` so the env var is in place before
+    Depends on ``isolated_output_dir`` so the env var is in place before
     the reset re-reads configuration, rather than relying on incidental
     fixture ordering.
 
