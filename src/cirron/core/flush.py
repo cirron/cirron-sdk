@@ -266,6 +266,24 @@ class Batch:
         }
 
 
+def _sealed_counterpart(tmp: Path) -> Path:
+    """Sealed batch path a temp file becomes once ``os.replace`` runs.
+
+    ``SpoolWriter.write`` derives the temp name as ``<batch>.json`` ->
+    ``<batch>.json.tmp``, so dropping the trailing suffix inverts it. Both
+    names are generated, never user-supplied: ``created_ns`` is digits and
+    ``batch_id`` is uuid4 hex, so neither carries a dot that would make
+    this ambiguous.
+
+    Args:
+        tmp (Path): A ``*.json.tmp`` path.
+
+    Returns:
+        Path: The corresponding ``*.json`` path.
+    """
+    return tmp.with_suffix("")
+
+
 @dataclass(frozen=True)
 class _SpoolScan:
     """One directory pass over the spool.
@@ -516,9 +534,14 @@ class SpoolWriter:
             try:
                 f.unlink()
             except FileNotFoundError:
-                # Two ranks swept the same orphan. Benign: both agree the
-                # bytes are gone, only one did the deleting.
-                reclaimed += size
+                # The temp file left between our scan and now, but "gone" and
+                # "renamed" are different outcomes and only the first frees
+                # disk. A peer that finally completed its ``os.replace`` moved
+                # these same bytes into the sealed batch, so crediting them
+                # would undercount the directory and stop eviction short.
+                # Checking the counterpart distinguishes the two.
+                if not _sealed_counterpart(f).exists():
+                    reclaimed += size
                 continue
             except OSError:
                 # Still on disk (PermissionError, a reader holding it open on

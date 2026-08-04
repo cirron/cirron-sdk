@@ -519,6 +519,37 @@ def test_spool_tmp_sweep_tolerates_concurrent_unlink(tmp_path, monkeypatch):
     assert writer.drop_count == 0
 
 
+def test_spool_tmp_sweep_keeps_bytes_when_peer_sealed_the_batch(tmp_path, monkeypatch):
+    """``FileNotFoundError`` has two causes and only one frees disk.
+
+    A peer that finally completed its ``os.replace`` moved the same bytes
+    into the sealed ``.json``, so crediting them as reclaimed undercounts
+    the directory and stops eviction short. Only a temp file that actually
+    left the directory may be credited."""
+    writer = _make_writer(tmp_path, max_bytes=3_000)
+    tmp = _orphan_tmp(writer, "00000000000000000001-dead.json.tmp", 2_000, age_sec=7200)
+    sealed = tmp.with_suffix("")
+    real_unlink = Path.unlink
+    raced: list[str] = []
+
+    def sealing_unlink(self, *args, **kwargs):
+        if self.name.endswith(".json.tmp") and not raced:
+            raced.append(self.name)
+            # The peer's handoff lands first: same bytes, new name.
+            os.replace(self, sealed)
+            raise FileNotFoundError(self.name)
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", sealing_unlink)
+    writer.enforce_cap()
+
+    assert raced, "the sealing race never fired; test would be vacuous"
+    assert sealed.exists(), "the peer's batch must survive"
+    assert writer.total_bytes == _on_disk_all(writer) == 2_000, (
+        "bytes that merely changed name were credited as reclaimed"
+    )
+
+
 def test_spool_tmp_sweep_keeps_bytes_when_unlink_denied(tmp_path, monkeypatch):
     """A non-FileNotFoundError failure means the file is still there, so its
     bytes must stay in the total."""
