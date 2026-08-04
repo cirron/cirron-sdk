@@ -22,9 +22,9 @@ from cirron.data.sql import (
     CredentialResolver,
     SqlUri,
     build_query,
-    execute_to_pandas,
+    driver,
     parse_sql_uri,
-    require_driver,
+    run_select,
 )
 
 if TYPE_CHECKING:
@@ -56,14 +56,14 @@ class SnowflakeDataSource(DataSource):
         ``SNOWFLAKE_ROLE`` env vars.
 
         Returns:
-            Any: A pandas DataFrame produced by :func:`execute_to_pandas`.
+            Any: A pandas DataFrame produced by :func:`run_select`.
 
         Raises:
             CirronDependencyError: If ``snowflake-connector-python`` is
                 not installed.
             CirronPlatformRequired: If credential resolution fails.
         """
-        snowflake_connector = require_driver("snowflake.connector", "snowflake")
+        snowflake_connector = driver("snowflake.connector", "snowflake")
         creds = CredentialResolver(self.cirron, self.uri).resolve()
 
         conn_kwargs: dict[str, Any] = {
@@ -93,15 +93,9 @@ class SnowflakeDataSource(DataSource):
             columns=self.request.columns if self.request else None,
         )
 
-        conn = snowflake_connector.connect(**conn_kwargs)
-        try:
-            cursor = conn.cursor()
-            try:
-                return execute_to_pandas(cursor, query)
-            finally:
-                cursor.close()
-        finally:
-            conn.close()
+        # Snowflake's cursors hold server-side result state that
+        # ``conn.close()`` does not reliably release — close explicitly.
+        return run_select(snowflake_connector.connect, conn_kwargs, query, cursor_close=True)
 
 
 def build_source(uri_str: str, cirron: Cirron, request: LoadRequest | None) -> SnowflakeDataSource:

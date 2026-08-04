@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from cirron.core.deps import driver
 from cirron.data.match import apply_match
 from cirron.data.sources import DataSource
 
@@ -32,14 +33,10 @@ class GCSDataSource(DataSource):
                 contents when listing a folder.
 
         Raises:
-            ImportError: If ``google-cloud-storage`` is not installed.
+            CirronDependencyError: If ``google-cloud-storage`` is not
+                installed.
         """
-        try:
-            from google.cloud import storage
-        except ImportError as e:
-            raise ImportError(
-                "google-cloud-storage is required. Install with: pip install google-cloud-storage"
-            ) from e
+        storage = driver("google.cloud.storage", "gcs")
 
         client = storage.Client()
         bucket = client.bucket(self.config.bucket_name)

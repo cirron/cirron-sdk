@@ -23,10 +23,15 @@ import os
 import sys
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any
 
-from cirron.core.flush import SPOOL_SCHEMA_VERSION
-from cirron.core.ingest import DEFAULT_INGEST_PATH, IngestClient, _sdk_version
+# ``Transport`` is defined in flush.py and re-exported here so the historical
+# ``from cirron.core.transport import Transport`` spelling keeps working. The
+# protocol cannot live in this module: flush.py must not import transport.py
+# (this module already depends on flush for SPOOL_SCHEMA_VERSION).
+from cirron.core.flush import SPOOL_SCHEMA_VERSION, Transport
+from cirron.core.ingest import DEFAULT_INGEST_PATH, IngestClient
+from cirron.core.version import _sdk_version
 
 if TYPE_CHECKING:
     from cirron.core.config import Cirron
@@ -34,37 +39,6 @@ if TYPE_CHECKING:
 EVENT_STREAM_MARKER = "__cirron_event__"
 EVENT_TYPE_TRACE_BATCH = "trace_batch"
 EVENT_TYPE_BLOB = "trace_blob"
-
-
-class Transport(Protocol):
-    """Common shape for the platform-bound transport implementations."""
-
-    def send(self, batch: dict[str, Any]) -> bool:
-        """Forward one trace batch.
-
-        Args:
-            batch (dict[str, Any]): The serialized batch (spool format).
-
-        Returns:
-            bool: ``True`` on success; ``False`` to leave the batch in spool.
-        """
-        ...
-
-    def upload_blob(self, local_path: str | Path, remote_key: str) -> str | None:
-        """Upload a blob and return its remote URI.
-
-        Args:
-            local_path (str | Path): Local path to the safetensors file.
-            remote_key (str): Storage-side object key.
-
-        Returns:
-            str | None: Remote URI on success, ``None`` on failure.
-        """
-        ...
-
-    def close(self) -> None:
-        """Release any underlying network resources."""
-        ...
 
 
 class FileOnlyTransport:

@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from cirron.core.deps import driver
 from cirron.data.match import apply_match
 from cirron.data.sources import DataSource
 
@@ -34,22 +35,18 @@ class AzureDataSource(DataSource):
                 contents when listing a folder.
 
         Raises:
-            ImportError: If ``azure-storage-blob`` is not installed.
+            CirronDependencyError: If ``azure-storage-blob`` is not
+                installed.
             ValueError: If ``container_name`` or ``account_name`` is
                 missing.
         """
-        try:
-            from azure.storage.blob import BlobServiceClient
-        except ImportError as e:
-            raise ImportError(
-                "azure-storage-blob is required. Install with: pip install azure-storage-blob"
-            ) from e
+        blob = driver("azure.storage.blob", "azure")
 
         container_name = self.config.container_name
         if container_name is None:
             raise ValueError("container_name is required for Azure blob source")
 
-        service = BlobServiceClient(account_url=self._account_url())
+        service = blob.BlobServiceClient(account_url=self._account_url())
 
         if self.config.folder_path is not None:
             container = service.get_container_client(container_name)

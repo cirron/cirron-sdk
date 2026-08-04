@@ -47,6 +47,7 @@ from cirron.core.mark import Mark, MarkBuffer, get_default_mark_buffer
 from cirron.core.scope import Scope, ScopeStack, get_default_stack
 from cirron.core.snapshot_buffer import SnapshotBuffer, get_default_snapshot_buffer
 from cirron.core.trace_buffer import _TraceBuffer, get_default_trace_buffer
+from cirron.core.version import _sdk_version
 from cirron.snapshots.types import TraceSnapshot, snapshot_to_dict
 
 if TYPE_CHECKING:
@@ -72,50 +73,6 @@ DEFAULT_INTERVAL_SEC = 1.0
 SPOOL_RESCAN_EVERY_WRITES = 256
 
 
-# Resolved at most once per process. ``Batch.to_json`` runs at least twice
-# per tick (spool write, then ``transport.send``) and the distribution
-# metadata lookup walks ``sys.path`` on every call for a value that cannot
-# change while the process is alive.
-_SDK_VERSION: str | None = None
-
-
-def _resolve_sdk_version() -> str:
-    """Read the installed ``cirron-sdk`` version from distribution metadata.
-
-    Returns:
-        str: The installed package version, or ``"0.0.0"`` if the
-            distribution metadata isn't reachable (e.g. running from a
-            source tree without an editable install).
-    """
-    try:
-        from importlib.metadata import PackageNotFoundError, version
-
-        try:
-            return version("cirron-sdk")
-        except PackageNotFoundError:
-            return "0.0.0"
-    except Exception:
-        return "0.0.0"
-
-
-def _sdk_version() -> str:
-    """Return the process-cached ``cirron-sdk`` version string.
-
-    Thread-safe by construction: a race can only make two threads compute
-    the same string and assign it twice, and reading the global once into
-    a local means no caller can observe a half-populated value.
-
-    Returns:
-        str: The installed package version, or ``"0.0.0"``.
-    """
-    global _SDK_VERSION
-    cached = _SDK_VERSION
-    if cached is None:
-        cached = _resolve_sdk_version()
-        _SDK_VERSION = cached
-    return cached
-
-
 class Transport(Protocol):
     """Minimal transport interface the flush thread hands batches to.
 
@@ -125,6 +82,11 @@ class Transport(Protocol):
     a safetensors file and returns its remote URI, or ``None`` on
     failure; the flush thread uses this to drain the blob queue before
     the JSON batch that references the blobs.
+
+    This is the single definition of the transport contract —
+    :mod:`cirron.core.transport` re-exports it rather than declaring its
+    own. The import can only run in this direction: ``transport.py``
+    already imports ``SPOOL_SCHEMA_VERSION`` from here.
     """
 
     def send(self, batch: dict[str, Any]) -> bool:
@@ -150,6 +112,10 @@ class Transport(Protocol):
             str | None: The remote URI on success, or ``None`` on
                 failure (the local blob stays on disk for retry).
         """
+        ...
+
+    def close(self) -> None:
+        """Release any underlying network resources."""
         ...
 
 

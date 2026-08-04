@@ -148,6 +148,42 @@ We ship a minimal core install (`pip install cirron-sdk` with no extras) and gat
 
 If you're adding a new optional extra, also update the README install table.
 
+### Missing-dependency errors
+
+An optional backend that isn't installed must fail with `CirronDependencyError`, never a bare `ImportError` — callers catch one type across every optional dep, and the install hint comes from the `EXTRAS` registry so it can't drift from `pyproject.toml`.
+
+At a **backend entry point** (the first import of an optional backend on a `load()` path) use `driver()`, taking the import name from `EXTRAS` rather than from memory — it's `google.cloud.storage`, not `google.cloud`:
+
+```python
+from cirron.core.deps import driver
+
+boto3 = driver("boto3", "s3")
+# CirronDependencyError: the 's3' source backend requires the 'boto3' driver.
+# Install with: pip install 'cirron-sdk[s3]'
+```
+
+Where `driver()` doesn't fit (e.g. `ci.load(as_='pandas')`), raise `CirronDependencyError` with `install_hint()` directly.
+
+The rule stops at entry points. Plain imports stay correct downstream of a guard (`NumpyAdapter.to_pandas` runs after `ci.load(as_=...)` already checked), where absence selects a branch rather than failing, and in code that deliberately swallows like the object-store `validate()` methods.
+
+## Adding a SQL source backend
+
+`ci.load()` supports Postgres, MySQL, Snowflake, and Databricks. The shared plumbing lives in `src/cirron/data/sql.py`, so a new backend (BigQuery, Redshift, Trino, …) is roughly 20 lines. Read `sources/mysql.py` first — it's the smallest complete example.
+
+What the shim owns is only what genuinely differs per driver:
+
+1. **Source module**: `src/cirron/data/sources/<backend>.py` with a `<Backend>DataSource(DataSource)` class and a `build_source(uri_str, cirron, request)` factory. `validate()` returns `True` — connection probes belong in `load()`.
+2. **`load()` body**, in this order: `driver("<module>", "<extra>")` → `CredentialResolver(self.cirron, self.uri).resolve()` → `build_query(self.uri, where=..., columns=...)` → assemble `conn_kwargs` → `return run_select(<driver>.connect, conn_kwargs, query)`.
+3. **`conn_kwargs` mapping** — this is the real per-driver work (`dbname` vs `database`, Snowflake's `account`/`warehouse`/`role`, Databricks' `http_path`). Anything that isn't in the URI and isn't a credential (warehouse, HTTP path) reads from `creds.extra` first, then an env var.
+4. **URI parsing**: extend `parse_sql_uri` and add the scheme to `QUOTERS` with the right identifier quoting (double quotes for ANSI, backticks for MySQL).
+5. **Credentials**: add the driver's conventional env var to `CredentialResolver._try_env_secret` and a hint to `_env_hint_for`.
+6. **Dependencies**: add the extra to `[project.optional-dependencies]`, register it in `core/deps.py::EXTRAS` (plus `_DIST_NAMES` if the import name and distribution name differ), add it to the `sql` meta-extra and the README install table.
+7. **Tests**: `tests/unit/test_sql_sources.py`, following the existing per-driver classes. A happy path driving a fake driver module via `monkeypatch.setitem(sys.modules, ...)` that asserts the exact `connect_calls` kwargs and composed SQL, plus a `test_missing_driver`. Assert the kwargs mapping — that's the part with no other coverage.
+
+**Do not re-inline the connect/cursor/cleanup tail.** It belongs in `run_select`, which closes the connection deterministically even when the query raises. If your driver needs an explicit cursor close (Snowflake does), pass `cursor_close=True` rather than hand-rolling a `try`/`finally`. A shim that reimplements that tail will be sent back — the four backends had already drifted into three different cleanup styles once.
+
+Note that `run_select` closes rather than using the driver's context manager, so it does not commit or roll back. `build_query` only composes read-only `SELECT`s. If you introduce a write path, transaction semantics become your problem and this helper is the wrong tool.
+
 ## Adding a framework integration
 
 New ML framework support is one of the highest-leverage contributions you can make. The pattern is established by the existing hooks for PyTorch, TensorFlow / Keras, HuggingFace `transformers`, and scikit-learn. Use them as the reference.
@@ -176,7 +212,7 @@ A minimum viable integration (autodetect + install hook + `epoch`/`step` scopes 
 - **Code style.** We use `ruff` for lint and format, and `mypy` for type checking. Run all three before submitting (commands in [Getting set up](#getting-set-up)). CI will fail otherwise.
 - **Comments.** Write the *why*, not the *what*. If a comment just restates the code, delete it. Keep one-line comments where the code's intent isn't obvious from naming.
 - **Type hints.** All public functions are typed. We run `mypy` with `ignore_missing_imports=true`. The SDK wraps pandas/polars/torch, all `Any` under mypy, so we can't be stricter without ergonomic damage.
-- **Errors.** Use the `CirronError` hierarchy in `cirron/core/errors.py`. Add a new subclass when the failure mode is something a caller might programmatically catch; raise `ValueError` / `TypeError` for caller bugs.
+- **Errors.** Use the `CirronError` hierarchy in `cirron/core/errors.py`. Add a new subclass when the failure mode is something a caller might programmatically catch; raise `ValueError` / `TypeError` for caller bugs. Missing optional dependencies have their own rule — see [Missing-dependency errors](#missing-dependency-errors).
 - **Imports.** PEP 604 unions (`X | Y`), PEP 585 generics (`list[X]`). `ruff` enforces both.
 - **Documentation.** If you change user-facing code (the `ci.*` surface, install extras, observable behavior), update the README in the same PR. Internal architecture changes belong in `docs/`.
 

@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from importlib import metadata as _metadata
 from importlib import util as _util
+from typing import Any
 
 from cirron.core.errors import CirronDependencyError
 
@@ -124,6 +125,55 @@ def install_hint(extras: Iterable[str]) -> str:
         return "pip install 'cirron-sdk'"
     joined = ",".join(sorted(extra_set))
     return f"pip install 'cirron-sdk[{joined}]'"
+
+
+def driver(module_name: str, extra_name: str) -> Any:
+    """Import an optional backend driver or raise :class:`CirronDependencyError`.
+
+    Backend imports are lazy because none of them are hard dependencies —
+    a user who only hits S3 never pays the cost of ``psycopg``'s C
+    extensions. Uses ``importlib.import_module`` (not ``__import__``) so
+    dotted names like ``"databricks.sql"`` return the leaf module.
+
+    Use this at **backend entry points** — the first import of an optional
+    backend on a ``load()`` path, where absence is a hard stop the caller
+    needs to act on. Those sites must not raise a bare ``ImportError``:
+    callers can't catch it uniformly, and a hand-written install string
+    drifts away from :data:`EXTRAS`.
+
+    Not every optional import belongs here, and the SDK has ~35 that
+    deliberately stay plain:
+
+    * Imports reached only *after* an entry point already checked — e.g.
+      ``NumpyAdapter.to_pandas`` runs downstream of ``ci.load(as_=...)``'s
+      guard, so a second check would be noise.
+    * Imports used as control flow — ``_concat_parts`` asks "is pandas
+      installed *and* is this a DataFrame?", where absence selects a branch
+      rather than failing.
+    * ``validate()`` on the object-store sources, which wraps everything in
+      ``except Exception: return False`` — the error type is unobservable
+      there by design.
+
+    Args:
+        module_name (str): Driver module to import (e.g. ``"psycopg"``,
+            ``"databricks.sql"``, ``"google.cloud.storage"``).
+        extra_name (str): Cirron extra name used in the install hint.
+
+    Returns:
+        Any: The imported driver module (the leaf, for dotted names).
+
+    Raises:
+        CirronDependencyError: If the driver isn't installed.
+    """
+    import importlib
+
+    try:
+        return importlib.import_module(module_name)
+    except ImportError as e:
+        raise CirronDependencyError(
+            f"the {extra_name!r} source backend requires the {module_name!r} "
+            f"driver. Install with: {install_hint([extra_name])}"
+        ) from e
 
 
 def _resolve_to_import_name(name: str) -> str:

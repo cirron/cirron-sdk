@@ -22,6 +22,8 @@ from typing import Any
 import requests
 from requests.adapters import HTTPAdapter
 
+from cirron.core.version import _sdk_version
+
 log = logging.getLogger("cirron.ingest")
 
 DEFAULT_INGEST_PATH = "/api/traces"
@@ -47,24 +49,6 @@ def _bearer(api_key: str) -> str:
         str: ``"Bearer <api_key>"``.
     """
     return f"Bearer {api_key}"
-
-
-def _sdk_version() -> str:
-    """Resolve the installed ``cirron-sdk`` version string.
-
-    Returns:
-        str: The installed package version, or ``"0.0.0"`` if metadata
-            isn't reachable.
-    """
-    try:
-        from importlib.metadata import PackageNotFoundError, version
-
-        try:
-            return version("cirron-sdk")
-        except PackageNotFoundError:
-            return "0.0.0"
-    except Exception:
-        return "0.0.0"
 
 
 @dataclass(frozen=True)

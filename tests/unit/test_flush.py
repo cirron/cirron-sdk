@@ -113,11 +113,11 @@ def test_empty_drain_is_noop(tmp_path):
 
 
 def test_sdk_version_resolved_once_per_process(monkeypatch):
-    from cirron.core import flush as flush_mod
+    from cirron.core import version as version_mod
 
     # Reset through monkeypatch (not a bare assignment) so the real cached
     # value is restored at teardown and the fake can't leak into later tests.
-    monkeypatch.setattr(flush_mod, "_SDK_VERSION", None)
+    monkeypatch.setattr(version_mod, "_SDK_VERSION", None)
 
     calls = {"n": 0}
 
@@ -126,7 +126,7 @@ def test_sdk_version_resolved_once_per_process(monkeypatch):
         return "9.9.9"
 
     monkeypatch.setattr("importlib.metadata.version", fake_version)
-    assert flush_mod._sdk_version() == "9.9.9"
+    assert version_mod._sdk_version() == "9.9.9"
     assert calls["n"] == 1
 
     def boom(name: str) -> str:
@@ -136,8 +136,25 @@ def test_sdk_version_resolved_once_per_process(monkeypatch):
     # Assert on the returned value, not merely the absence of an exception:
     # ``_resolve_sdk_version`` swallows every Exception, so a second lookup
     # would quietly return "0.0.0" rather than raising.
-    assert flush_mod._sdk_version() == "9.9.9"
+    assert version_mod._sdk_version() == "9.9.9"
     assert calls["n"] == 1
+
+
+def test_every_outbound_path_shares_the_cached_sdk_version():
+    """All four call sites must resolve through ``core.version``.
+
+    The two ``data/`` copies used to re-read distribution metadata on every
+    outbound request. A future module re-defining its own ``_sdk_version``
+    would silently reintroduce that per-request ``sys.path`` walk.
+    """
+    from cirron.core import flush, ingest, transport, version
+    from cirron.data import sql
+    from cirron.data.sources import registered
+
+    for module in (flush, ingest, transport, sql, registered):
+        assert module._sdk_version is version._sdk_version, (
+            f"{module.__name__} does not use the cached core.version helper"
+        )
 
 
 # SpoolWriter
