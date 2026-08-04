@@ -17,6 +17,7 @@ substituted instead; see `marks[].value_nonfinite` and
 ./.cirron/
   spool/
     <created_ns>-<batch_id>.json      # one batch per file
+    <created_ns>-<batch_id>.json.tmp  # in-flight write, not a readable batch
   snapshots/
     <span_id>/
       weights.safetensors             # one multi-tensor file per epoch (SDK-25)
@@ -30,6 +31,15 @@ substituted instead; see `marks[].value_nonfinite` and
 - `<batch_id>`: 32-char lowercase hex (UUID4 without dashes).
 - Files are written via a `.json.tmp` → `os.replace()` handoff so a reader
   that opens a `*.json` file always sees a complete batch.
+- Readers MUST ignore `*.json.tmp`. A temp file is either a write currently in
+  flight or, if its writer was hard-killed between the write and the rename
+  (SIGKILL, OOM kill, node preemption, ENOSPC), an orphan holding a partial
+  batch. Either way it is not a readable batch. Its bytes do count toward
+  `spool_max_bytes`, and the SDK deletes any it finds older than one hour
+  during a cap-enforcement pass. The age gate matters because every rank of a
+  distributed run shares one spool directory, so a recent `.json.tmp` may be
+  another rank's in-flight write; an operator cleaning up by hand should apply
+  the same rule.
 
 ## Batch JSON schema
 
@@ -278,11 +288,19 @@ Dropped records are counted and surfaced via `ci.health()`
 (`scope_drop_count`, `mark_drop_count`, `spool_drop_count`). The first
 in-memory drop on a thread also emits a `UserWarning`. A non-zero count
 means the producing run was under-instrumented, not that the file is
-malformed.
+malformed. `spool_drop_count` counts evicted batch files only; sweeping an
+orphaned temp file never bumps it, because a temp file is garbage no reader
+could have consumed.
 
 Whole batch files can also disappear from the spool directory: it is
 capped (`spool_max_bytes`, 1 GB by default) and evicts oldest-first,
-logging to the `cirron.flush` logger each time it does.
+logging to the `cirron.flush` logger each time it does. The cap counts every
+byte the SDK put in the directory, sealed `*.json` and unsealed `*.json.tmp`
+alike, and orphaned temp files are swept before any batch is evicted so a
+batch is never dropped to make room for garbage. In the rare case where
+in-flight temp files alone meet or exceed the cap, the SDK logs a warning and
+evicts nothing: dropping batches could not get the directory under the cap
+anyway, and those files are sealed or sweepable within the hour.
 
 ## Forward compatibility
 

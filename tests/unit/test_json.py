@@ -15,6 +15,7 @@ assertion against the re-export.
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
 
 import pytest
@@ -28,6 +29,7 @@ from cirron.core.json import (
     stats_to_wire,
 )
 from cirron.core.swallow import reset_swallow_counts, swallow_counts
+from cirron.snapshots.types import TraceSnapshot, snapshot_to_dict
 
 INF = float("inf")
 NAN = float("nan")
@@ -275,3 +277,68 @@ def test_safe_attrs_degrades_an_unclassifiable_float_without_raising():
     out = _safe_attrs({"lr": _HostileFloat("inf"), "step": 3})
     assert out["lr"] == "inf"
     assert out["step"] == 3
+
+
+# snapshot_to_dict — the third record type in a batch
+
+
+def _snapshot(**overrides) -> TraceSnapshot:
+    fields: dict[str, Any] = {
+        "id": "snap1",
+        "span_id": "span1",
+        "tensor_name": "layer1.weight",
+        "shape": [2, 2],
+        "dtype": "float32",
+        "mode": "stats",
+        "stats": _stats(),
+        "ts_ns": 1_700_000_000_000_000_000,
+    }
+    fields.update(overrides)
+    return TraceSnapshot(**fields)
+
+
+def test_snapshot_to_dict_sanitizes_hostile_attrs():
+    # ``attrs`` is typed ``dict[str, Any]`` and shallow-copied from a record
+    # the producer still owns, so it is structurally open to anything. No
+    # producer populates it today, which is exactly why it needs a test: the
+    # first one that does must not be able to break the transports.
+    out = snapshot_to_dict(_snapshot(attrs={"device": object(), "rank": 0}))
+    assert isinstance(out["attrs"]["device"], str)
+    assert out["attrs"]["rank"] == 0
+    strict_loads(json.dumps(out))  # no ``default=``: raises on anything missed
+
+
+def test_snapshot_to_dict_substitutes_nonfinite_stats():
+    out = snapshot_to_dict(_snapshot(stats=_stats(mean=NAN, norm=INF)))
+    assert out["stats"]["mean"] is None
+    assert out["stats"]["norm"] is None
+    assert out["stats"]["std"] == 1.0
+    assert out["stats"]["nonfinite"] == {"mean": "nan", "norm": "inf"}
+    strict_loads(json.dumps(out))
+
+
+def test_snapshot_to_dict_drops_histogram_with_nonfinite_bins():
+    hist = {"bins": [0.0] * 16 + [INF], "counts": [0] * 16}
+    out = snapshot_to_dict(_snapshot(stats=_stats(histogram=hist)))
+    assert "histogram" not in out["stats"]
+    assert out["stats"]["nonfinite"]["histogram"] == "inf"
+    strict_loads(json.dumps(out))
+
+
+def test_snapshot_to_dict_is_zero_copy_for_a_clean_record():
+    # The capture path runs once per tensor per epoch, so the common case must
+    # not rebuild ``stats`` or ``attrs``.
+    snap = _snapshot(attrs={"rank": 0})
+    out = snapshot_to_dict(snap)
+    assert out["stats"] is snap.stats
+    assert out["attrs"] is snap.attrs
+
+
+def test_snapshot_to_dict_does_not_mutate_the_record():
+    # The flush thread must not write back into a dict the producer owns.
+    stats = _stats(mean=NAN)
+    snap = _snapshot(stats=stats, attrs={"device": object()})
+    snapshot_to_dict(snap)
+    assert math.isnan(stats["mean"]), "the original NaN was overwritten"
+    assert "nonfinite" not in stats
+    assert not isinstance(snap.attrs["device"], str)
