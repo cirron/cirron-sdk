@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import weakref
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -24,6 +25,36 @@ if TYPE_CHECKING:
 log = logging.getLogger("cirron.hooks.torch")
 
 DEFAULT_EPOCH_STEPS = 1000
+
+# Reap cadence for finished CUDA event pairs. Draining is O(pending) with
+# a device query per pair, and it ran on every single timed op close, so
+# the cost scaled with how many kernels happened to still be in flight.
+# Reaping every _REAP_INTERVAL closes amortizes that away; _REAP_BACKSTOP
+# forces a drain regardless, so a run whose kernels resolve slowly cannot
+# grow the pending list without bound.
+_REAP_INTERVAL = 32
+_REAP_BACKSTOP = 256
+
+# Ceiling on the pool of reusable CUDA events. A training step opens up to
+# six timed spans and each needs two events, so a steady state wants a few
+# dozen; the cap stops a pathological backlog from hoarding them.
+_EVENT_POOL_CAP = 64
+
+
+def _should_reap(ops: int, pending_len: int) -> bool:
+    """Decide whether this op close should scan the pending CUDA pairs.
+
+    Split out as a pure function so the cadence is testable without a GPU
+    (the callers it serves only run when CUDA is available).
+
+    Args:
+        ops (int): Count of timed ops closed since install.
+        pending_len (int): Current length of the pending pair list.
+
+    Returns:
+        bool: ``True`` when the pending list should be drained now.
+    """
+    return ops % _REAP_INTERVAL == 0 or pending_len >= _REAP_BACKSTOP
 
 
 def _catch(label: str, fn: Any, *args: Any, **kwargs: Any) -> Any:
@@ -58,6 +89,14 @@ class _CudaPending:
 
     def __init__(self) -> None:
         self.items: list[tuple[Any, Any, Any]] = []
+        # Events whose elapsed_time has already been read, kept for reuse.
+        # ``Event.record()`` overwrites the previous capture, so a fully
+        # consumed event is as good as a fresh one and costs nothing to
+        # allocate. Only :func:`_drain_cuda` puts events here, and only
+        # once the pair has left ``items``.
+        self.pool: list[Any] = []
+        # Timed ops closed so far, driving the reap cadence.
+        self.ops: int = 0
 
 
 class TorchHookHandle:
@@ -148,6 +187,15 @@ def _drain_cuda(pending: _CudaPending, *, force: bool = False) -> None:
             scope_obj.gpu_ns = int(elapsed_ms * 1_000_000)
         except Exception:
             log.warning("cirron.hooks.torch: elapsed_time failed", exc_info=True)
+            # Deliberately not recycled: an event that misbehaved once is
+            # not worth handing to the next span.
+            continue
+        # The only place events re-enter the pool. Reaching here means the
+        # pair is leaving ``items`` and its elapsed_time has been read, so
+        # nothing else still refers to either event.
+        if len(pending.pool) + 2 <= _EVENT_POOL_CAP:
+            pending.pool.append(start_ev)
+            pending.pool.append(end_ev)
     pending.items = keep
 
 
@@ -272,7 +320,8 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
         if scope_obj is None or pending_cuda is None:
             return None
         try:
-            ev = torch.cuda.Event(enable_timing=True)
+            pool = pending_cuda.pool
+            ev = pool.pop() if pool else torch.cuda.Event(enable_timing=True)
             ev.record()
             return ev
         except Exception:
@@ -290,14 +339,18 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
         if scope_obj is None or start_ev is None or pending_cuda is None:
             return
         try:
-            end_ev = torch.cuda.Event(enable_timing=True)
+            pool = pending_cuda.pool
+            end_ev = pool.pop() if pool else torch.cuda.Event(enable_timing=True)
             end_ev.record()
             pending_cuda.items.append((scope_obj, start_ev, end_ev))
         except Exception:
             log.warning("cirron.hooks.torch: cuda end record failed", exc_info=True)
-        # Opportunistically reap finished events so the list doesn't grow
-        # without bound during long runs.
-        _drain_cuda(pending_cuda, force=False)
+        # Reap finished events periodically rather than on every close, so
+        # the list still can't grow without bound but the scan cost is
+        # amortized instead of paid per op.
+        pending_cuda.ops += 1
+        if _should_reap(pending_cuda.ops, len(pending_cuda.items)):
+            _drain_cuda(pending_cuda, force=False)
 
     # forward hooks
 
@@ -576,6 +629,64 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
     # snapshot reflects the final step's grads.
     grad_refs_state: dict[str, list[tuple[str, Any]]] = {"refs": []}
 
+    # Imported once per install rather than per step. It stays inside
+    # ``install`` instead of moving to module scope because
+    # ``cirron.core.profiler`` imports from ``cirron.hooks._registry``,
+    # so a module-level import here would close an import cycle.
+    from cirron.core.profiler import get_watched_model
+
+    # A model's ``(name, parameter)`` pairs are fixed for its lifetime,
+    # but the stash below runs on every optimizer step, where rebuilding
+    # them costs a full ``named_parameters()`` traversal per step (161
+    # tensors on a ResNet50). Cache them per watched model instead.
+    #
+    # Keyed on a weakref rather than ``id()``: the profiler deliberately
+    # holds the watched model weakly, and comparing identity through a
+    # weakref both sidesteps id reuse after collection and lets a dead
+    # model be noticed.
+    param_cache: dict[str, Any] = {"ref": None, "pairs": []}
+
+    def _cached_param_pairs(model: Any) -> list[tuple[str, Any]] | None:
+        """Return ``(name, parameter)`` pairs for ``model``, rebuilding on change.
+
+        Args:
+            model (Any): The currently watched model.
+
+        Returns:
+            list[tuple[str, Any]] | None: Cached pairs, or ``None`` when
+                ``model`` exposes no callable ``named_parameters`` (the
+                caller then leaves any previously stashed refs alone).
+        """
+        ref = param_cache["ref"]
+        if ref is not None and ref() is model:
+            return param_cache["pairs"]
+        named = getattr(model, "named_parameters", None)
+        if not callable(named):
+            _drop_param_cache()
+            return None
+        # Names are ``str`` by ``named_parameters()``'s contract, so the
+        # stash below doesn't re-coerce them.
+        pairs = list(named())
+        try:
+            param_cache["ref"] = weakref.ref(model)
+        except TypeError:
+            # Not weakref-able. Skip caching rather than hold the model
+            # strongly; the traversal is then paid per step, as before.
+            _drop_param_cache()
+            return pairs
+        param_cache["pairs"] = pairs
+        return pairs
+
+    def _drop_param_cache() -> None:
+        """Release the cached pairs.
+
+        The cache holds every parameter tensor strongly, so keeping it
+        past the watched model's lifetime would pin a full set of weights
+        (device memory included) for the rest of the process.
+        """
+        param_cache["ref"] = None
+        param_cache["pairs"] = []
+
     def _stash_grad_refs() -> None:
         """Capture ``(name, .grad)`` pairs for the watched model post-step.
 
@@ -583,9 +694,10 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
         snapshot can serialize grads even after the user's
         ``opt.zero_grad(set_to_none=True)`` has nulled ``Parameter.grad``.
         Silently no-ops when snapshots are off or no model is registered.
-        """
-        from cirron.core.profiler import get_watched_model
 
+        Reading ``.grad`` has to happen every step (that is the whole
+        point), but the names and parameters it reads through are cached.
+        """
         if cirron.snapshots not in ("stats", "sampled", "full"):
             return
         # Suppress the "no model registered" diagnostic here — this
@@ -595,12 +707,17 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
         # the user-visible signal.
         model = get_watched_model(warn_if_missing=False)
         if model is None:
-            return
-        named = getattr(model, "named_parameters", None)
-        if not callable(named):
+            # Guarded so the common no-watched-model path (HF, Keras, and
+            # any bare loop that never calls ci.watch) stays a lookup and
+            # a branch, rather than paying for a clear on every step.
+            if param_cache["ref"] is not None:
+                _drop_param_cache()
             return
         try:
-            grad_refs_state["refs"] = [(str(n), p.grad) for n, p in named() if p.grad is not None]
+            pairs = _cached_param_pairs(model)
+            if pairs is None:
+                return
+            grad_refs_state["refs"] = [(n, p.grad) for n, p in pairs if p.grad is not None]
         except Exception:
             log.warning("cirron.hooks.torch: grad ref stash failed", exc_info=True)
 
