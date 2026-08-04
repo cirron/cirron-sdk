@@ -294,10 +294,16 @@ def test_drop_count_all_aggregates_across_threads():
             stack.pop()
 
     threads = [threading.Thread(target=worker) for _ in range(3)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    # Overflowing MAX_DEPTH is the point of this test, so the one-shot
+    # per-thread warning is expected output, not noise — assert it here rather
+    # than letting it leak into pytest's warnings summary. Capturing across
+    # threads is safe in this bounded case: every producer is joined inside the
+    # context and nothing else emits concurrently.
+    with pytest.warns(UserWarning, match="depth exceeded MAX_DEPTH"):
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
 
     # Each thread dropped 3 scopes past MAX_DEPTH → 9 total.
     assert stack.drop_count_all() == 9

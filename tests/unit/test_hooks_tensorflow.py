@@ -56,7 +56,9 @@ def ctx():
 
 
 def _tiny_model():
-    model = keras.Sequential([keras.layers.Dense(2, input_shape=(4,))])
+    # Keras 3 deprecated passing ``input_shape`` to a layer; declare the shape
+    # with an explicit Input layer instead.
+    model = keras.Sequential([keras.layers.Input(shape=(4,)), keras.layers.Dense(2)])
     model.compile(optimizer="sgd", loss="mse", metrics=["mae"])
     return model
 
