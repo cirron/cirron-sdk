@@ -25,6 +25,7 @@ from cirron.data import sql as sql_mod
 from cirron.data.load import LoadRequest
 from cirron.data.sql import (
     CredentialResolver,
+    SqlCredentials,
     SqlUri,
     build_query,
     driver,
@@ -310,12 +311,16 @@ class _FakeCursor:
         self._rows = rows
         self.description = description
         self.executed: str | None = None
+        self.closed = False
 
     def execute(self, query):
         self.executed = query
 
     def fetchall(self):
         return self._rows
+
+    def close(self):
+        self.closed = True
 
 
 class TestExecuteToPandas:
@@ -518,6 +523,84 @@ class TestMySqlDataSource:
 
 
 class TestSnowflakeDataSource:
+    @staticmethod
+    def _install_fake_driver(monkeypatch, connect_calls: dict[str, Any], cursor):
+        """Stub ``snowflake.connector`` in ``sys.modules``.
+
+        ``driver()`` resolves the dotted name via ``import_module``, which
+        walks the package chain — so both the ``snowflake`` package and the
+        ``snowflake.connector`` submodule have to be present.
+        """
+
+        class _FakeConn:
+            def cursor(self):
+                return cursor
+
+            def close(self):
+                connect_calls["conn_closed"] = True
+
+        def _connect(**kwargs):
+            connect_calls.update(kwargs)
+            return _FakeConn()
+
+        pkg = types.ModuleType("snowflake")
+        connector = types.ModuleType("snowflake.connector")
+        connector.connect = _connect  # type: ignore[attr-defined]
+        pkg.connector = connector  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "snowflake", pkg)
+        monkeypatch.setitem(sys.modules, "snowflake.connector", connector)
+
+    def test_happy_path(self, monkeypatch):
+        from cirron.data.sources.snowflake import SnowflakeDataSource
+
+        connect_calls: dict[str, Any] = {}
+        cursor = _FakeCursor([(7,)], [("ID", None)])
+        self._install_fake_driver(monkeypatch, connect_calls, cursor)
+
+        # warehouse isn't in the URI — it comes from the platform integration
+        # record or, standalone, from the env.
+        monkeypatch.setenv("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH")
+
+        uri = parse_sql_uri("snowflake://alice:pw@myacct/analytics.public.events")
+        src = SnowflakeDataSource(uri, _cirron(), _request(scheme="snowflake", columns=["ID"]))
+        df = src.load()
+
+        assert connect_calls["account"] == "myacct"
+        assert connect_calls["user"] == "alice"
+        assert connect_calls["password"] == "pw"
+        assert connect_calls["database"] == "analytics"
+        assert connect_calls["schema"] == "public"
+        assert connect_calls["warehouse"] == "COMPUTE_WH"
+        assert "role" not in connect_calls, "SNOWFLAKE_ROLE unset must not send role="
+        assert "token" not in connect_calls
+        assert cursor.executed == 'SELECT "ID" FROM "analytics"."public"."events"'
+        assert list(df["ID"]) == [7]
+        assert cursor.closed is True, "snowflake shim must close its cursor"
+        assert connect_calls["conn_closed"] is True
+
+    def test_token_auth(self, monkeypatch):
+        """A token with no password switches the connector to OAuth."""
+        from cirron.data.sources.snowflake import SnowflakeDataSource
+
+        connect_calls: dict[str, Any] = {}
+        cursor = _FakeCursor([(1,)], [("ID", None)])
+        self._install_fake_driver(monkeypatch, connect_calls, cursor)
+
+        uri = parse_sql_uri("snowflake://alice@myacct/DB.PUB.T")
+        src = SnowflakeDataSource(uri, _cirron(), _request(scheme="snowflake"))
+        # The resolver accepts a token in place of a password; hand one back
+        # the way a platform integration record would.
+        monkeypatch.setattr(
+            CredentialResolver,
+            "resolve",
+            lambda self: SqlCredentials(user="alice", host="myacct", token="tok-123"),
+        )
+        src.load()
+
+        assert connect_calls["token"] == "tok-123"
+        assert connect_calls["authenticator"] == "oauth"
+        assert "password" not in connect_calls
+
     def test_missing_driver(self, monkeypatch):
         from cirron.data.sources.snowflake import SnowflakeDataSource
 
@@ -538,6 +621,75 @@ class TestSnowflakeDataSource:
 
 
 class TestDatabricksDataSource:
+    @staticmethod
+    def _install_fake_driver(monkeypatch, connect_calls: dict[str, Any], cursor):
+        """Stub ``databricks.sql`` in ``sys.modules`` (package + submodule)."""
+
+        class _FakeConn:
+            def cursor(self):
+                return cursor
+
+            def close(self):
+                connect_calls["conn_closed"] = True
+
+        def _connect(**kwargs):
+            connect_calls.update(kwargs)
+            return _FakeConn()
+
+        pkg = types.ModuleType("databricks")
+        sql_submodule = types.ModuleType("databricks.sql")
+        sql_submodule.connect = _connect  # type: ignore[attr-defined]
+        pkg.sql = sql_submodule  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "databricks", pkg)
+        monkeypatch.setitem(sys.modules, "databricks.sql", sql_submodule)
+
+    def test_happy_path(self, monkeypatch):
+        from cirron.data.sources.databricks import DatabricksDataSource
+
+        connect_calls: dict[str, Any] = {}
+        cursor = _FakeCursor([("acme",)], [("name", None)])
+        self._install_fake_driver(monkeypatch, connect_calls, cursor)
+
+        # Databricks auth is a bearer token, not a password, and http_path is
+        # warehouse routing that never appears in the URI.
+        monkeypatch.setenv("DATABRICKS_TOKEN", "dapi-xxx")
+        monkeypatch.setenv("DATABRICKS_HTTP_PATH", "/sql/1.0/warehouses/abc123")
+
+        uri = parse_sql_uri("databricks://dbc.cloud.databricks.com/main.default.customers")
+        src = DatabricksDataSource(
+            uri, _cirron(), _request(scheme="databricks", columns=["name"], where="active")
+        )
+        df = src.load()
+
+        assert connect_calls["server_hostname"] == "dbc.cloud.databricks.com"
+        assert connect_calls["http_path"] == "/sql/1.0/warehouses/abc123"
+        assert connect_calls["access_token"] == "dapi-xxx"
+        assert "password" not in connect_calls, "databricks auth is a token, not a password"
+        assert cursor.executed == 'SELECT "name" FROM "main"."default"."customers" WHERE active'
+        assert list(df["name"]) == ["acme"]
+        assert connect_calls["conn_closed"] is True
+
+    def test_http_path_from_platform_integration_beats_env(self, monkeypatch):
+        """``extra.http_path`` from the resolver wins over the env var."""
+        from cirron.data.sources.databricks import DatabricksDataSource
+
+        connect_calls: dict[str, Any] = {}
+        cursor = _FakeCursor([(1,)], [("id", None)])
+        self._install_fake_driver(monkeypatch, connect_calls, cursor)
+        monkeypatch.setenv("DATABRICKS_HTTP_PATH", "/from/env")
+
+        monkeypatch.setattr(
+            CredentialResolver,
+            "resolve",
+            lambda self: SqlCredentials(
+                host="w", token="tok", extra={"http_path": "/from/platform"}
+            ),
+        )
+
+        uri = parse_sql_uri("databricks://w/c.s.t")
+        DatabricksDataSource(uri, _cirron(), _request(scheme="databricks")).load()
+        assert connect_calls["http_path"] == "/from/platform"
+
     def test_requires_http_path(self, monkeypatch):
         from cirron.data.sources.databricks import DatabricksDataSource
 
