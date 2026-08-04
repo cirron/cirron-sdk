@@ -788,9 +788,12 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> To
         if not callable(named):
             _drop_param_cache()
             return None
-        # Names are ``str`` by ``named_parameters()``'s contract, so the
-        # stash below doesn't re-coerce them.
-        pairs = list(named())
+        # Coerce names here rather than per step. ``nn.Module`` always
+        # yields ``str``, but ``ci.watch()`` accepts any object exposing
+        # ``named_parameters()``, and these names become safetensors keys
+        # on the sampled/full blob path, which rejects non-string keys.
+        # Paid once per model, so the per-step stash keeps the names as-is.
+        pairs = [(str(n), p) for n, p in named()]
         try:
             ref = weakref.ref(model)
             # Release the pairs the moment the model is collected, instead

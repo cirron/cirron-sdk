@@ -15,7 +15,9 @@ from cirron.core.scope import ScopeStack
 _BUDGET_US_PER_CYCLE = 5.0
 
 
-def test_1m_push_pop_cycles_under_5s(record_result, baseline_metrics, assert_no_regression) -> None:
+def test_push_pop_under_budget_per_cycle(
+    record_result, baseline_metrics, assert_no_regression
+) -> None:
     stack = ScopeStack()
     N = 1_000_000
 

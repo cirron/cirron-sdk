@@ -1212,3 +1212,64 @@ def test_fallback_stays_disabled_after_the_first_dataloader_pass(stack, tmp_path
 
     indices = _epoch_indices(stack)
     assert indices == [0, 1], f"expected exactly the 2 loader-driven epochs, got {indices}"
+
+
+def test_grad_stash_coerces_non_string_parameter_names(stack, ci, ctx, monkeypatch):
+    """Stashed names must be real strings.
+
+    ci.watch() accepts any object exposing named_parameters(), and these
+    names are used as safetensors keys on the sampled/full blob path,
+    which rejects non-string keys. The stats path hides the problem
+    because it formats the name into an f-string, so assert on what the
+    hook actually stashes.
+    """
+    import cirron as public_ci
+    from cirron.snapshots import stats as stats_mod
+
+    class _Name:
+        """A name-like object that is not a str."""
+
+        def __init__(self, value):
+            self._value = value
+
+        def __str__(self):
+            return self._value
+
+    class _DuckModel:
+        """Not an nn.Module; only named_parameters() is required."""
+
+        def __init__(self):
+            self.w = torch.nn.Parameter(torch.zeros(2, 1))
+            self.w.grad = torch.ones(2, 1)
+
+        def named_parameters(self):
+            yield _Name("w"), self.w
+
+    seen = {}
+
+    def _fake_capture(cirron_obj, model, span_id, include_grads=False, grad_refs=None):
+        seen["refs"] = grad_refs
+        return []
+
+    monkeypatch.setattr(stats_mod, "capture", _fake_capture)
+
+    # Bound to a local: watch() holds a weakref, so a temporary would be
+    # collected before the first optimizer step.
+    watched = _DuckModel()
+    public_ci.watch(watched)
+    h = torch_install(stack, ci, ctx)
+    try:
+        driver = torch.nn.Linear(2, 1)
+        opt = torch.optim.SGD(driver.parameters(), lr=0.01)
+        for _ in _tiny_loader():  # opens an epoch so uninstall snapshots it
+            pass
+        _drive_step(driver, opt)
+    finally:
+        h.uninstall()  # triggers the epoch-boundary capture
+        public_ci.watch(None)
+
+    refs = seen.get("refs")
+    assert refs, "the hook stashed no grad refs"
+    for name, _grad in refs:
+        assert isinstance(name, str), f"stashed name is {type(name).__name__}, not str: {name!r}"
+        assert name == "w"
