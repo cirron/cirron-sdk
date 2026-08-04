@@ -4,7 +4,9 @@
   "owner": "cirron",
   "repo": "cirron-sdk",
   "baseBranch": "main",
-  "prereleaseBranches": ["rc"],
+  "prereleaseBranches": [
+    "rc"
+  ],
   "noVersionPrefix": false,
   "plugins": [
     "git-tag",
@@ -12,12 +14,57 @@
     "first-time-contributor"
   ],
   "labels": [
-    { "name": "major", "changelogTitle": "💥 Breaking Change", "description": "Increment the major version when merged", "releaseType": "major" },
-    { "name": "minor", "changelogTitle": "🚀 Enhancement", "description": "Increment the minor version when merged", "releaseType": "minor" },
-    { "name": "patch", "changelogTitle": "🐛 Bug Fix", "description": "Increment the patch version when merged", "releaseType": "patch" },
-    { "name": "skip-release", "description": "Skip the release for this PR", "releaseType": "skip" },
-    { "name": "release", "description": "Force a release for this PR", "releaseType": "release" },
-    { "name": "internal", "changelogTitle": "🏠 Internal", "description": "Changes that affect tooling or development workflow", "releaseType": "none" },
-    { "name": "documentation", "changelogTitle": "📝 Documentation", "description": "Changes to documentation only", "releaseType": "none" }
+    {
+      "name": "enhancement",
+      "changelogTitle": "🚀 Enhancement",
+      "description": "New or improved behavior; increments the minor version",
+      "releaseType": "minor"
+    },
+    {
+      "name": "bug",
+      "changelogTitle": "🐛 Bug Fix",
+      "description": "Fixes broken behavior; increments the patch version",
+      "releaseType": "patch"
+    },
+    {
+      "name": "release: major",
+      "changelogTitle": "💥 Breaking Change",
+      "description": "Increment the major version when merged",
+      "releaseType": "major"
+    },
+    {
+      "name": "release: minor",
+      "changelogTitle": "🚀 Enhancement",
+      "description": "Increment the minor version when merged",
+      "releaseType": "minor"
+    },
+    {
+      "name": "release: patch",
+      "changelogTitle": "🐛 Bug Fix",
+      "description": "Increment the patch version when merged",
+      "releaseType": "patch"
+    },
+    {
+      "name": "skip-release",
+      "description": "Skip the release for this PR",
+      "releaseType": "skip"
+    },
+    {
+      "name": "release",
+      "description": "Force a release for this PR",
+      "releaseType": "release"
+    },
+    {
+      "name": "internal",
+      "changelogTitle": "🏠 Internal",
+      "description": "Changes that affect tooling or development workflow",
+      "releaseType": "none"
+    },
+    {
+      "name": "documentation",
+      "changelogTitle": "📝 Documentation",
+      "description": "Changes to documentation only",
+      "releaseType": "none"
+    }
   ]
 }
