@@ -27,12 +27,94 @@ from cirron.core import profiler as _profiler
 _OVERHEAD_ENV = "CIRRON_RUN_OVERHEAD_TESTS"
 _RESULTS_ENV = "CIRRON_OVERHEAD_RESULTS"
 _DEFAULT_RESULTS = Path(__file__).parent / "results" / "local.json"
+_BASELINE_PATH = Path(__file__).parent / "baseline.json"
+
+#: Headroom allowed above a committed baseline before a metric counts as a
+#: regression. Applies to every ratcheted metric: end-to-end ratios and
+#: per-primitive micro-benchmarks alike.
+REGRESSION_TOLERANCE = 1.20
 
 _results: list[dict[str, Any]] = []
 
 
 def _overhead_enabled() -> bool:
     return os.environ.get(_OVERHEAD_ENV, "").lower() in {"1", "true", "yes", "on"}
+
+
+def _load_baseline_metrics() -> dict[str, float]:
+    """Return the committed baseline's ``metrics`` mapping.
+
+    Returns:
+        dict[str, float]: Metric name to committed value. Metrics absent
+            from the file leave their ratchet dormant (see
+            :func:`_assert_no_regression`).
+    """
+    with _BASELINE_PATH.open() as f:
+        doc = json.load(f)
+    return doc["metrics"]
+
+
+def _assert_no_regression(
+    metrics: dict[str, float],
+    key: str,
+    measured: float,
+    *,
+    unit: str,
+    label: str,
+) -> None:
+    """Fail when ``measured`` exceeds the committed baseline plus tolerance.
+
+    A **no-op when ``key`` is absent from ``metrics``**. Baseline numbers
+    are only meaningful when captured on the CI runner, so a metric's
+    ratchet stays dormant until a maintainer commits a value for it. The
+    comparison lands in the suite first and arms later.
+
+    Args:
+        metrics (dict[str, float]): Committed baseline metrics.
+        key (str): Metric name, matching the ``record_result`` name.
+        measured (float): The value this run produced.
+        unit (str): Unit suffix used in the failure message ("μs/cycle").
+        label (str): Human name of what regressed ("scope push/pop").
+    """
+    baseline = metrics.get(key)
+    if baseline is None:
+        return
+    ceiling = baseline * REGRESSION_TOLERANCE
+    assert measured <= ceiling, (
+        f"{label} regressed: {measured:.3f}{unit} "
+        f"(baseline {baseline:.3f}{unit}, tolerance "
+        f"+{(REGRESSION_TOLERANCE - 1) * 100:.0f}% → ceiling {ceiling:.3f}{unit}). "
+        "If this is intentional, regenerate tests/overhead/baseline.json."
+    )
+
+
+@pytest.fixture
+def baseline_metrics() -> dict[str, float]:
+    """Return the committed baseline metrics mapping."""
+    return _load_baseline_metrics()
+
+
+@pytest.fixture
+def regression_tolerance() -> float:
+    """Return the shared regression tolerance multiplier.
+
+    For tests that build their own failure message rather than going
+    through :func:`_assert_no_regression`, so the tolerance is defined
+    in exactly one place either way.
+    """
+    return REGRESSION_TOLERANCE
+
+
+@pytest.fixture
+def assert_no_regression() -> Callable[..., None]:
+    """Return the baseline comparison helper.
+
+    Exposed as a fixture (rather than imported) so tests reach it without
+    depending on how pytest resolves this package's import path. Taking
+    ``metrics`` as an argument rather than closing over the committed file
+    keeps the helper directly testable with a synthetic baseline.
+    """
+    return _assert_no_regression
 
 
 @pytest.fixture(autouse=True)

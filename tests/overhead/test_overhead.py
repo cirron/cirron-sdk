@@ -24,17 +24,11 @@ See ``tests/overhead/README.md`` for how to regenerate the baseline.
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import pytest
 
 import cirron as ci
 
 torch = pytest.importorskip("torch")
-
-_BASELINE_PATH = Path(__file__).parent / "baseline.json"
-_REGRESSION_TOLERANCE = 1.20  # allow +20% vs baseline before failing
 
 # Tiny MLP, minimal steps. All we need is enough forward/backward/
 # optimizer/data_load cycles to exercise every hook the torch
@@ -81,18 +75,14 @@ def _run_training(loader) -> None:
             opt.step()
 
 
-def _load_baseline() -> dict:
-    with _BASELINE_PATH.open() as f:
-        return json.load(f)
-
-
 def _ratio(overhead: float, base: float) -> float:
     return (overhead - base) / base
 
 
-def test_reference_loop_overhead(measure, record_result) -> None:
-    baseline_doc = _load_baseline()
-    expected = baseline_doc["metrics"]
+def test_reference_loop_overhead(
+    measure, record_result, baseline_metrics, regression_tolerance
+) -> None:
+    expected = baseline_metrics
 
     loader = _build_loader()
 
@@ -144,21 +134,21 @@ def test_reference_loop_overhead(measure, record_result) -> None:
     # Regression gate. Compare against the committed baseline, not the
     # documented budget (CLAUDE.md explains why: the hot path is known
     # to miss today; we ratchet from where we are).
-    ceiling_no_hooks = expected["profile_no_hooks_ratio"] * _REGRESSION_TOLERANCE
+    ceiling_no_hooks = expected["profile_no_hooks_ratio"] * regression_tolerance
     assert no_hooks_ratio <= ceiling_no_hooks, (
         f"profile() scaffold overhead regressed: {no_hooks_ratio * 100:.2f}% "
         f"(baseline {expected['profile_no_hooks_ratio'] * 100:.2f}%, "
-        f"tolerance +{(_REGRESSION_TOLERANCE - 1) * 100:.0f}% → ceiling "
+        f"tolerance +{(regression_tolerance - 1) * 100:.0f}% → ceiling "
         f"{ceiling_no_hooks * 100:.2f}%). "
         f"Wall: {base_wall:.2f}s → {no_hooks_wall:.2f}s. "
         "If this is intentional, regenerate tests/overhead/baseline.json."
     )
 
-    ceiling_torch_hooks = expected["profile_torch_hooks_ratio"] * _REGRESSION_TOLERANCE
+    ceiling_torch_hooks = expected["profile_torch_hooks_ratio"] * regression_tolerance
     assert torch_hooks_ratio <= ceiling_torch_hooks, (
         f"torch hook overhead regressed: {torch_hooks_ratio * 100:.2f}% "
         f"(baseline {expected['profile_torch_hooks_ratio'] * 100:.2f}%, "
-        f"tolerance +{(_REGRESSION_TOLERANCE - 1) * 100:.0f}% → ceiling "
+        f"tolerance +{(regression_tolerance - 1) * 100:.0f}% → ceiling "
         f"{ceiling_torch_hooks * 100:.2f}%). "
         f"Wall: {base_wall:.2f}s → {torch_hooks_wall:.2f}s. "
         "If this is intentional, regenerate tests/overhead/baseline.json."

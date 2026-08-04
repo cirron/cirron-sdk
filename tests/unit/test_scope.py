@@ -455,3 +455,80 @@ def test_concurrent_drain_conservation():
     assert stack.drop_count_all() == 0
     # Every drained scope is genuinely closed.
     assert all(s.end_ns is not None for s in drained)
+
+
+# deferred close (hook-internal API used by async timing sources)
+
+
+def test_finalize_deferred_stops_the_clock_without_emitting():
+    """A deferred scope is finished but not yet drainable."""
+    stack = ScopeStack()
+    scope_obj = stack.push("gpu_op")
+
+    stack.finalize_deferred(scope_obj)
+
+    assert scope_obj.end_ns is not None, "the clock should have stopped"
+    assert stack.drain_closed_all() == [], "a held scope must not be drainable yet"
+    # It also leaves the stack, so later pushes don't nest under a span
+    # that has conceptually ended.
+    assert stack.current() is None
+    assert stack.depth() == 0
+
+
+def test_emit_closed_makes_a_deferred_scope_drainable():
+    """emit_closed is the second half: the scope drains exactly once."""
+    stack = ScopeStack()
+    scope_obj = stack.push("gpu_op")
+    stack.finalize_deferred(scope_obj)
+
+    stack.emit_closed(scope_obj)
+
+    drained = stack.drain_closed_all()
+    assert drained == [scope_obj]
+    # Drained once and gone; the deque is not holding a second copy.
+    assert stack.drain_closed_all() == []
+
+
+def test_deferred_scope_keeps_attrs_and_parentage():
+    """Deferring must not disturb the span's tree position or payload."""
+    stack = ScopeStack()
+    parent = stack.push("epoch", index=3)
+    child = stack.push("forward", mode="train")
+
+    stack.finalize_deferred(child)
+    stack.emit_closed(child)
+    stack.pop()  # close the parent normally
+
+    drained = {s.name: s for s in stack.drain_closed_all()}
+    assert drained["forward"].parent_id == parent.id
+    assert drained["forward"].attrs.get("mode") == "train"
+    assert drained["epoch"].index == 3
+
+
+def test_finalize_deferred_is_idempotent():
+    """A second finalize must not move the end timestamp."""
+    stack = ScopeStack()
+    scope_obj = stack.push("gpu_op")
+
+    stack.finalize_deferred(scope_obj)
+    first_end = scope_obj.end_ns
+    stack.finalize_deferred(scope_obj)
+
+    assert scope_obj.end_ns == first_end
+
+
+def test_close_scope_does_not_re_emit_a_deferred_scope():
+    """Shutdown paths that sweep open scopes must not double-emit a held one.
+
+    ``close_scope`` guards on ``end_ns``, which ``finalize_deferred`` has
+    already set, so the held scope is emitted only by whoever owns it.
+    """
+    stack = ScopeStack()
+    scope_obj = stack.push("gpu_op")
+    stack.finalize_deferred(scope_obj)
+
+    stack.close_scope(scope_obj)  # e.g. a shutdown sweep
+
+    assert stack.drain_closed_all() == [], "close_scope emitted a scope it did not finalize"
+    stack.emit_closed(scope_obj)
+    assert stack.drain_closed_all() == [scope_obj]
