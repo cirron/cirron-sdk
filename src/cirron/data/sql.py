@@ -31,7 +31,6 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from importlib.metadata import PackageNotFoundError, version
 from typing import TYPE_CHECKING, Any
 
 # Re-exported: ``driver`` lives in ``core.deps`` next to the EXTRAS registry it
@@ -42,6 +41,7 @@ from cirron.core.errors import (
     CirronPlatformRequired,
     CirronSecretNotFound,
 )
+from cirron.core.version import _sdk_version
 
 if TYPE_CHECKING:
     from cirron.core.config import Cirron
@@ -253,19 +253,6 @@ class SqlCredentials:
     schema: str | None = None
     token: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
-
-
-def _sdk_version() -> str:
-    """Return the installed ``cirron-sdk`` version, or a sentinel.
-
-    Returns:
-        str: The package version, or ``"0.0.0"`` when running from a
-            source tree without an installed distribution.
-    """
-    try:
-        return version("cirron-sdk")
-    except PackageNotFoundError:
-        return "0.0.0"
 
 
 class CredentialResolver:

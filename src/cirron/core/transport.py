@@ -30,7 +30,8 @@ from typing import TYPE_CHECKING, Any
 # protocol cannot live in this module: flush.py must not import transport.py
 # (this module already depends on flush for SPOOL_SCHEMA_VERSION).
 from cirron.core.flush import SPOOL_SCHEMA_VERSION, Transport
-from cirron.core.ingest import DEFAULT_INGEST_PATH, IngestClient, _sdk_version
+from cirron.core.ingest import DEFAULT_INGEST_PATH, IngestClient
+from cirron.core.version import _sdk_version
 
 if TYPE_CHECKING:
     from cirron.core.config import Cirron
