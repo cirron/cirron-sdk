@@ -7,10 +7,14 @@ Covers the acceptance criteria on ``drain_once`` empties both buffers into a wel
 - three deaths in the window latches spool-only mode
 - buffer-full event wakes the thread ahead of the interval
 - empty drain is a no-op
+- every sink encodes the same batch, so a record the spool accepts is a
+  record the transports can ship
 """
 
 from __future__ import annotations
 
+import gzip
+import io
 import json
 import logging
 import threading
@@ -36,9 +40,27 @@ from cirron.core.flush import (
     start_flush_thread,
     stop_flush_thread,
 )
+from cirron.core.ingest import IngestClient
 from cirron.core.mark import MarkBuffer, get_default_mark_buffer
 from cirron.core.scope import ScopeStack, get_default_stack
-from cirron.core.transport import Transport
+from cirron.core.snapshot_buffer import SnapshotBuffer
+from cirron.core.transport import EventStreamTransport, Transport
+from cirron.snapshots.types import TraceSnapshot
+
+
+def strict_loads(text: str) -> Any:
+    """``json.loads`` that rejects the non-standard JSON constants.
+
+    CPython's decoder accepts ``NaN`` / ``Infinity`` / ``-Infinity``, so a
+    plain ``json.loads`` round-trip cannot tell whether the platform's
+    ``JSON.parse`` would have taken the payload. ``tests/unit/test_json.py``
+    keeps its own copy for the same reason.
+    """
+
+    def _reject(token: str) -> None:
+        raise AssertionError(f"non-standard JSON constant in payload: {token}")
+
+    return json.loads(text, parse_constant=_reject)
 
 
 @pytest.fixture(autouse=True)
@@ -65,6 +87,9 @@ def _make_thread(tmp_path: Path, **kwargs) -> FlushThread:
         kwargs.pop("transport", None),
         kwargs.pop("interval", 60.0),
         kwargs.pop("wake_event", None),
+        # ``snapshot_buffer=None`` leaves the worker draining no snapshots,
+        # which is what every test that predates snapshot coverage expects.
+        snapshot_buffer=kwargs.pop("snapshot_buffer", None),
         # ``sinks=None`` makes FlushThread build its own ``[SpoolSink(writer)]``,
         # so callers that don't pass sinks behave exactly as before.
         sinks=kwargs.pop("sinks", None),
@@ -766,6 +791,111 @@ def test_transport_receives_sanitized_batch(tmp_path):
     assert len(sent) == 1, "transport.send failed on an unsanitized batch"
     assert isinstance(sent[0]["spans"][0]["attrs"]["tags"], str)
     assert isinstance(sent[0]["marks"][0]["attrs"]["grad"], str)
+
+
+def _snapshot(**overrides) -> TraceSnapshot:
+    """A ``mode="stats"`` snapshot record, overridable field by field."""
+    fields: dict[str, Any] = {
+        "id": "snap1",
+        "span_id": "span1",
+        "tensor_name": "layer1.weight",
+        "shape": [2, 2],
+        "dtype": "float32",
+        "mode": "stats",
+        "stats": {"mean": 0.0, "std": 1.0, "min": -1.0, "max": 1.0, "norm": 2.0},
+        "ts_ns": 1_700_000_000_000_000_000,
+    }
+    fields.update(overrides)
+    return TraceSnapshot(**fields)
+
+
+def test_transport_receives_sanitized_snapshots(tmp_path):
+    # Snapshots reach the batch through ``snapshot_to_dict``, not through the
+    # span/mark path, so they need their own guard: a field the sanitizer never
+    # saw would write to the spool fine and raise in both transport paths,
+    # producing complete local traces and silently missing platform data.
+    sent: list[dict] = []
+
+    class FakeTransport:
+        def send(self, payload: dict) -> bool:
+            json.dumps(payload)  # raises on a dirty batch
+            sent.append(payload)
+            return True
+
+        def close(self) -> None:
+            return None
+
+    snapshots = SnapshotBuffer()
+    snapshots.append(
+        _snapshot(
+            stats={"mean": float("nan"), "std": 1.0},
+            attrs={"device": object()},
+        )
+    )
+    thread = _make_thread(tmp_path, transport=FakeTransport(), snapshot_buffer=snapshots)
+    thread._tick()
+
+    assert len(sent) == 1, "transport.send failed on an unsanitized snapshot"
+    snap = sent[0]["snapshots"][0]
+    assert isinstance(snap["attrs"]["device"], str)
+    assert snap["stats"]["mean"] is None
+    assert snap["stats"]["nonfinite"] == {"mean": "nan"}
+
+
+def test_every_sink_encodes_the_same_hostile_batch(tmp_path):
+    # The invariant behind issue #57: a batch the spool can write is a batch
+    # the transports can ship. Assertions run against the *in-memory* dict the
+    # worker handed each sink, never a copy read back from the spool file — a
+    # JSON round-trip launders the batch, so reading the file back would make
+    # this pass even with sanitization removed.
+    writer = _make_writer(tmp_path)
+    captured: list[dict] = []
+
+    class CapturingTransport:
+        def send(self, payload: dict) -> bool:
+            captured.append(payload)
+            return True
+
+        def close(self) -> None:
+            return None
+
+    snapshots = SnapshotBuffer()
+    snapshots.append(_snapshot(attrs={"device": object()}))
+    thread = _make_thread(
+        tmp_path,
+        writer=writer,
+        transport=CapturingTransport(),
+        snapshot_buffer=snapshots,
+    )
+    with ci.scope("epoch", tags={"a", "b"}):
+        ci.mark("loss", float("nan"), grad=object())
+    thread._tick()
+
+    assert len(captured) == 1
+    batch = captured[0]
+
+    # Bare ``json.dumps`` — no ``default=``, no ``allow_nan`` escape. This is
+    # the whole assertion: it raises on any value the substitution layer
+    # missed, which is exactly what the encoders' own fallbacks paper over.
+    json.dumps(batch)
+
+    assert isinstance(batch["spans"][0]["attrs"]["tags"], str)
+    assert isinstance(batch["marks"][0]["attrs"]["grad"], str)
+    assert batch["marks"][0]["value_nonfinite"] == "nan"
+    assert isinstance(batch["snapshots"][0]["attrs"]["device"], str)
+
+    # The spool file must equal that dict rather than a scrubbed rewrite of
+    # it, which is what proves the writer's encoder never had to rescue it.
+    assert strict_loads(next(writer.spool_dir.glob("*.json")).read_text()) == batch
+
+    stream = io.StringIO()
+    assert EventStreamTransport(stream).send(batch) is True
+    assert strict_loads(stream.getvalue().strip())["payload"] == batch
+
+    body, headers = IngestClient("https://example.invalid", "k")._build_request(batch)
+    if headers.get("Content-Encoding") == "gzip":
+        body = gzip.decompress(body)
+    assert strict_loads(body.decode("utf-8")) == batch
 
 
 # non-finite floats
