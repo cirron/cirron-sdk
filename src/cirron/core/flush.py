@@ -854,6 +854,8 @@ _state_lock = threading.Lock()
 _supervisor: _Supervisor | None = None
 _writer: SpoolWriter | None = None
 _wake_event: threading.Event | None = None
+_spool_settings: tuple[Path, int] | None = None
+_fallback_writer_cache: SpoolWriter | None = None
 _exit_handlers_registered = False
 _prior_sigterm: Any = None
 _prior_sigint: Any = None
@@ -899,7 +901,7 @@ def start_flush_thread(
     """
     from cirron.core.sinks import build_sinks
 
-    global _supervisor, _writer, _wake_event
+    global _supervisor, _writer, _wake_event, _spool_settings
     with _state_lock:
         if _supervisor is not None:
             return _supervisor
@@ -921,6 +923,9 @@ def start_flush_thread(
         # safe ad-hoc fallback target, even when ``output="none"`` opts
         # the live tick out of writing to it.
         _writer = SpoolWriter(spool_dir, max_bytes=spool_max_bytes)
+        # Recorded alongside the writer so the resolved settings survive
+        # ``stop_flush_thread`` clearing ``_writer``.
+        _spool_settings = (spool_dir, spool_max_bytes)
         _wake_event = threading.Event()
         stack = get_default_stack()
         buf = get_default_mark_buffer()
@@ -969,21 +974,43 @@ def start_flush_thread(
 def stop_flush_thread(timeout: float = 5.0) -> None:
     """Stop the singleton flush thread. No-op if none is running.
 
+    ``_spool_settings`` is deliberately *not* cleared here: a trailing
+    :func:`flush_now` has to keep writing to the spool directory and byte
+    cap this run resolved, rather than falling back to module defaults.
+
     Args:
         timeout (float): Seconds to wait for the worker / watcher to
             join. Default ``5.0``.
     """
-    global _supervisor, _writer, _wake_event
+    global _supervisor, _writer, _wake_event, _fallback_writer_cache
     with _state_lock:
         sup = _supervisor
         _supervisor = None
         _writer = None
+        # Drop any cached fallback writer with it. Its running byte total
+        # was seeded when it was built, so reusing it across a flush-thread
+        # lifecycle would enforce the cap against a stale number and could
+        # leave the directory over cap. The first post-shutdown flush pays
+        # one rebuild scan; repeated ones still hit the cache.
+        _fallback_writer_cache = None
         # Detach the wake hookup so a dangling reference can't poke a
         # stopped supervisor's event.
         get_default_mark_buffer().set_wake_event(None)
         _wake_event = None
     if sup is not None:
         sup.stop(timeout=timeout)
+
+
+def _reset_for_tests() -> None:
+    """Test-only: forget the remembered spool settings and cached fallback writer.
+
+    ``stop_flush_thread`` intentionally leaves both in place, so without this
+    a test that pointed the spool at its own ``tmp_path`` would leak that
+    directory into the next test's fallback flush.
+    """
+    global _spool_settings, _fallback_writer_cache
+    _spool_settings = None
+    _fallback_writer_cache = None
 
 
 def flush_to_trace_buffer() -> int:
@@ -1035,12 +1062,55 @@ def flush_to_trace_buffer() -> int:
     return len(batch.spans)
 
 
+def _fallback_writer() -> SpoolWriter:
+    """Ad-hoc spool writer for flushes with no live flush thread.
+
+    Reuses the ``(spool_dir, max_bytes)`` the last :func:`start_flush_thread`
+    resolved, so a post-shutdown flush writes where the user configured and
+    enforces the cap they configured. Only a process that never started a
+    flush thread at all falls back to ``./.cirron/spool/`` at
+    ``DEFAULT_SPOOL_MAX_BYTES`` — there those *are* the resolved settings.
+
+    The writer is cached because ``SpoolWriter.__init__`` seeds its running
+    byte total with a full glob + ``stat`` of the directory; rebuilding per
+    call would make repeated post-shutdown flushes O(files) each. The cache
+    is keyed on the settings themselves, so a later run against a different
+    directory rebuilds rather than writing to the old one, and
+    ``stop_flush_thread`` drops it so a cached writer's byte total can never
+    survive a flush-thread lifecycle (or another rank's writes) and enforce
+    the cap against a stale number.
+
+    Deliberately lock-free: :func:`flush_now` runs from the SIGTERM/SIGINT
+    handler on the main thread, which may be interrupted while holding the
+    non-reentrant ``_state_lock``. A benign race just builds the writer
+    twice, and ``SpoolWriter`` already tolerates sharing a directory with
+    another writer.
+
+    Returns:
+        SpoolWriter: Writer targeting the configured (or default) spool.
+    """
+    global _fallback_writer_cache
+    settings = _spool_settings
+    if settings is None:
+        spool_dir, max_bytes = Path("./.cirron/spool/"), DEFAULT_SPOOL_MAX_BYTES
+    else:
+        spool_dir, max_bytes = settings
+    cached = _fallback_writer_cache
+    if cached is not None and cached.spool_dir == spool_dir and cached.max_bytes == max_bytes:
+        return cached
+    writer = SpoolWriter(spool_dir, max_bytes=max_bytes)
+    _fallback_writer_cache = writer
+    return writer
+
+
 def flush_now() -> Path | None:
     """Drain every producer thread's buffers and write one batch synchronously.
 
     Safe from any thread and from ``atexit``. If no flush thread is running
-    an ad-hoc writer at ``./.cirron/spool/`` is used so data from short-lived
-    scripts isn't lost.
+    an ad-hoc writer is used so data from short-lived scripts isn't lost; it
+    targets the spool directory and byte cap the last ``start_flush_thread()``
+    resolved, or ``./.cirron/spool/`` at ``DEFAULT_SPOOL_MAX_BYTES`` when this
+    process never started one (see :func:`_fallback_writer`).
 
     Also feeds the in-memory trace buffer (so ``ci.trace()`` works
     after a sync flush) and dispatches through the active worker's sinks
@@ -1094,9 +1164,9 @@ def flush_now() -> Path | None:
         # ``ci.trace()`` reads from it.
         return None
     # No active worker (atexit / short script) — fall back to the spool
-    # writer if one is present, or build an ad-hoc writer at ``.cirron/spool/``
-    # so trailing data from a profile-less run isn't lost.
-    writer = _writer if _writer is not None else SpoolWriter(Path("./.cirron/spool/"))
+    # writer if one is present, or build an ad-hoc writer against this run's
+    # resolved spool settings so trailing data isn't lost.
+    writer = _writer if _writer is not None else _fallback_writer()
     return writer.write(batch)
 
 

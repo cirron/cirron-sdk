@@ -21,14 +21,20 @@ from typing import Any
 import pytest
 
 import cirron as ci
+from cirron.core import flush as flush_mod
+from cirron.core.config import Cirron
 from cirron.core.flush import (
     DEFAULT_SPOOL_MAX_BYTES,
     SPOOL_SCHEMA_VERSION,
     Batch,
     FlushThread,
     SpoolWriter,
+    _fallback_writer,
     _safe_attrs,
     _Supervisor,
+    flush_now,
+    start_flush_thread,
+    stop_flush_thread,
 )
 from cirron.core.mark import MarkBuffer, get_default_mark_buffer
 from cirron.core.scope import ScopeStack, get_default_stack
@@ -918,3 +924,142 @@ def test_every_batch_assembly_site_substitutes_identically(tmp_path):
     assert len(buffered) == 1
     assert buffered[0]["value"] is None
     assert buffered[0]["value_nonfinite"] == "-inf"
+
+
+# flush_now()'s fallback writer after the flush thread is gone (issue #59).
+#
+# ``stop_flush_thread`` clears ``_writer``, and the atexit handler calls
+# ``flush_now()`` on every interpreter exit — including after an explicit
+# ``ci.shutdown()``. The ad-hoc writer that path builds used to be hardcoded
+# to ``./.cirron/spool/`` at the 1 GB default cap, so it wrote to an
+# unconfigured directory and could evict spool files the user configured a
+# larger cap to keep.
+
+
+@pytest.fixture
+def _clean_flush_state(monkeypatch, tmp_path):
+    """Isolate the module-level flush singletons and the process CWD."""
+    monkeypatch.chdir(tmp_path)
+    stop_flush_thread(timeout=2.0)
+    flush_mod._reset_for_tests()
+    get_default_stack().drain_closed_all()
+    get_default_mark_buffer().drain_all()
+    yield
+    stop_flush_thread(timeout=2.0)
+    flush_mod._reset_for_tests()
+    get_default_stack().drain_closed_all()
+    get_default_mark_buffer().drain_all()
+
+
+def _start_and_stop(tmp_path, **kwargs) -> Path:
+    """Run one flush-thread lifecycle and return the spool dir it used."""
+    start_flush_thread(Cirron(output_dir=str(tmp_path), flush_interval=60.0, **kwargs))
+    stop_flush_thread(timeout=2.0)
+    return tmp_path / "spool"
+
+
+def _medium_batch(i: int) -> Batch:
+    """~340 bytes on disk: fine-grained enough to land just under a 3 KB cap."""
+    return Batch(
+        batch_id=f"batch{i:02d}",
+        created_ns=1_700_000_000_000_000_000 + i,
+        spans=[{"id": "a", "name": "x" * 200}],
+        marks=[],
+    )
+
+
+def test_fallback_writer_keeps_configured_spool_dir(tmp_path, _clean_flush_state):
+    spool = _start_and_stop(tmp_path / "custom-out")
+
+    with ci.scope("after-shutdown"):
+        ci.mark("loss", 0.5)
+    path = flush_now()
+
+    assert path is not None
+    assert path.parent == spool
+    assert not (tmp_path / ".cirron").exists(), "wrote to the default dir, not the configured one"
+
+
+def test_fallback_writer_keeps_configured_cap(tmp_path, _clean_flush_state):
+    # A cap the user deliberately set *below* the default: if the fallback
+    # ignored it, nothing would be evicted at all.
+    spool = _start_and_stop(tmp_path / "out", spool_max_bytes=3_000)
+    prefill = SpoolWriter(spool, max_bytes=DEFAULT_SPOOL_MAX_BYTES)
+    for i in range(4):
+        prefill.write(_big_batch(i))
+    assert _on_disk(prefill) > 3_000
+
+    with ci.scope("after-shutdown"):
+        pass
+    path = flush_now()
+
+    assert path is not None and path.exists()
+    assert _on_disk(prefill) <= 3_000
+    remaining = {p.name for p in spool.glob("*.json")}
+    assert not any("batch00" in name for name in remaining), "oldest file was not evicted"
+
+
+def test_fallback_writer_reuses_settings_and_is_cached(tmp_path, _clean_flush_state):
+    spool = _start_and_stop(tmp_path / "out", spool_max_bytes=3_000)
+
+    writer = _fallback_writer()
+
+    assert writer.spool_dir == spool
+    assert writer.max_bytes == 3_000
+    # Cached: rebuilding per call would re-scan the whole directory.
+    assert _fallback_writer() is writer
+
+
+def test_fallback_writer_repoints_after_a_new_run(tmp_path, _clean_flush_state):
+    _start_and_stop(tmp_path / "first")
+    first = _fallback_writer()
+    second_spool = _start_and_stop(tmp_path / "second", spool_max_bytes=5_000)
+
+    writer = _fallback_writer()
+
+    assert writer is not first
+    assert writer.spool_dir == second_spool
+    assert writer.max_bytes == 5_000
+
+
+def test_fallback_writer_total_is_not_stale_across_a_lifecycle(tmp_path, _clean_flush_state):
+    """A writer cached before a run must not carry its seed scan past that
+    run's writes, or the first post-shutdown flush skips cap enforcement
+    while the directory is already sitting at the cap."""
+    out = tmp_path / "out"
+    _start_and_stop(out, spool_max_bytes=3_000)
+    with ci.scope("after-first-run"):
+        pass
+    flush_now()  # builds + caches the fallback writer against a near-empty dir
+
+    # Second lifecycle: its own writer fills the spool up to the cap.
+    start_flush_thread(Cirron(output_dir=str(out), flush_interval=60.0, spool_max_bytes=3_000))
+    live = flush_mod._writer
+    assert live is not None
+    for i in range(20):
+        live.write(_medium_batch(i))
+    stop_flush_thread(timeout=2.0)
+    # Precondition for the assertion below: the next batch has to be what
+    # tips the directory over the cap.
+    assert 2_500 < _on_disk(live) <= 3_000
+
+    with ci.scope("after-second-run"):
+        ci.mark("loss", 0.5)
+    flush_now()
+
+    assert _on_disk(live) <= 3_000, "cap enforced against a stale byte total"
+
+
+def test_fallback_writer_uses_defaults_when_never_started(tmp_path, _clean_flush_state):
+    # No start_flush_thread() in this process, so ./.cirron/spool at the
+    # default cap *is* the resolved configuration.
+    writer = _fallback_writer()
+    assert writer.spool_dir == Path("./.cirron/spool/")
+    assert writer.max_bytes == DEFAULT_SPOOL_MAX_BYTES
+
+    with ci.scope("profile-less"):
+        ci.mark("loss", 0.5)
+    path = flush_now()
+
+    assert path is not None
+    assert (tmp_path / ".cirron" / "spool" / path.name).exists()

@@ -825,6 +825,7 @@ def _reset_for_tests() -> None:
     """
     from cirron.core.blob_queue import _reset_default_for_tests as _reset_blob_queue
     from cirron.core.config import _reset_default_for_tests
+    from cirron.core.flush import _reset_for_tests as _reset_flush_for_tests
     from cirron.core.snapshot_buffer import _reset_default_for_tests as _reset_snapshot_buffer
     from cirron.core.trace_buffer import _reset_default_for_tests as _reset_trace_buffer
 
@@ -842,6 +843,7 @@ def _reset_for_tests() -> None:
         stop_flush_thread(timeout=2.0)
     except Exception as exc:
         swallowed("profiler.stop_flush_thread", exc)
+    _reset_flush_for_tests()
     try:
         get_default_stack().drain_closed_all()
         get_default_mark_buffer().drain_all()
