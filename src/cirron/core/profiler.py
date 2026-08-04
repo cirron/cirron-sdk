@@ -27,6 +27,7 @@ from cirron.core.flush import flush_now, start_flush_thread, stop_flush_thread
 from cirron.core.mark import get_default_mark_buffer, set_fallback_span_id
 from cirron.core.scope import Scope, get_default_stack
 from cirron.core.sinks import normalize_output
+from cirron.core.swallow import reset_swallow_counts, swallow_counts, swallowed
 from cirron.core.trace import trace as _trace_impl
 from cirron.core.trace_buffer import (
     _TraceBuffer,
@@ -87,8 +88,8 @@ def _populate_device_attrs(attrs: dict[str, Any]) -> None:
         attrs["device"] = "cuda"
         try:
             attrs["cuda_count"] = int(torch.cuda.device_count())
-        except Exception:
-            pass
+        except Exception as exc:
+            swallowed("profiler.cuda_device_count", exc)
     else:
         attrs["device"] = "cpu"
     # Autocast is per-call context, but the global default state ("are we
@@ -223,10 +224,14 @@ class Profiler:
 
         Returns:
             dict[str, Any]: Diagnostics map with ``enabled`` plus per-buffer
-                drop counts, spool stats, flush mode, transport class name,
-                installed hooks, and platform context. Each subreader is
-                wrapped in ``_safe`` so a transient internal error returns a
-                fallback value rather than propagating.
+                drop counts, swallowed-error counters, spool stats, flush
+                mode, transport class name, installed hooks, and platform
+                context. ``swallowed_errors`` maps each ``"module.function"``
+                context to how many internal errors it has dropped, and is
+                the first place to look when marks, tensors or spans are
+                missing for no visible reason. Each subreader is wrapped in
+                ``_safe`` so a transient internal error returns a fallback
+                value rather than propagating.
         """
         if not self._enabled:
             return {
@@ -234,6 +239,8 @@ class Profiler:
                 "scope_drop_count": 0,
                 "mark_drop_count": 0,
                 "spool_drop_count": 0,
+                "swallowed_error_count": 0,
+                "swallowed_errors": {},
                 "spool_dir": None,
                 "spool_bytes": 0,
                 "flush_mode": "stopped",
@@ -247,6 +254,8 @@ class Profiler:
             "scope_drop_count": _safe(lambda: get_default_stack().drop_count_all(), 0),
             "mark_drop_count": _safe(lambda: get_default_mark_buffer().drop_count_all(), 0),
             "spool_drop_count": _safe(_spool_drop_count, 0),
+            "swallowed_error_count": _safe(lambda: sum(swallow_counts().values()), 0),
+            "swallowed_errors": _safe(swallow_counts, {}),
             "spool_dir": _safe(_spool_dir_str, None),
             "spool_bytes": _safe(_spool_bytes, 0),
             "flush_mode": _safe(_flush_mode, "stopped"),
@@ -353,6 +362,11 @@ class Profiler:
                 self._transport.close()
             except Exception:
                 log.warning("cirron: transport.close failed", exc_info=True)
+        # Swallow counters are per-profiler-lifecycle, not per-process: a
+        # second ci.profile() in the same interpreter starts from zero
+        # rather than inheriting the previous run's tally. Runs last so
+        # every swallow above is counted before the reset.
+        reset_swallow_counts()
         with _profiler_lock:
             if _profiler is self:
                 _profiler = None
@@ -816,21 +830,24 @@ def _reset_for_tests() -> None:
     if active is not None:
         try:
             active.shutdown()
-        except Exception:
-            pass
+        except Exception as exc:
+            swallowed("profiler.shutdown_active", exc)
     with _profiler_lock:
         _profiler = None
     try:
         stop_flush_thread(timeout=2.0)
-    except Exception:
-        pass
+    except Exception as exc:
+        swallowed("profiler.stop_flush_thread", exc)
     try:
         get_default_stack().drain_closed_all()
         get_default_mark_buffer().drain_all()
-    except Exception:
-        pass
+    except Exception as exc:
+        swallowed("profiler.drain_buffers", exc)
     _watched_model_ref = None
     _watched_warning_emitted = False
+    # Last, so the three swallows above are still counted if a test wants
+    # to assert on them before the reset lands.
+    reset_swallow_counts()
     _reset_snapshot_buffer()
     _reset_blob_queue()
     _reset_trace_buffer()

@@ -34,6 +34,7 @@ from typing import Any
 from cirron.core.mark import MARK_KIND_SUMMARY
 from cirron.core.mark import mark as _mark
 from cirron.core.scope import _ctx_state, get_current_scope
+from cirron.core.swallow import swallowed
 
 
 def _safe_mark(name: str, value: float | int, **attrs: Any) -> None:
@@ -47,8 +48,8 @@ def _safe_mark(name: str, value: float | int, **attrs: Any) -> None:
     """
     try:
         _mark(name, value, kind=MARK_KIND_SUMMARY, **attrs)
-    except Exception:
-        pass
+    except Exception as exc:
+        swallowed("llm.safe_mark", exc)
 
 
 def _extract_usage(result: Any) -> dict[str, int] | None:
@@ -125,8 +126,8 @@ def maybe_mark_openai_usage(result: Any) -> None:
             total = prompt + completion
         if total is not None:
             _safe_mark("total_tokens", total, source="openai", normalized=True)
-    except Exception:
-        pass
+    except Exception as exc:
+        swallowed("llm.maybe_mark_openai_usage", exc)
 
 
 def _item_token_count(item: Any) -> int | None:
@@ -143,7 +144,8 @@ def _item_token_count(item: Any) -> int | None:
         usage = _extract_usage(item)
         if usage and "completion_tokens" in usage:
             return usage["completion_tokens"]
-    except Exception:
+    except Exception as exc:
+        swallowed("llm.completion_tokens", exc)
         return None
     return None
 
@@ -173,8 +175,8 @@ def _finalize_stream(count: int, start_ns: int, first_ns: int | None) -> None:
         post_ttft_s = max(1e-9, (end_ns - first_ns) / 1e9)
         _safe_mark("output_tokens", count, normalized=True)
         _safe_mark("tokens_per_second", count / post_ttft_s)
-    except Exception:
-        pass
+    except Exception as exc:
+        swallowed("llm.finalize_stream", exc)
 
 
 def _point_mark(name: str, value: float | int, **attrs: Any) -> None:
@@ -187,8 +189,8 @@ def _point_mark(name: str, value: float | int, **attrs: Any) -> None:
     """
     try:
         _mark(name, value, kind="point", **attrs)
-    except Exception:
-        pass
+    except Exception as exc:
+        swallowed("llm.point_mark", exc)
 
 
 def wrap_stream(
@@ -248,7 +250,8 @@ def _bind_state(state: Any) -> Any:
         return None
     try:
         return _ctx_state.set(state)
-    except Exception:
+    except Exception as exc:
+        swallowed("llm.bind_state", exc)
         return None
 
 
@@ -262,8 +265,8 @@ def _unbind_state(token: Any) -> None:
         return
     try:
         _ctx_state.reset(token)
-    except Exception:
-        pass
+    except Exception as exc:
+        swallowed("llm.unbind_state", exc)
 
 
 def _wrap_sync(
@@ -340,8 +343,8 @@ def _wrap_sync(
             if callable(close_inner):
                 try:
                     close_inner()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    swallowed("llm.stream_close_inner", exc)
             final_count = explicit_tokens if explicit_tokens is not None else count
             token = _bind_state(state)
             try:
@@ -349,8 +352,8 @@ def _wrap_sync(
                 if on_close is not None:
                     try:
                         on_close()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        swallowed("llm.stream_on_close", exc)
             finally:
                 _unbind_state(token)
 
@@ -429,8 +432,8 @@ def _wrap_async(
                     close_result = aclose()
                     if inspect.isawaitable(close_result):
                         await close_result
-                except Exception:
-                    pass
+                except Exception as exc:
+                    swallowed("llm.astream_close_inner", exc)
             final_count = explicit_tokens if explicit_tokens is not None else count
             token = _bind_state(state)
             try:
@@ -438,8 +441,8 @@ def _wrap_async(
                 if on_close is not None:
                     try:
                         on_close()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        swallowed("llm.astream_on_close", exc)
             finally:
                 _unbind_state(token)
 
@@ -487,7 +490,8 @@ def _input_length(args: tuple[Any, ...], kwargs: dict[str, Any]) -> int | None:
             return int(shape[-1])
         if hasattr(ids, "__len__"):
             return int(len(ids))
-    except Exception:
+    except Exception as exc:
+        swallowed("llm.input_length", exc)
         return None
     return None
 
@@ -517,7 +521,8 @@ def _output_length(result: Any) -> int | None:
             if hasattr(first, "__len__"):
                 return int(len(first))
             return int(len(seqs))
-    except Exception:
+    except Exception as exc:
+        swallowed("llm.output_length", exc)
         return None
     return None
 
@@ -545,6 +550,11 @@ def install_hf_generate_patch() -> bool:
     with _hf_lock:
         if _hf_patched:
             return True
+        # These two are capability probes, not failures: "is transformers
+        # installed, and does it still expose the symbol we patch?" A miss
+        # is the normal answer for most installs, so they deliberately do
+        # not route through swallowed() — counting them would report
+        # ordinary operation as an internal error.
         try:
             from transformers.generation import GenerationMixin  # type: ignore[import-not-found]
         except Exception:
@@ -582,8 +592,8 @@ def install_hf_generate_patch() -> bool:
                     input_len = _input_length(args, kwargs)
                     if input_len is not None:
                         _safe_mark("input_tokens", input_len, source="hf", normalized=True)
-            except Exception:
-                pass
+            except Exception as exc:
+                swallowed("llm.hf_generate_input", exc)
             result = original(self, *args, **kwargs)
             try:
                 if active:
@@ -607,21 +617,22 @@ def install_hf_generate_patch() -> bool:
                                 source="hf",
                                 normalized=True,
                             )
-            except Exception:
-                pass
+            except Exception as exc:
+                swallowed("llm.hf_generate_output", exc)
             return result
 
         try:
             GenerationMixin.generate = _wrapped  # type: ignore[assignment]
-        except Exception:
+        except Exception as exc:
+            swallowed("llm.hf_generate_patch", exc)
             return False
 
         def _undo() -> None:
             """Restore the original ``GenerationMixin.generate``."""
             try:
                 GenerationMixin.generate = original  # type: ignore[assignment]
-            except Exception:
-                pass
+            except Exception as exc:
+                swallowed("llm.hf_generate_undo", exc)
 
         _hf_undo = _undo
         _hf_patched = True
