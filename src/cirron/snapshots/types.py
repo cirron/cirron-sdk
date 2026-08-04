@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from cirron.core.json import _safe_attrs, stats_to_wire
+
 
 @dataclass(slots=True)
 class TraceSnapshot:
@@ -37,6 +39,15 @@ class TraceSnapshot:
 def snapshot_to_dict(s: TraceSnapshot) -> dict[str, Any]:
     """Serialize a ``TraceSnapshot`` to a JSON-friendly dict.
 
+    A diverged model produces non-finite statistics, which ``json.dumps``
+    writes as the bare tokens ``NaN`` / ``Infinity``. Those are not valid
+    JSON, and one of them costs the whole batch, so ``stats`` goes through
+    :func:`~cirron.core.json.stats_to_wire`. ``attrs`` goes through
+    :func:`~cirron.core.json._safe_attrs` for the same reason, which also
+    subsumes the defensive copy this used to make: snapshot attrs are
+    SDK-produced and empty today, and the record is discarded right after
+    serialization.
+
     Args:
         s (TraceSnapshot): The record to serialize.
 
@@ -50,8 +61,8 @@ def snapshot_to_dict(s: TraceSnapshot) -> dict[str, Any]:
         "shape": list(s.shape),
         "dtype": s.dtype,
         "mode": s.mode,
-        "stats": s.stats,
+        "stats": stats_to_wire(s.stats),
         "blob_uri": s.blob_uri,
         "ts_ns": s.ts_ns,
-        "attrs": dict(s.attrs),
+        "attrs": _safe_attrs(s.attrs),
     }
