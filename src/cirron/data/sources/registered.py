@@ -228,8 +228,7 @@ class RegisteredDataset:
         return {"objects": all_normalized, "total_size_bytes": total}
 
     def _platform_filter_params(self) -> dict[str, str]:
-        """Translate the request's ``MatchConfig`` into platform-route
-        query params.
+        """Translate the request's ``MatchConfig`` into query params.
 
         The platform route accepts ``match`` (single glob), ``ext``
         (comma-separated), and ``prefix``. ``path`` + ``filename_glob``
@@ -257,8 +256,9 @@ class RegisteredDataset:
         return params
 
     def _has_post_filter(self) -> bool:
-        """True when we must re-filter the platform's response locally —
-        only ``filename_regex`` qualifies; the glob / path / extension
+        """Return ``True`` when the platform's response needs a local re-filter.
+
+        Only ``filename_regex`` qualifies; the glob / path / extension
         filters are already applied server-side.
 
         Returns:
@@ -540,13 +540,13 @@ class PlatformBucketSource(DataSource):
             ) from e
 
     def _resolve_dest(self, tempdir: Path, key: str) -> Path:
-        """Map an object key to a path under ``tempdir`` that preserves
-        its directory structure while rejecting path-traversal tricks.
+        """Map an object key to a path under ``tempdir``.
 
-        Downstream loaders may use the directory layout as semantics
-        (``year=2025/month=01/...``), so we can't flatten; but a
-        platform-returned key like ``../../etc/passwd`` must not
-        materialize outside the tempdir.
+        The mapping preserves the key's directory structure while
+        rejecting path-traversal tricks. Downstream loaders may use the
+        directory layout as semantics (``year=2025/month=01/...``), so we
+        can't flatten; but a platform-returned key like
+        ``../../etc/passwd`` must not materialize outside the tempdir.
 
         Args:
             tempdir (Path): The per-call download root.

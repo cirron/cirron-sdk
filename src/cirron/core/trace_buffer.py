@@ -96,12 +96,12 @@ class _TraceBuffer:
             self._evict_locked()
 
     def _cap_marks_locked(self, bucket: list[dict[str, Any]]) -> None:
-        """Bound the per-span mark list. Keeps every ``summary`` mark
-        (the canonical end-of-span value) and the newest
-        ``_max_marks_per_span`` ``point`` marks. Prevents unbounded
-        growth on long-lived open spans whose ``span_id`` never appears
-        in ``self._spans`` and therefore can't be evicted by the
-        span-count cap.
+        """Bound the per-span mark list.
+
+        Keeps every ``summary`` mark (the canonical end-of-span value) and the
+        newest ``_max_marks_per_span`` ``point`` marks. Prevents unbounded
+        growth on long-lived open spans whose ``span_id`` never appears in
+        ``self._spans`` and therefore can't be evicted by the span-count cap.
 
         Args:
             bucket (list[dict[str, Any]]): The per-span mark list to
@@ -176,9 +176,10 @@ def get_default_trace_buffer() -> _TraceBuffer:
 
 
 def set_default_trace_buffer(buffer: _TraceBuffer | None) -> None:
-    """Replace (or clear) the default buffer. Used by ``Profiler`` setup
-    so the buffer's bound matches the user's ``trace_buffer_max_spans``
-    config, and by tests.
+    """Replace (or clear) the default buffer.
+
+    Used by ``Profiler`` setup so the buffer's bound matches the user's
+    ``trace_buffer_max_spans`` config, and by tests.
 
     Args:
         buffer (_TraceBuffer | None): The new singleton, or ``None`` to

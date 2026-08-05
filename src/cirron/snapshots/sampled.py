@@ -89,10 +89,11 @@ def serialize_and_enqueue(
     mode: str,
     records: list[TraceSnapshot],
 ) -> None:
-    """Serialize ``named_tensors`` for ``span_id``, enqueue the upload, and
-    upgrade the matching stats records in place.
+    """Serialize ``named_tensors``, enqueue the upload, and upgrade the records.
 
-    No-op when ``named_tensors`` is empty or serialization fails — the
+    The upgrade applies in place to the stats records matching ``span_id``.
+
+    No-op when ``named_tensors`` is empty or serialization fails: the
     records stay as ``mode="stats"`` so the epoch still produces useful
     summary data even if the blob write failed.
 

@@ -174,6 +174,7 @@ def trace(
     last: int | None = None,
 ) -> _TraceTreeRepr | dict[str, Any] | str | pd.DataFrame | None:
     """Return the current session's scope tree.
+
     * ``format="tree"`` (default) — pretty text tree. In Jupyter returns
     a :class:`_TraceTreeRepr` so the cell renders the tree; in a
     plain script prints to stdout and returns ``None``.

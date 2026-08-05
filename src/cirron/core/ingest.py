@@ -395,8 +395,10 @@ class IngestClient:
 
     @staticmethod
     def _parse_blob_response(resp: Any, fallback_url: str) -> str:
-        """Prefer a ``Location`` header or trimmed response body; fall back
-        to the URL we PUT to so the record always has *some* pointer.
+        """Resolve the remote URI of an uploaded blob from its response.
+
+        Prefer a ``Location`` header or trimmed response body; fall back to
+        the URL we PUT to so the record always has *some* pointer.
 
         Args:
             resp (Any): The ``requests`` response.

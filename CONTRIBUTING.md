@@ -228,7 +228,7 @@ A minimum viable integration (autodetect + install hook + `epoch`/`step` scopes 
 ## Style guidelines
 
 - **Code style.** We use `ruff` for lint and format, and `mypy` for type checking. Run all three before submitting (commands in [Getting set up](#getting-set-up)). CI will fail otherwise.
-- **Comments.** Write the *why*, not the *what*. If a comment just restates the code, delete it. Keep one-line comments where the code's intent isn't obvious from naming.
+- **Comments and docstrings.** See [docs/style-guide.md](docs/style-guide.md) — Google [§3.8](https://google.github.io/styleguide/pyguide.html#38-comments-and-docstrings), enforced by `ruff`'s `D` rules. The short version: write the *why*, cap comment blocks at four lines, and don't repeat a type the annotation already carries.
 - **Type hints.** All public functions are typed. We run `mypy` with `ignore_missing_imports=true`. The SDK wraps pandas/polars/torch, all `Any` under mypy, so we can't be stricter without ergonomic damage.
 - **Errors.** Use the `CirronError` hierarchy in `cirron/core/errors.py`. Add a new subclass when the failure mode is something a caller might programmatically catch; raise `ValueError` / `TypeError` for caller bugs. Missing optional dependencies have their own rule — see [Missing-dependency errors](#missing-dependency-errors).
 - **Imports.** PEP 604 unions (`X | Y`), PEP 585 generics (`list[X]`). `ruff` enforces both.

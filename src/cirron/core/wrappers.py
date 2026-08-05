@@ -25,9 +25,10 @@ _torch_checked = False
 
 
 def _get_dataloader_cls() -> Any:
-    """Resolve ``torch.utils.data.DataLoader`` lazily, or ``None`` if torch
-    isn't installed. Cached so the per-call cost of ``ci.batches()`` is a
-    single module-global read on the hot path.
+    """Resolve ``torch.utils.data.DataLoader`` lazily.
+
+    Resolves to ``None`` if torch isn't installed. Cached so the per-call cost
+    of ``ci.batches()`` is a single module-global read on the hot path.
 
     Returns:
         Any: The ``DataLoader`` class, or ``None`` when torch isn't
@@ -108,8 +109,10 @@ def batches(iterable: Iterable[T]) -> Iterator[T]:
 
 
 def _batches_with_stall(loader: Iterable[T]) -> Iterator[T]:
-    """Drive a DataLoader manually so we can time ``__next__`` as the data-load
-    phase and record it on the batch span.
+    """Drive a DataLoader manually so ``__next__`` can be timed.
+
+    The time spent inside ``__next__`` is the data-load phase, and it is
+    recorded on the batch span.
 
     Args:
         loader (Iterable[T]): A ``DataLoader`` (or any iterable whose

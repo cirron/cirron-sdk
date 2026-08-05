@@ -93,7 +93,7 @@ def load(
     confirm_large: bool = False,
     cirron: Cirron | None = None,
 ) -> Any:
-    """Loads data from local disk, the Cirron platform, or an external URI.
+    """Load data from local disk, the Cirron platform, or an external URI.
 
     Args:
         name (str | list[str]): Dataset name, scheme URI (``s3://``,
@@ -217,8 +217,9 @@ def _build_request(
     batch_size: int,
     confirm_large: bool,
 ) -> LoadRequest:
-    """Normalize one positional ``name`` plus the call kwargs into a
-    :class:`LoadRequest`.
+    """Normalize one positional ``name`` plus the call kwargs.
+
+    The result is a :class:`LoadRequest`.
 
     Args:
         name (str): One element from the dispatcher's ``name`` argument.

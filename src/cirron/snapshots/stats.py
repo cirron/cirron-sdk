@@ -86,9 +86,10 @@ def _get_stats_pool() -> ThreadPoolExecutor:
 
 
 def _is_torch_tensor(tensor: Any) -> bool:
-    """Cheap ``isinstance(tensor, torch.Tensor)`` without importing torch
-    when it isn't already loaded. ``type(x).__module__`` is a zero-cost
-    attribute lookup — the full isinstance check would force us to have
+    """Test for a torch tensor without importing torch when it isn't loaded.
+
+    ``type(x).__module__`` is a zero-cost attribute lookup, whereas the full
+    ``isinstance(tensor, torch.Tensor)`` check would force us to have
     ``torch`` imported.
 
     Args:
@@ -229,14 +230,14 @@ def _histogram_range(lo: float, hi: float) -> tuple[float, float] | None:
 
 
 def _tensor_stats_torch(tensor: Any) -> dict[str, Any]:
-    """Computes tensor statistics with native reductions and ``torch.histc``.
+    """Compute tensor statistics with native reductions and ``torch.histc``.
 
     Staying on-device avoids the host-side copy the NumPy path requires.
     Three fusion moves vs. the naive implementation:
 
     1. ``torch.aminmax`` returns (min, max) in one pass.
     2. The L2 ``norm`` is derived algebraically from ``mean`` / ``std`` /
-       ``N`` rather than via a second reduction pass — mathematically
+       ``N`` rather than via a second reduction pass. Mathematically
        identical to a direct ``vector_norm``, but last-ULP float values
        will differ.
     3. The four scalar reductions are materialized in a *single*
@@ -318,9 +319,11 @@ def _tensor_stats_torch(tensor: Any) -> dict[str, Any]:
 
 
 def _tensor_stats_numpy(arr: Any) -> dict[str, Any]:
-    """Shared NumPy reduction kernel. Used by both the direct-numpy path
-    (Keras weights, generic array-likes) and the CPU-tensor fast path
-    from :func:`_tensor_stats_torch`.
+    """Shared NumPy reduction kernel.
+
+    Reached through :func:`_tensor_stats` for the direct-numpy path (Keras
+    weights, generic array-likes), and as the fallback in
+    :func:`_compute_stats` when the torch fast path raises.
 
     Args:
         arr (Any): A ``numpy.ndarray`` (any shape; dtype coerced to
@@ -372,8 +375,10 @@ def _tensor_stats_numpy(arr: Any) -> dict[str, Any]:
 
 
 def _tensor_stats(arr: Any) -> dict[str, Any]:
-    """Compute the six statistics from a numpy array (Keras / generic
-    array-like path). Thin alias over :func:`_tensor_stats_numpy`.
+    """Compute the six statistics from a numpy array.
+
+    Thin alias over :func:`_tensor_stats_numpy` for the Keras / generic
+    array-like path.
 
     Args:
         arr (Any): A numpy array (or array-like).
@@ -492,10 +497,12 @@ def _make_records_parallel(
     ts_ns: int,
     name_fmt: str = "{name}",
 ) -> list[TraceSnapshot]:
-    """Compute records across ``items`` in parallel for models large enough
-    to amortize the thread-pool setup cost. Torch reductions release the
-    GIL inside ``.item()`` / ``.tolist()``, so overlapping the per-tensor
-    work halves wall time on ResNet50-scale models.
+    """Compute records across ``items`` in parallel on a shared thread pool.
+
+    Used for models large enough to amortize the thread-pool setup cost.
+    Torch reductions release the GIL inside ``.item()`` / ``.tolist()``, so
+    overlapping the per-tensor work halves wall time on ResNet50-scale
+    models.
 
     Args:
         items (list[tuple[str, Any]]): Named tensors.

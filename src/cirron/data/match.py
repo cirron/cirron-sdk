@@ -159,9 +159,10 @@ def _normalize_extensions(raw: Any) -> tuple[str, ...]:
 
 
 def _normalize_columns(raw: Any) -> tuple[str, ...]:
-    """Accept a list/tuple of column names. Reject a bare string — which
-    would iterate character-by-character and silently turn ``"abc"`` into
-    three "columns" a/b/c.
+    """Accept a list or tuple of column names, and reject a bare string.
+
+    A bare string would iterate character-by-character and silently turn
+    ``"abc"`` into three "columns" a/b/c.
 
     Args:
         raw (Any): The user-supplied column collection.

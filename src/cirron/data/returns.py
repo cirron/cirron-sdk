@@ -164,8 +164,10 @@ class DataAdapter(ABC):
             ) from e
 
     def _to_pandas_for_conversion(self) -> Any:
-        """Wrap ``to_pandas`` so a missing pandas install becomes
-        ``CirronDependencyError`` at the conversion boundary.
+        """Wrap ``to_pandas`` so a missing pandas install fails cleanly.
+
+        The failure surfaces as ``CirronDependencyError`` at the
+        conversion boundary.
 
         Returns:
             Any: The pandas DataFrame returned by ``to_pandas``.
@@ -183,7 +185,7 @@ class DataAdapter(ABC):
     def to_iter(
         self, batch_size: int = 10_000
     ) -> Iterator[dict[str, Any]] | Iterator[list[dict[str, Any]]]:
-        """Yields rows as dicts, singly or in batches.
+        """Yield rows as dicts, singly or in batches.
 
         ``batch_size <= 1`` yields a stream of single-row dicts. Any
         larger value yields a stream of batches, each a ``list[dict]`` of

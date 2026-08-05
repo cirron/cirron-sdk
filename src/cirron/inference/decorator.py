@@ -39,11 +39,12 @@ from cirron.inference.llm import (
 
 
 def _make_stream_closer(stack: ScopeStack, opened: Any) -> Callable[[], None]:
-    """Return an idempotent closer that closes ``opened`` when the stream
-    wrapper is exhausted / GC'd. ``isolated_state`` cleanup is *not*
-    routed through here — the decorator always exits the context manager
-    synchronously so the caller's ContextVar is never left bound across
-    stream consumption.
+    """Return an idempotent closer that closes ``opened`` on stream exhaustion.
+
+    The closer also fires when the stream wrapper is garbage collected.
+    ``isolated_state`` cleanup is *not* routed through here: the decorator
+    always exits the context manager synchronously so the caller's ContextVar
+    is never left bound across stream consumption.
 
     Args:
         stack (ScopeStack): The scope stack the request span lives on.
@@ -77,9 +78,10 @@ def _finish_call(
     result: Any,
     cfg: dict[str, Any],
 ) -> tuple[Any, bool]:
-    """Run post-call detectors and decide whether the caller should still
-    pop the scope. Returns ``(final_result, transferred)`` where
-    ``transferred`` means the stream wrapper now owns scope closure.
+    """Run post-call detectors and decide whether the caller still pops the scope.
+
+    Return ``(final_result, transferred)`` where ``transferred`` means the
+    stream wrapper now owns scope closure.
 
     Args:
         stack (ScopeStack): The scope stack the request span lives on.

@@ -73,10 +73,11 @@ _process_time_ns = time.process_time_ns
 
 
 class Scope:
-    """A single span in the scope tree. Shape mirrors the platform
-    ``TraceSpan`` model; fields the SDK hasn't populated yet
-    (``gpu_ns``, ``memory_peak_bytes``) stay ``None`` until framework hooks
-    fill them in.
+    """A single span in the scope tree.
+
+    Shape mirrors the platform ``TraceSpan`` model; fields the SDK hasn't
+    populated yet (``gpu_ns``, ``memory_peak_bytes``) stay ``None`` until
+    framework hooks fill them in.
 
     Hand-rolled (not a ``@dataclass``) because ``dataclass.__init__``'s
     kwargs-unpacking + per-field assignment adds ~300–800 ns per push on
@@ -114,7 +115,7 @@ class Scope:
 
     def __init__(
         self,
-        id: str,
+        id: str,  # noqa: A002
         name: str,
         index: int | None,
         attrs: dict[str, Any],
@@ -150,9 +151,11 @@ class Scope:
 
 
 class _ScopeState:
-    """Per-thread scope state. Plain object (not ``threading.local``) so it
-    can be registered in a cross-thread weak registry — one distinct
-    instance per thread."""
+    """Per-thread scope state.
+
+    Plain object (not ``threading.local``) so it can be registered in a
+    cross-thread weak registry, with one distinct instance per thread.
+    """
 
     __slots__ = (
         "stack",
@@ -420,9 +423,11 @@ class ScopeStack:
         return len(self._state.stack)
 
     def drain_closed(self) -> list[Scope]:
-        """Drain *this thread's* closed scopes. Safe to call from the
-        producer thread only — use :meth:`drain_closed_all` from a
-        consumer thread (e.g., the flush thread).
+        """Drain *this thread's* closed scopes.
+
+        Safe to call from the producer thread only; use
+        :meth:`drain_closed_all` from a consumer thread (e.g., the flush
+        thread).
 
         Returns:
             list[Scope]: Snapshot of the per-thread closed deque; the
@@ -555,14 +560,14 @@ class ScopeStack:
         closed.append(scope_obj)
 
     def close_and_remove(self, scope_obj: Scope) -> None:
-        """Close ``scope_obj`` and surgically remove it from its owning
-        thread's stack, without disturbing scopes above or below it.
+        """Close ``scope_obj`` and remove it from its owning thread's stack.
 
-        Same-thread callers get the full surgical semantics: the scope
-        comes off the stack list so future ``push()``es won't nest under
-        it, and any scope sitting on top of it in the stack stays open.
-        Cross-thread callers fall back to :meth:`close_scope` — we can't
-        safely mutate another thread's stack list.
+        The removal is surgical: scopes above and below it are left
+        undisturbed. Same-thread callers get the full surgical semantics, in
+        that the scope comes off the stack list so future ``push()``es won't
+        nest under it, and any scope sitting on top of it in the stack stays
+        open. Cross-thread callers fall back to :meth:`close_scope`, since we
+        can't safely mutate another thread's stack list.
 
         Framework hooks use this to rotate long-lived internal spans
         (``epoch``, ``step``) without popping user scopes that happen to
@@ -675,14 +680,14 @@ class ScopeStack:
 
     @contextmanager
     def isolated_state(self, key: str) -> Iterator[_ScopeState]:
-        """Enter a fresh per-context ``_ScopeState`` for the duration of the
-        ``with`` block.
+        """Enter a fresh per-context ``_ScopeState`` for the ``with`` block.
 
-        The new state is bound to a ``ContextVar`` so ``asyncio`` tasks (and
-        threads that inherit the context) see it instead of their thread-local
-        default. The state is also registered under a synthetic ``f"req-{key}"``
-        entry in ``self._states`` so the flush thread's ``drain_closed_all``
-        still drains its closed-scope deque.
+        The new state is in force for the duration of the block, and is bound
+        to a ``ContextVar`` so ``asyncio`` tasks (and threads that inherit the
+        context) see it instead of their thread-local default. The state is
+        also registered under a synthetic ``f"req-{key}"`` entry in
+        ``self._states`` so the flush thread's ``drain_closed_all`` still
+        drains its closed-scope deque.
 
         On exit the ContextVar token is reset; if the state left no residual
         open or closed scopes the registry entry is cleaned up to cap memory
@@ -754,9 +759,11 @@ def get_current_scope() -> Scope | None:
 
 
 def get_default_stack() -> ScopeStack:
-    """Accessor for the process-wide default stack. Mostly here so the
-    flush thread has a stable entry point; tests can also import this to
-    drain closed scopes without going through the module-level API.
+    """Accessor for the process-wide default stack.
+
+    Mostly here so the flush thread has a stable entry point; tests can also
+    import this to drain closed scopes without going through the module-level
+    API.
 
     Returns:
         ScopeStack: The module-level ``_default_stack`` instance.

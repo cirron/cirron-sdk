@@ -232,7 +232,8 @@ _ENV_MAP: dict[str, str] = {
 }
 
 # Size tiers for ``ci.load()``: warn above warn_bytes, raise above max_bytes
-# unless ``confirm_large=True``. Users on laptops should not accidentally pull a 500 GB bucket.
+# unless ``confirm_large=True``. Users on laptops should not
+# accidentally pull a 500 GB bucket.
 DEFAULT_LOAD_WARN_BYTES = 1_000_000_000  # 1 GB
 DEFAULT_LOAD_MAX_BYTES = 10_000_000_000  # 10 GB
 

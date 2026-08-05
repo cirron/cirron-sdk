@@ -64,10 +64,12 @@ class OutputSink(Protocol):
 
 
 class SpoolSink:
-    """Writes the JSON batch to ``./.cirron/spool/`` via the existing
-    :class:`SpoolWriter`. Pulled out of ``FlushThread._tick_body`` so
-    the sink iteration is uniform and ``output="none"`` can disable
-    spool writes without special-casing the writer."""
+    """Writes the JSON batch to ``./.cirron/spool/`` via :class:`SpoolWriter`.
+
+    Pulled out of ``FlushThread._tick_body`` so the sink iteration is uniform
+    and ``output="none"`` can disable spool writes without special-casing the
+    writer.
+    """
 
     name = "spool"
 

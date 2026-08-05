@@ -94,9 +94,10 @@ class LocalDataSource(DataSource):
         return self._load_file(path, fmt)
 
     def _load_filtered(self, root: Path, match_cfg: MatchConfig) -> Any:
-        """Walk ``root`` recursively and concat files that satisfy
-        ``match_cfg``. Uses POSIX-style relative paths for matching so
-        the user-facing glob is the same on every OS.
+        """Walk ``root`` recursively and concat the files matching ``match_cfg``.
+
+        Matching uses POSIX-style relative paths so the user-facing glob
+        is the same on every OS.
 
         Args:
             root (Path): Directory to walk recursively.

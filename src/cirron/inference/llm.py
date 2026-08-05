@@ -38,8 +38,9 @@ from cirron.core.swallow import swallowed
 
 
 def _safe_mark(name: str, value: float | int, **attrs: Any) -> None:
-    """Emit a summary mark; swallow any exception so detection failures
-    never propagate to user code.
+    """Emit a summary mark and swallow any exception it raises.
+
+    Detection failures never propagate to user code.
 
     Args:
         name (str): Mark name.
@@ -53,9 +54,11 @@ def _safe_mark(name: str, value: float | int, **attrs: Any) -> None:
 
 
 def _extract_usage(result: Any) -> dict[str, int] | None:
-    """Return ``{prompt_tokens, completion_tokens, total_tokens}`` when
-    ``result`` exposes them OpenAI-style, else ``None``. Tolerant of
-    attr-style objects and dict payloads.
+    """Return OpenAI-style usage token counts from ``result``, or ``None``.
+
+    Recognize ``{prompt_tokens, completion_tokens, total_tokens}`` when
+    ``result`` exposes them OpenAI-style. Tolerant of attr-style objects and
+    dict payloads.
 
     Args:
         result (Any): The provider response (dict or object).
@@ -131,8 +134,9 @@ def maybe_mark_openai_usage(result: Any) -> None:
 
 
 def _item_token_count(item: Any) -> int | None:
-    """Best-effort token count from a single streamed chunk (OpenAI
-    streaming chunks carry ``.usage`` on the terminal event).
+    """Return a best-effort token count from a single streamed chunk.
+
+    OpenAI streaming chunks carry ``.usage`` on the terminal event.
 
     Args:
         item (Any): One yielded chunk from the stream.
@@ -200,10 +204,12 @@ def wrap_stream(
     on_close: Callable[[], None] | None = None,
     chunk_timing: bool = False,
 ) -> Any:
-    """If ``result`` is a sync or async generator, return a wrapper that
-    records TTFT + throughput marks and invokes ``on_close`` exactly once
-    when the wrapper is exhausted / closed. Otherwise return ``result``
-    unchanged and do not consume ``on_close``.
+    """Wrap ``result`` in a TTFT / throughput recorder when it is a generator.
+
+    If ``result`` is a sync or async generator, return a wrapper that records
+    TTFT + throughput marks and invokes ``on_close`` exactly once when the
+    wrapper is exhausted / closed. Otherwise return ``result`` unchanged and
+    do not consume ``on_close``.
 
     ``state`` is the per-request ``_ScopeState`` from ``isolated_state``
     (or ``None``). When provided, the wrapper re-binds the ContextVar
@@ -236,9 +242,10 @@ def wrap_stream(
 
 
 def _bind_state(state: Any) -> Any:
-    """Return a reset-token for ``_ctx_state`` pointing at ``state``; the
-    caller must pass the returned token to ``_ctx_state.reset``. Returns
-    ``None`` when ``state`` is ``None`` or binding fails.
+    """Return a reset-token for ``_ctx_state`` pointing at ``state``.
+
+    The caller must pass the returned token to ``_ctx_state.reset``. The
+    result is ``None`` when ``state`` is ``None`` or binding fails.
 
     Args:
         state (Any): Per-request ``_ScopeState`` to bind, or ``None``.
@@ -497,8 +504,10 @@ def _input_length(args: tuple[Any, ...], kwargs: dict[str, Any]) -> int | None:
 
 
 def _output_length(result: Any) -> int | None:
-    """Best-effort: recover output sequence length from ``generate``'s
-    return value.
+    """Recover the output sequence length from ``generate``'s return value.
+
+    Best-effort: the recovery tolerates both ``GenerateOutput`` objects and
+    plain sequence containers.
 
     Args:
         result (Any): Whatever ``GenerationMixin.generate`` returned.

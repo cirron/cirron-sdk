@@ -1,3 +1,10 @@
+"""Pydantic models for the ``cirron.yaml`` schema.
+
+These are the parsed shape of the file, not the resolved config. The layered
+resolver in :mod:`cirron.core.config` merges them with env vars and
+constructor kwargs.
+"""
+
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field

@@ -60,7 +60,7 @@ def _validate_name(name: str) -> None:
 
 
 def secret(name: str) -> str:
-    """Resolve a named secret via env var, then file-mount fallback.
+    r"""Resolve a named secret via env var, then file-mount fallback.
 
     Resolution order is ``CIRRON_SECRET_<NAME>`` env var → file under
     ``/etc/cirron/secrets/<name>`` → raise. The returned value is never

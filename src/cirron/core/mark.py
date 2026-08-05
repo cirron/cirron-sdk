@@ -35,10 +35,11 @@ _fallback_span_id: str | None = None
 
 
 def set_fallback_span_id(span_id: str | None) -> None:
-    """Set (or clear with ``None``) the span id that ``mark()`` uses when
-    no scope is open on the current thread. Called by ``ci.profile()``
-    with the session root scope's id at startup, and with ``None`` at
-    shutdown.
+    """Set the span id that ``mark()`` uses when no scope is open.
+
+    Applies to the current thread, and clears the fallback when passed
+    ``None``. Called by ``ci.profile()`` with the session root scope's id at
+    startup, and with ``None`` at shutdown.
 
     Args:
         span_id (str | None): Session root scope id, or ``None`` to
@@ -67,8 +68,9 @@ _VALID_KINDS = frozenset({MARK_KIND_POINT, MARK_KIND_SUMMARY})
 
 
 class Mark:
-    """A single scalar value attached to a span. Shape mirrors the
-    platform ``TraceMark`` model.
+    """A single scalar value attached to a span.
+
+    Shape mirrors the platform ``TraceMark`` model.
 
     ``kind`` distinguishes a time-series point from a canonical summary
     value for the span: per-step losses use ``"point"``; end-of-epoch
@@ -93,7 +95,7 @@ class Mark:
 
     def __init__(
         self,
-        id: str,
+        id: str,  # noqa: A002
         span_id: str,
         name: str,
         value_type: str,
@@ -117,9 +119,11 @@ class Mark:
 
 
 class _MarkState:
-    """Per-thread mark state. One distinct instance per thread, held both
-    in a ``threading.local`` fast-path cache and in the owning buffer's
-    registry so cross-thread draining can enumerate every producer.
+    """Per-thread mark state.
+
+    One distinct instance per thread, held both in a ``threading.local``
+    fast-path cache and in the owning buffer's registry so cross-thread
+    draining can enumerate every producer.
 
     Constructor parameter ``capacity`` is the ``deque`` ``maxlen`` so
     overflow drops oldest in O(1).
@@ -134,12 +138,13 @@ class _MarkState:
 
 
 class MarkBuffer:
-    """Thread-local ring buffer. A single ``MarkBuffer`` instance is
-    shared across threads; each thread gets its own ``_MarkState`` via a
-    ``threading.local`` cache. ``deque(maxlen=capacity)`` gives lock-free
-    drop-oldest when full. A shadow dict of every thread's state lets a
-    consumer (the flush thread) enumerate all producers via
-    ``drain_all()``.
+    """Thread-local ring buffer of marks.
+
+    A single ``MarkBuffer`` instance is shared across threads; each thread
+    gets its own ``_MarkState`` via a ``threading.local`` cache.
+    ``deque(maxlen=capacity)`` gives lock-free drop-oldest when full. A
+    shadow dict of every thread's state lets a consumer (the flush thread)
+    enumerate all producers via ``drain_all()``.
 
     Constructor parameters: ``capacity`` (``int``) sets the per-thread
     ring depth; ``wake_event`` (``threading.Event | None``) is poked
@@ -235,10 +240,11 @@ class MarkBuffer:
         return list(old)
 
     def drain_all(self) -> list[Mark]:
-        """Drain marks across every producer thread. Safe from any thread —
-        ``deque.popleft`` is atomic under the GIL, so a concurrent producer
-        append is not lost (it lands in the same deque and is picked up on
-        the next call).
+        """Drain marks across every producer thread.
+
+        Safe from any thread: ``deque.popleft`` is atomic under the GIL, so a
+        concurrent producer append is not lost (it lands in the same deque and
+        is picked up on the next call).
 
         Returns:
             list[Mark]: All marks drained from every producer thread.
@@ -273,8 +279,9 @@ class MarkBuffer:
         return self._state.drop_count
 
     def drop_count_all(self) -> int:
-        """Sum drop counts across every producer thread. See
-        ``ScopeStack.drop_count_all`` for rationale.
+        """Sum drop counts across every producer thread.
+
+        See ``ScopeStack.drop_count_all`` for rationale.
 
         Returns:
             int: Process-wide cumulative mark drops.
@@ -316,9 +323,10 @@ _default_buffer_capacity = _default_buffer._capacity
 
 
 def _get_default_mark_state() -> _MarkState:
-    """Cold path for the inlined ``mark()`` append — called once per
-    producer thread to create and register a ``_MarkState``. Kept out
-    of ``mark()`` so the hot path stays small.
+    """Cold path for the inlined ``mark()`` append.
+
+    Called once per producer thread to create and register a ``_MarkState``.
+    Kept out of ``mark()`` so the hot path stays small.
 
     Returns:
         _MarkState: The newly-created (or already-cached) per-thread
@@ -340,8 +348,9 @@ _urandom = os.urandom
 
 
 def get_default_mark_buffer() -> MarkBuffer:
-    """Accessor for the process-wide default mark buffer. The flush
-    thread uses this to drain marks; tests use it to inspect state
+    """Accessor for the process-wide default mark buffer.
+
+    The flush thread uses this to drain marks; tests use it to inspect state
     without going through the module-level ``mark()`` API.
 
     Returns:
@@ -357,8 +366,7 @@ def mark(
     kind: str = MARK_KIND_POINT,
     **attrs: Any,
 ) -> None:
-    """Attach a scalar value to the innermost open scope on the current
-    thread.
+    """Attach a scalar value to the innermost open scope on the current thread.
 
     ``kind`` is ``"point"`` (a time-series data point logged inside the
     span, the default) or ``"summary"`` (a canonical end-of-span value,

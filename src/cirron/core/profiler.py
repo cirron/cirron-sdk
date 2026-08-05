@@ -102,8 +102,10 @@ def _populate_device_attrs(attrs: dict[str, Any]) -> None:
 
 
 def _rank_from_env() -> int:
-    """Same logic as ``scope._resolve_rank`` — duplicated here so we don't
-    depend on a private import from a sibling module.
+    """Resolve the distributed rank from the environment.
+
+    Same logic as ``scope._resolve_rank``, duplicated here so we don't depend
+    on a private import from a sibling module.
 
     Returns:
         int: Distributed rank parsed from ``RANK`` or ``LOCAL_RANK``;
@@ -313,13 +315,12 @@ class Profiler:
         return _trace_impl(format=format, name=name, last=last)
 
     def shutdown(self) -> None:
-        """Close the root scope, flush, stop the flush thread, clear the
-        singleton. Idempotent.
+        """Close the root scope, flush, stop the flush thread, clear the singleton.
 
-        Hook uninstalls run in reverse install order so layered installs
-        (e.g. transformers stacked on top of torch) unwind cleanly. Per-step
-        failures are logged and swallowed — one bad uninstall cannot block
-        the rest of teardown.
+        Idempotent. Hook uninstalls run in reverse install order so layered
+        installs (e.g. transformers stacked on top of torch) unwind cleanly.
+        Per-step failures are logged and swallowed, since one bad uninstall
+        cannot block the rest of teardown.
         """
         global _profiler
         if self._is_shutdown:
@@ -688,8 +689,9 @@ def shutdown() -> None:
 
 
 def health() -> dict[str, Any]:
-    """Module-level sugar — return the active profiler's health snapshot,
-    or an ``enabled=False`` shape when none is active.
+    """Module-level sugar: return the active profiler's health snapshot.
+
+    When no profiler is active, return an ``enabled=False`` shape instead.
 
     Returns:
         dict[str, Any]: Live :meth:`Profiler.health` output, or the
@@ -806,8 +808,9 @@ def get_watched_model(*, warn_if_missing: bool = True) -> Any | None:
 
 
 def _atexit_clear_singleton() -> None:
-    """atexit hook — release the singleton so the interpreter tear-down path
-    doesn't leave a stale reference behind.
+    """Release the singleton so interpreter tear-down leaves no stale reference.
+
+    Registered as an ``atexit`` hook.
     """
     global _profiler
     with _profiler_lock:
@@ -815,9 +818,10 @@ def _atexit_clear_singleton() -> None:
 
 
 def _reset_for_tests() -> None:
-    """Test-only: shut down the active profiler, drain global buffers, stop
-    the flush thread, and clear the module-level default ``Cirron``.
-    Ensures no state leaks across tests.
+    """Test-only: shut down the active profiler and reset global state.
+
+    Drain global buffers, stop the flush thread, and clear the module-level
+    default ``Cirron``, so that no state leaks across tests.
     """
     from cirron.core.blob_queue import _reset_default_for_tests as _reset_blob_queue
     from cirron.core.config import _reset_default_for_tests

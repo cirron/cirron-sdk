@@ -164,12 +164,12 @@ def _scope_to_dict(s: Scope) -> dict[str, Any]:
 
 
 def _apply_uri_map(snapshots: list[TraceSnapshot], uri_map: dict[str, str]) -> None:
-    """Rewrite each record's ``blob_uri`` to the remote URI when its
-    current ``file://`` URI appears in ``uri_map``.
+    """Rewrite each record's ``blob_uri`` to the matching remote URI.
 
-    Records whose blob hasn't uploaded yet (or failed) keep their local
-    URI — the local safetensors file is always written before the record
-    is produced, so the batch remains self-consistent on disk even when
+    A record is rewritten only when its current ``file://`` URI appears in
+    ``uri_map``. Records whose blob hasn't uploaded yet (or failed) keep their
+    local URI, because the local safetensors file is always written before the
+    record is produced, so the batch remains self-consistent on disk even when
     the network round-trip is deferred.
 
     Args:
@@ -771,14 +771,16 @@ class FlushThread(threading.Thread):
                 log.warning("cirron transport.send failed; batch remains in spool", exc_info=True)
 
     def _drain_blobs(self) -> dict[str, str]:
-        """Upload pending blobs; return a ``{local_uri: remote_uri}`` map
-        for the just-uploaded successes so snapshot records in this tick's
-        batch can have their ``blob_uri`` rewritten.
+        """Upload pending blobs and map their local URIs to the remote ones.
+
+        The returned ``{local_uri: remote_uri}`` map covers the just-uploaded
+        successes, so snapshot records in this tick's batch can have their
+        ``blob_uri`` rewritten.
 
         Transient failures re-enqueue up to :data:`MAX_BLOB_ATTEMPTS`. Once
-        a blob has exhausted its retries the local file stays on disk —
-        the spool record still points at it via the ``file://`` URI, so
-        the epoch's data isn't lost for standalone/local replay.
+        a blob has exhausted its retries the local file stays on disk; the
+        spool record still points at it via the ``file://`` URI, so the
+        epoch's data isn't lost for standalone/local replay.
 
         Returns:
             dict[str, str]: Mapping ``{local_uri: remote_uri}`` for
@@ -884,7 +886,7 @@ class FlushThread(threading.Thread):
         )
 
     def wake(self) -> None:
-        """Signal the worker to drain immediately instead of waiting for the next tick."""
+        """Signal the worker to drain immediately rather than await the next tick."""
         self._wake_event.set()
 
     def stop(self, timeout: float = 5.0) -> None:
@@ -901,8 +903,10 @@ class FlushThread(threading.Thread):
 
 
 class _Supervisor:
-    """Respawns the flush worker on death; latches to spool-only after
-    ``MAX_DEATHS`` deaths inside ``WINDOW_SEC``."""
+    """Respawns the flush worker on death.
+
+    Latches to spool-only after ``MAX_DEATHS`` deaths inside ``WINDOW_SEC``.
+    """
 
     MAX_DEATHS = 3
     WINDOW_SEC = 60.0

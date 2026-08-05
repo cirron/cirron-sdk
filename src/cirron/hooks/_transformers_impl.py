@@ -81,16 +81,16 @@ class TransformersHookHandle:
 
 
 def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> type:
-    """Build ``CirronTrainerCallback`` bound to the given scope stack
-    and shared ``HookContext``.
+    """Build ``CirronTrainerCallback`` bound to the given scope stack.
 
-    Defined as a factory so we don't import ``transformers`` at module
-    top — that happens lazily inside :func:`install`. The callback
-    claims ``epoch`` / ``step`` ownership in ``context.owned_scopes``
-    at ``on_train_begin`` (not install time), so a co-installed torch
-    hook only yields when HF ``Trainer`` is actually running. Vanilla
-    torch loops in a process where transformers happens to be
-    importable still get torch's own epoch/step spans.
+    The class also binds the shared ``HookContext``. It is defined as a
+    factory so we don't import ``transformers`` at module top; that
+    import happens lazily inside :func:`install`. The callback claims
+    ``epoch`` / ``step`` ownership in ``context.owned_scopes`` at
+    ``on_train_begin`` (not install time), so a co-installed torch hook
+    only yields when HF ``Trainer`` is actually running. Vanilla torch
+    loops in a process where transformers happens to be importable
+    still get torch's own epoch/step spans.
 
     Args:
         scope_stack (ScopeStack): Per-process scope stack.
@@ -163,9 +163,10 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
             log.warning("cirron.hooks.transformers: scope close failed", exc_info=True)
 
     def _capture_epoch_snapshots(model: Any, span_id: str) -> None:
-        """HF ``TrainerCallback`` receives the model via ``kwargs["model"]``
-        on every hook. Capture weights + grads against the epoch span id
-        before the epoch closes; no-ops when snapshots are disabled.
+        """Capture weights + grads against ``span_id`` before the epoch closes.
+
+        HF ``TrainerCallback`` receives the model via ``kwargs["model"]``
+        on every hook. This no-ops when snapshots are disabled.
 
         Args:
             model (Any): The HF model being trained.

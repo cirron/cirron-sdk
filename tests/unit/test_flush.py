@@ -1,6 +1,7 @@
 """Tests for the flush thread (src/cirron/core/flush.py).
 
-Covers the acceptance criteria on ``drain_once`` empties both buffers into a well-formed batch
+Covers the acceptance criteria on ``drain_once``: it empties both buffers
+into a well-formed batch
 - ``SpoolWriter.write`` produces a parseable file matching the schema
 - spool cap enforced; oldest files dropped and counter incremented
 - supervisor respawns the worker after a thread death

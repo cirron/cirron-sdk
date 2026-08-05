@@ -55,7 +55,7 @@ class _BlobHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         self._record_and_respond(202, None)
 
-    def log_message(self, format: str, *args: Any) -> None:
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         return None
 
 

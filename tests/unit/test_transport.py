@@ -1,6 +1,7 @@
 """Tests for transport layer (src/cirron/core/transport.py, ingest.py).
 
-Covers the acceptance criteria on ``select_transport`` picks EventStream / HTTP / FileOnly based on env + config
+Covers the acceptance criteria on ``select_transport``: it picks
+EventStream, HTTP, or FileOnly based on env plus config
 - ``HttpTransport`` sends correct headers, compression, and handles 202/400/429/5xx
 - Client-generated batch id is stable across retries (idempotency)
 - 429 honors Retry-After; 5xx uses exponential backoff

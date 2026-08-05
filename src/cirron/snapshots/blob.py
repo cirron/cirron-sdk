@@ -166,11 +166,12 @@ def _maybe_warn_size(total_bytes: int, param_count: int, kind: str, span_id: str
 
 
 def _to_serializable_dict(named_tensors: list[tuple[str, Any]]) -> tuple[dict[str, Any], bool]:
-    """Split the input into a ``{tensor_name: tensor}`` dict and a flag
-    indicating whether everything is a torch tensor (torch writer path)
-    or we need the numpy writer.
+    """Split the input into a ``{tensor_name: tensor}`` dict and a writer flag.
 
-    Tensor names are passed through unchanged — safetensors accepts
+    The flag indicates whether everything is a torch tensor (torch writer
+    path) or the numpy writer is needed.
+
+    Tensor names are passed through unchanged: safetensors accepts
     arbitrary UTF-8 strings as keys. Keeping the name identical to
     ``TraceSnapshot.tensor_name`` means consumers can do
     ``safetensors[record.tensor_name]`` without any extra mapping.
@@ -272,9 +273,10 @@ def snapshot_dir(output_dir: str | Path, span_id: str) -> Path:
 
 
 def blob_remote_key(span_id: str, filename: str) -> str:
-    """Remote object key for the platform blob store. Mirrors the on-disk
-    layout under the ``snapshots/`` prefix — the platform worker
-    uses the same path to look up the blob.
+    """Return the remote object key for the platform blob store.
+
+    The key mirrors the on-disk layout under the ``snapshots/`` prefix: the
+    platform worker uses the same path to look up the blob.
 
     Args:
         span_id (str): Span the blob attaches to.

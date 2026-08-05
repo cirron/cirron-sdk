@@ -49,8 +49,9 @@ class DatabricksDataSource(DataSource):
         return True
 
     def load(self) -> Any:
-        """Open a Databricks SQL connection, run the composed ``SELECT``,
-        return a DataFrame.
+        """Open a Databricks SQL connection and run the composed ``SELECT``.
+
+        Return the result as a DataFrame.
 
         Returns:
             Any: A pandas DataFrame produced by :func:`run_select`.

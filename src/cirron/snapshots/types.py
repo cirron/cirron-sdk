@@ -1,5 +1,4 @@
-"""``TraceSnapshot`` dataclass — the record written to the spool for every
-captured tensor.
+"""``TraceSnapshot``, the record written to the spool for every captured tensor.
 
 Lives in its own module so ``core/flush.py`` can import the serializer
 without pulling in the stats-capture code, which only loads a tensor

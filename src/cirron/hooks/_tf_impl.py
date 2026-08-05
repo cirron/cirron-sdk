@@ -77,14 +77,14 @@ class TFHookHandle:
 
 
 def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> type:
-    """Build ``CirronKerasCallback`` bound to the given scope stack and
-    shared ``HookContext``.
+    """Build ``CirronKerasCallback`` bound to the given scope stack.
 
-    Defined as a factory so we don't import ``keras`` at module top —
-    that happens lazily inside :func:`install`. The callback claims
-    ``epoch`` ownership in ``context.owned_scopes`` at
-    ``on_train_begin`` (not install time), so a co-installed torch
-    hook only yields when Keras ``fit`` is actually running.
+    The class also binds the shared ``HookContext``. It is defined as a
+    factory so we don't import ``keras`` at module top; that import
+    happens lazily inside :func:`install`. The callback claims ``epoch``
+    ownership in ``context.owned_scopes`` at ``on_train_begin`` (not
+    install time), so a co-installed torch hook only yields when Keras
+    ``fit`` is actually running.
 
     Args:
         scope_stack (ScopeStack): Per-process scope stack.
@@ -133,9 +133,10 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
             log.warning("cirron.hooks.tensorflow: scope close failed", exc_info=True)
 
     def _capture_epoch_snapshots(model: Any, span_id: str) -> None:
-        """Keras callback exposes the model via ``self.model``; capture
-        weight stats against the span id before the epoch closes. No-ops
-        when snapshots are disabled or the model is unset.
+        """Capture weight stats against ``span_id`` before the epoch closes.
+
+        The Keras callback exposes the model via ``self.model``. This
+        no-ops when snapshots are disabled or the model is unset.
 
         Args:
             model (Any): The Keras model being trained.

@@ -87,7 +87,7 @@ def test_permission_error_raises_distinct_message(monkeypatch, tmp_path):
 
 
 def test_secret_never_appears_in_logs(monkeypatch, tmp_path, caplog):
-    """Neither successful reads nor the not-found path should emit the secret value via logging."""
+    """Neither a successful read nor the not-found path may log the secret."""
     caplog.set_level(logging.DEBUG)
 
     # env path
