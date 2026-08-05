@@ -229,27 +229,23 @@ def _histogram_range(lo: float, hi: float) -> tuple[float, float] | None:
 
 
 def _tensor_stats_torch(tensor: Any) -> dict[str, Any]:
-    """Fast path for ``torch.Tensor`` — uses native reductions and
-    ``torch.histc`` to skip the host-side copy the NumPy path would
-    require.
+    """Computes tensor statistics with native reductions and ``torch.histc``.
 
-    Two fusion moves vs. the naive implementation:
+    Staying on-device avoids the host-side copy the NumPy path requires.
+    Three fusion moves vs. the naive implementation:
 
-    1. ``torch.var_mean(flat, unbiased=False)`` returns variance + mean
-       in a single pass; ``.std()`` would internally recompute the mean.
-    2. ``torch.aminmax`` returns (min, max) in one pass.
-    3. All five scalar reductions are materialized via a *single*
+    1. ``torch.aminmax`` returns (min, max) in one pass.
+    2. The L2 ``norm`` is derived algebraically from ``mean`` / ``std`` /
+       ``N`` rather than via a second reduction pass — mathematically
+       identical to a direct ``vector_norm``, but last-ULP float values
+       will differ.
+    3. The four scalar reductions are materialized in a *single*
        ``torch.stack(...).tolist()`` round-trip (batched host sync)
-       instead of five ``.item()`` calls.
+       instead of four ``.item()`` calls.
 
-    On the ubuntu CI runner the old five-``.item()`` variant ran ~4×
-    over the 50 ms ResNet50 budget; the fused variant + persistent
-    thread pool brings it inside.
-
-    The L2 ``norm`` is derived algebraically from ``mean`` / ``std`` /
-    ``N`` rather than via a second reduction pass — mathematically
-    identical to the old direct ``vector_norm`` but last-ULP float values
-    will differ.
+    On the ubuntu CI runner the per-``.item()`` variant ran ~4× over the
+    50 ms ResNet50 budget; the fused variant + persistent thread pool
+    brings it inside.
 
     Args:
         tensor (Any): A ``torch.Tensor`` (any dtype, any device).

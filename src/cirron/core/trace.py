@@ -49,7 +49,7 @@ class _TraceTreeRepr:
     def __str__(self) -> str:
         return self._text
 
-    def _repr_pretty_(self, p: Any, cycle: bool) -> None:  # noqa: ARG002 — IPython API
+    def _repr_pretty_(self, p: Any, cycle: bool) -> None:
         """IPython pretty-print hook.
 
         Args:

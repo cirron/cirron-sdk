@@ -49,10 +49,10 @@ class _BlobHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
-    def do_PUT(self) -> None:  # noqa: N802 (stdlib naming)
+    def do_PUT(self) -> None:
         self._record_and_respond(201, f"https://blobs.test{self.path}")
 
-    def do_POST(self) -> None:  # noqa: N802 (stdlib naming)
+    def do_POST(self) -> None:
         self._record_and_respond(202, None)
 
     def log_message(self, format: str, *args: Any) -> None:

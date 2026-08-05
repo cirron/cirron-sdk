@@ -1,7 +1,6 @@
 """YAML + layered config loader and ``Cirron`` entry-point class.
 
-Merges the YAML loader previously at ``cirron/config/loader.py`` with the
-``Cirron`` class described in. The layered resolver
+The layered resolver
 (defaults → ``~/.cirron/config.toml`` → ``CIRRON_*`` env vars → explicit
 constructor kwargs) drives ``__init__``; instance methods mirror the
 module-level functions in ``cirron/__init__.py``, most as pure delegators
@@ -11,9 +10,9 @@ it delegates to :func:`cirron.core.profiler.profile` with ``cirron=self``
 so an explicitly-constructed ``Cirron`` drives transport selection,
 spool location, and the rest of the orchestration.
 
-The YAML profiling-section resolution that used to live on
-``Cirron.profile()`` is now :meth:`Cirron._resolve_profile_config`, a
-private helper invoked by the profiler orchestrator.
+YAML profiling-section resolution lives on
+:meth:`Cirron._resolve_profile_config`, a private helper invoked by the
+profiler orchestrator.
 """
 
 from __future__ import annotations

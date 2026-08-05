@@ -57,7 +57,7 @@ def _require_safetensors() -> Any:
         CirronDependencyError: When the package is not installed.
     """
     try:
-        import safetensors  # noqa: F401
+        import safetensors
 
         return safetensors
     except ImportError as e:

@@ -529,7 +529,7 @@ class PlatformBucketSource(DataSource):
         dest.parent.mkdir(parents=True, exist_ok=True)
 
         try:
-            with urllib.request.urlopen(presigned, timeout=_DOWNLOAD_TIMEOUT_SEC) as resp:  # noqa: S310
+            with urllib.request.urlopen(presigned, timeout=_DOWNLOAD_TIMEOUT_SEC) as resp:
                 with dest.open("wb") as fh:
                     shutil.copyfileobj(resp, fh)
         except OSError as e:
@@ -630,7 +630,7 @@ def _http_json_get(url: str, api_key: str, bucket_for_error: str) -> dict[str, A
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=_TIMEOUT_SEC) as resp:  # noqa: S310
+        with urllib.request.urlopen(req, timeout=_TIMEOUT_SEC) as resp:
             body = resp.read().decode("utf-8")
             return json.loads(body)  # type: ignore[no-any-return]
     except urllib.error.HTTPError as e:

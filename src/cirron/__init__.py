@@ -30,7 +30,7 @@ from typing import Any, Literal
 # ``inference()`` function defined below. Without this, the first call into
 # ``Cirron.inference()`` would lazy-import ``cirron.inference.decorator``,
 # which sets ``cirron.inference`` to the submodule and shadows the function.
-import cirron.inference.decorator  # noqa: E402, F401
+import cirron.inference.decorator  # noqa: F401
 from cirron.core.config import (
     Cirron,
     CirronYamlError,

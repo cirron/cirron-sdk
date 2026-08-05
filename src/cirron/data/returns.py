@@ -183,18 +183,14 @@ class DataAdapter(ABC):
     def to_iter(
         self, batch_size: int = 10_000
     ) -> Iterator[dict[str, Any]] | Iterator[list[dict[str, Any]]]:
-        """Yield rows as dicts.
+        """Yields rows as dicts, singly or in batches.
 
-        ``batch_size == 1`` (default when ``as_='iter'`` and no batch
-        size requested by the caller is not the case — the dispatcher
-        passes the user's ``batch_size`` through) yields a stream of
-        single-row dicts. Any other value yields a stream of batches,
-        each a ``list[dict]`` of up to ``batch_size`` rows.
-
-        Batching lets downstream code cap memory for large sources
-        without materializing the whole frame into Python objects.
-        The default ``10_000`` matches the public signature in
-        ``ci.load()``.
+        ``batch_size <= 1`` yields a stream of single-row dicts. Any
+        larger value yields a stream of batches, each a ``list[dict]`` of
+        up to ``batch_size`` rows. Batching lets downstream code cap
+        memory for large sources without materializing the whole frame
+        into Python objects. The default ``10_000`` matches the public
+        signature in ``ci.load()``.
 
         Args:
             batch_size (int): Rows per emitted batch. ``<= 1`` switches

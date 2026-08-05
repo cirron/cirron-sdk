@@ -350,7 +350,7 @@ class CredentialResolver:
             },
         )
         try:
-            with urllib.request.urlopen(req, timeout=_TIMEOUT_SEC) as resp:  # noqa: S310
+            with urllib.request.urlopen(req, timeout=_TIMEOUT_SEC) as resp:
                 body = resp.read().decode("utf-8")
                 payload = json.loads(body)
         except urllib.error.HTTPError as e:

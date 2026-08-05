@@ -93,9 +93,7 @@ def load(
     confirm_large: bool = False,
     cirron: Cirron | None = None,
 ) -> Any:
-    """Load data from local disk, the Cirron platform, or an external URI.
-
-    See module docstring for the parameter matrix and deferred-story map.
+    """Loads data from local disk, the Cirron platform, or an external URI.
 
     Args:
         name (str | list[str]): Dataset name, scheme URI (``s3://``,

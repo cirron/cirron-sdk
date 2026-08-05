@@ -34,7 +34,7 @@ class _RecordingHandler(BaseHTTPRequestHandler):
 
     server: _RecordingServer
 
-    def do_POST(self) -> None:  # noqa: N802 (stdlib naming)
+    def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length) if length else b""
         self.server.received.append(
