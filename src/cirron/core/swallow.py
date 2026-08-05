@@ -29,15 +29,15 @@ def swallowed(context: str, exc: BaseException) -> None:
     """Record a deliberately swallowed internal error. Never raises.
 
     Logs the first occurrence for ``context`` at DEBUG with a traceback,
-    then counts subsequent occurrences without logging — streaming paths
+    then counts subsequent occurrences without logging. Streaming paths
     call this per token, so an unconditional log would flood output when a
     detector breaks mid-stream.
 
     Args:
-        context (str): Stable ``"module.function"`` label, e.g.
+        context: Stable ``"module.function"`` label, e.g.
             ``"llm.maybe_mark_openai_usage"``. Used as the counter key, so
             it must be a literal, not an f-string with variable data.
-        exc (BaseException): The exception being swallowed.
+        exc: The exception being swallowed.
     """
     try:
         with _lock:
@@ -48,7 +48,7 @@ def swallowed(context: str, exc: BaseException) -> None:
         if first:
             # %r rather than %s: it carries the exception type, and it
             # keeps the line renderable when a caller's exception has a
-            # broken __str__ — which is exactly the sort of thing that
+            # broken __str__, which is exactly the sort of thing that
             # reaches this module.
             log.debug(
                 "cirron swallowed an internal error in %s: %r",
@@ -58,7 +58,7 @@ def swallowed(context: str, exc: BaseException) -> None:
             )
     except Exception:
         # The accounting path itself must never propagate. Deliberately
-        # not routed back through swallowed() — that would recurse.
+        # not routed back through swallowed(), which would recurse.
         pass
 
 

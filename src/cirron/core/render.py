@@ -28,7 +28,7 @@ def _wall_us(span: Span) -> int | None:
     """Wall-clock duration of ``span`` in microseconds.
 
     Args:
-        span (Span): The span dict.
+        span: The span dict.
 
     Returns:
         int | None: Duration in μs, or ``None`` when the span is still open.
@@ -44,7 +44,7 @@ def _format_duration_us(us: int | None) -> str:
     """Render a microsecond duration as ``us`` / ``ms`` / ``s``.
 
     Args:
-        us (int | None): Microseconds, or ``None`` for an open span.
+        us: Microseconds, or ``None`` for an open span.
 
     Returns:
         str: Human-readable duration (or ``"open"``).
@@ -62,7 +62,7 @@ def _format_marks(marks: list[Mark]) -> str:
     """Render marks as a ``{k=v, ...}`` suffix for a span line.
 
     Args:
-        marks (list[Mark]): Marks belonging to one span.
+        marks: Marks belonging to one span.
 
     Returns:
         str: Empty string when ``marks`` is empty, otherwise the
@@ -91,7 +91,7 @@ def _label(span: Span) -> str:
     """Compose ``name[index]`` for a span (or just ``name`` when no index).
 
     Args:
-        span (Span): The span dict.
+        span: The span dict.
 
     Returns:
         str: The label.
@@ -105,11 +105,11 @@ def format_span_line(span: Span, marks: list[Mark] | None = None) -> str:
     """One-line summary used by ``LogSink`` / ``StdoutSink`` and the tree.
 
     Args:
-        span (Span): The span dict.
-        marks (list[Mark] | None): Marks attached to this span (or ``None``).
+        span: The span dict.
+        marks: Marks attached to this span (or ``None``).
 
     Returns:
-        str: ``"<label> — <duration>{marks}"``.
+        str: The span label, its formatted duration, and any marks.
     """
     return f"{_label(span)} — {_format_duration_us(_wall_us(span))}{_format_marks(marks or [])}"
 
@@ -124,9 +124,8 @@ def build_tree(
     the buffer, or this is the session root) are returned as roots.
 
     Args:
-        spans (list[Span]): Flat span list.
-        marks_by_span_id (dict[str, list[Mark]]): Marks indexed by
-            owning span id.
+        spans: Flat span list.
+        marks_by_span_id: Marks indexed by owning span id.
 
     Returns:
         list[dict[str, Any]]: Roots, each with a recursive ``children``
@@ -166,7 +165,7 @@ def render_tree_text(roots: list[dict[str, Any]]) -> str:
     """Indented text flamegraph. Returns a multi-line string.
 
     Args:
-        roots (list[dict[str, Any]]): Roots from :func:`build_tree`.
+        roots: Roots from :func:`build_tree`.
 
     Returns:
         str: Newline-joined flamegraph text, or ``"(no spans)"``.
@@ -179,8 +178,8 @@ def render_tree_text(roots: list[dict[str, Any]]) -> str:
         """Append ``node``'s formatted line, then recurse into its children.
 
         Args:
-            node (dict[str, Any]): Tree node from :func:`build_tree`.
-            depth (int): Current indentation depth.
+            node: Tree node from :func:`build_tree`.
+            depth: Current indentation depth.
         """
         indent = "  " * depth
         lines.append(f"{indent}{format_span_line(node['span'], node['marks'])}")
@@ -199,7 +198,7 @@ def _mark_node(m: Mark) -> dict[str, Any]:
     wire rule that the key is absent on every finite mark.
 
     Args:
-        m (Mark): Mark dict as it appears in the trace buffer.
+        m: Mark dict as it appears in the trace buffer.
 
     Returns:
         dict[str, Any]: ``{name, value, kind}``, plus ``value_nonfinite``
@@ -220,7 +219,7 @@ def to_dict_tree(roots: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Convert internal nodes to a public nested-dict shape for ``format="dict"``.
 
     Args:
-        roots (list[dict[str, Any]]): Roots from :func:`build_tree`.
+        roots: Roots from :func:`build_tree`.
 
     Returns:
         list[dict[str, Any]]: Public-facing node dicts (``id`` /
@@ -231,7 +230,7 @@ def to_dict_tree(roots: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Recursively convert one internal node to its public shape.
 
         Args:
-            node (dict[str, Any]): Internal tree node.
+            node: Internal tree node.
 
         Returns:
             dict[str, Any]: Public-facing node.
@@ -267,9 +266,8 @@ def flatten_for_df(
     measured against what's present.
 
     Args:
-        spans (list[Span]): Flat span list.
-        marks_by_span_id (dict[str, list[Mark]]): Marks indexed by
-            owning span id.
+        spans: Flat span list.
+        marks_by_span_id: Marks indexed by owning span id.
 
     Returns:
         list[dict[str, Any]]: One row per span with a stable column set.
@@ -280,7 +278,7 @@ def flatten_for_df(
         """Compute the parent-chain depth of ``span``.
 
         Args:
-            span (Span): The span to measure.
+            span: The span to measure.
 
         Returns:
             int: Depth as far as the parent chain is resolvable in

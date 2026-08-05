@@ -3,21 +3,21 @@
 The flush thread builds one :class:`Batch` per tick. Sinks are the local
 output destinations the user opts into via ``ci.profile(output=...)``:
 
-* :class:`SpoolSink` — the historical default. Writes the batch as a
-  versioned JSON file under ``./.cirron/spool/`` (the spool format is
-  public API; see ``docs/spool-format.md``).
-* :class:`LogSink` — emits one ``logging.INFO`` line per closed span on
-  the ``cirron.trace`` logger so users can wire profiling into their
-  existing log pipeline.
-* :class:`StdoutSink` — same per-span line, but printed straight to
-  stdout. For users who don't have logging configured.
+* :class:`SpoolSink` is the default. It writes the batch as a versioned
+  JSON file under ``./.cirron/spool/`` (the spool format is public API;
+  see ``docs/spool-format.md``).
+* :class:`LogSink` emits one ``logging.INFO`` line per closed span on the
+  ``cirron.trace`` logger so users can wire profiling into their existing
+  log pipeline.
+* :class:`StdoutSink` emits the same per-span line, but printed straight
+  to stdout. For users who don't have logging configured.
 
 Sinks live alongside the platform :class:`Transport` (kernel event
 stream / HTTP ingest), not in place of it. The transport is the
 platform-bound channel and is selected independently from ``output=``;
 sinks are purely local. ``output="none"`` produces an empty sink list,
 but the transport still fires when the runtime injects platform
-context — full silence requires both ``output="none"`` and a process
+context. Full silence requires both ``output="none"`` and a process
 with no ``CIRRON_RUN_ID``.
 """
 
@@ -46,6 +46,10 @@ class OutputSink(Protocol):
     ``emit`` may return a :class:`Path` (the spool sink does, so
     ``flush_now()`` can hand the file path back to its caller) or
     ``None``.
+
+    Attributes:
+        name: Stable identifier for this sink, matching the ``output=``
+            value that selects it.
     """
 
     name: str
@@ -54,7 +58,7 @@ class OutputSink(Protocol):
         """Forward one batch to this sink.
 
         Args:
-            batch (Batch): The just-built batch.
+            batch: The just-built batch.
 
         Returns:
             Path | None: A file path when the sink wrote to disk
@@ -66,9 +70,9 @@ class OutputSink(Protocol):
 class SpoolSink:
     """Writes the JSON batch to ``./.cirron/spool/`` via :class:`SpoolWriter`.
 
-    Pulled out of ``FlushThread._tick_body`` so the sink iteration is uniform
-    and ``output="none"`` can disable spool writes without special-casing the
-    writer.
+    Wrapping the writer as a sink keeps the flush thread's sink iteration
+    uniform and lets ``output="none"`` disable spool writes without
+    special-casing the writer.
     """
 
     name = "spool"
@@ -89,7 +93,7 @@ class SpoolSink:
         """Write the batch to the spool directory.
 
         Args:
-            batch (Batch): The just-built batch.
+            batch: The just-built batch.
 
         Returns:
             Path: Final path of the written JSON file.
@@ -113,7 +117,7 @@ class _PerSpanSink:
         """Format each closed span in ``batch`` and write it via :meth:`_write`.
 
         Args:
-            batch (Batch): The just-built batch.
+            batch: The just-built batch.
         """
         if not batch.spans:
             return
@@ -132,10 +136,10 @@ class _PerSpanSink:
         """Emit one already-formatted line. Subclasses override.
 
         Args:
-            line (str): The line to write.
+            line: The line to write.
 
         Raises:
-            NotImplementedError: Always — subclasses must override.
+            NotImplementedError: Always; subclasses must override.
         """
         raise NotImplementedError
 
@@ -152,7 +156,7 @@ class LogSink(_PerSpanSink):
         """Log ``line`` at INFO level.
 
         Args:
-            line (str): The formatted span line.
+            line: The formatted span line.
         """
         self._logger.info(line)
 
@@ -171,7 +175,7 @@ class StdoutSink(_PerSpanSink):
         """Print ``line`` to the configured stream (or live ``sys.stdout``).
 
         Args:
-            line (str): The formatted span line.
+            line: The formatted span line.
         """
         stream = self._stream if self._stream is not None else sys.stdout
         print(line, file=stream, flush=True)
@@ -180,14 +184,13 @@ class StdoutSink(_PerSpanSink):
 def normalize_output(value: str | list[str] | None) -> list[str]:
     """Validate + dedupe the user-facing ``output=`` value.
 
-    ``None`` → ``["spool"]`` (the default). ``"none"`` (or any list
-    containing it) → ``[]``. Unknown names raise ``ValueError`` at
+    ``None`` becomes ``["spool"]`` (the default). ``"none"`` (or any list
+    containing it) becomes ``[]``. Unknown names raise ``ValueError`` at
     profile-time so misconfigurations are caught loudly instead of
     silently dropping traces.
 
     Args:
-        value (str | list[str] | None): Raw user-supplied ``output=``
-            value.
+        value: Raw user-supplied ``output=`` value.
 
     Returns:
         list[str]: Normalized, deduped list of sink names. Empty list
@@ -226,12 +229,12 @@ def build_sinks(output: list[str], spool_writer: SpoolWriter | None) -> list[Out
 
     ``spool_writer`` may be ``None`` when the caller resolved
     ``output="none"`` and skipped writer construction. Asking for
-    ``"spool"`` without a writer is a programming error — callers in
-    this module always pair them.
+    ``"spool"`` without a writer is a programming error; callers in this
+    module always pair them.
 
     Args:
-        output (list[str]): Normalized sink names.
-        spool_writer (SpoolWriter | None): Writer for the spool sink.
+        output: Normalized sink names.
+        spool_writer: Writer for the spool sink.
 
     Returns:
         list[OutputSink]: Concrete sink instances in the same order.

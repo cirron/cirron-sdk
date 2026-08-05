@@ -2,7 +2,7 @@
 
 ``IngestClient`` is the network layer behind ``HttpTransport``. It owns
 serialization, gzip, auth headers, retry policy, and idempotency. The flush
-thread only sees a ``bool`` — never an exception — because spool is the
+thread only sees a ``bool``, never an exception, because spool is the
 source of truth and a failed network send must not take down the worker.
 """
 
@@ -43,7 +43,7 @@ def _bearer(api_key: str) -> str:
     """Format an HTTP ``Authorization`` value for ``api_key``.
 
     Args:
-        api_key (str): Cirron platform API key.
+        api_key: Cirron platform API key.
 
     Returns:
         str: ``"Bearer <api_key>"``.
@@ -53,7 +53,15 @@ def _bearer(api_key: str) -> str:
 
 @dataclass(frozen=True)
 class IngestResult:
-    """Outcome of a single ``post_batch`` call."""
+    """Outcome of a single ``post_batch`` call.
+
+    Attributes:
+        ok: ``True`` when the platform accepted the batch.
+        retryable: ``True`` when the spool should retain the batch for a
+            later flush.
+        status: HTTP status of the final attempt, or ``None`` when no
+            response was received.
+    """
 
     ok: bool
     retryable: bool = False
@@ -62,7 +70,15 @@ class IngestResult:
 
 @dataclass(frozen=True)
 class BlobUploadResult:
-    """Outcome of a single ``post_blob`` call."""
+    """Outcome of a single ``post_blob`` call.
+
+    Attributes:
+        ok: ``True`` when the platform accepted the blob.
+        remote_uri: Resolvable pointer to the stored blob on success.
+        retryable: ``True`` when the upload should be attempted again.
+        status: HTTP status of the final attempt, or ``None`` when no
+            response was received.
+    """
 
     ok: bool
     remote_uri: str | None = None
@@ -83,7 +99,7 @@ class _Attempt:
         """Build a terminal attempt carrying the final result.
 
         Args:
-            result (IngestResult): The terminal outcome.
+            result: The terminal outcome.
 
         Returns:
             _Attempt: A done-state attempt.
@@ -95,7 +111,7 @@ class _Attempt:
         """Build a retry-state attempt.
 
         Args:
-            sleep_for (float): Seconds to sleep before the next attempt.
+            sleep_for: Seconds to sleep before the next attempt.
 
         Returns:
             _Attempt: A retry-state attempt.
@@ -107,7 +123,7 @@ def _parse_retry_after(value: str | None) -> float | None:
     """Parse an HTTP ``Retry-After`` header value.
 
     Args:
-        value (str | None): Raw header value (seconds or HTTP-date).
+        value: Raw header value (seconds or HTTP-date).
 
     Returns:
         float | None: Seconds to wait, or ``None`` when unparseable.
@@ -133,7 +149,7 @@ class IngestClient:
     """POSTs batches to the platform ingest route with retry + idempotency.
 
     The SDK version and batch id travel as headers so the server can dedupe
-    without parsing the body ( — Redis-backed idempotency).
+    without parsing the body (Redis-backed idempotency).
     """
 
     def __init__(
@@ -180,7 +196,7 @@ class IngestClient:
         """POST one batch with retries and idempotency headers.
 
         Args:
-            batch (dict[str, Any]): The serialized batch.
+            batch: The serialized batch.
 
         Returns:
             IngestResult: Terminal result; ``retryable=True`` indicates
@@ -198,10 +214,10 @@ class IngestClient:
         """Serialize ``batch`` and build the request payload + headers.
 
         Args:
-            batch (dict[str, Any]): The serialized batch.
+            batch: The serialized batch.
 
         Returns:
-            tuple[bytes, dict[str, str]]: ``(payload, headers)`` —
+            tuple[bytes, dict[str, str]]: ``(payload, headers)``, where the
                 payload is gzipped when ``len(body) >= GZIP_MIN_BYTES``.
         """
         body = dumps_utf8(batch)
@@ -221,9 +237,9 @@ class IngestClient:
         """Issue one POST attempt and classify the outcome.
 
         Args:
-            payload (bytes): Already-encoded request body.
-            headers (dict[str, str]): Request headers.
-            attempt (int): Zero-based attempt index.
+            payload: Already-encoded request body.
+            headers: Request headers.
+            attempt: Zero-based attempt index.
 
         Returns:
             _Attempt: ``finish`` carrying the terminal result, or
@@ -247,8 +263,8 @@ class IngestClient:
 
         Args:
             resp (Any): The ``requests`` response object.
-            attempt (int): Current zero-based attempt index.
-            last_attempt (bool): ``True`` if no further retries remain.
+            attempt: Current zero-based attempt index.
+            last_attempt: ``True`` if no further retries remain.
 
         Returns:
             _Attempt: Terminal-result or retry-with-backoff state.
@@ -287,7 +303,7 @@ class IngestClient:
         """Log a single 401/403 warning per client instance.
 
         Args:
-            status (int): The HTTP status that triggered the warning.
+            status: The HTTP status that triggered the warning.
         """
         if self._auth_warned:
             return
@@ -304,17 +320,16 @@ class IngestClient:
         ``Location`` header; for now we treat a 2xx with a non-empty
         body as success and use the response text as ``remote_uri``.
 
-        The file is streamed via a fresh open handle on each attempt —
-        ``requests`` uses chunked transfer when ``data`` is a file-like,
-        so a 1 GB blob doesn't balloon the flush thread's resident set.
-        Retries network errors and 5xx / 429 with exponential backoff
-        like ``post_batch``. 4xx (other than 429) is non-retryable —
-        usually a quota or permissions issue the flush thread can't
-        resolve by itself.
+        The file is streamed via a fresh open handle on each attempt, since
+        ``requests`` uses chunked transfer when ``data`` is a file-like, so a
+        1 GB blob doesn't balloon the flush thread's resident set. Retries
+        network errors and 5xx / 429 with exponential backoff like
+        ``post_batch``. 4xx (other than 429) is non-retryable, usually a
+        quota or permissions issue the flush thread can't resolve by itself.
 
         Args:
-            local_path (Path): Local safetensors file.
-            remote_key (str): Storage-side object key.
+            local_path: Local safetensors file.
+            remote_key: Storage-side object key.
 
         Returns:
             BlobUploadResult: Terminal result with ``remote_uri`` set on
@@ -350,10 +365,10 @@ class IngestClient:
         """Issue one PUT attempt for a blob and classify the outcome.
 
         Args:
-            url (str): Fully-formed upload URL.
-            local_path (Path): Local file to stream.
-            headers (dict[str, str]): Request headers.
-            attempt (int): Zero-based attempt index.
+            url: Fully-formed upload URL.
+            local_path: Local file to stream.
+            headers: Request headers.
+            attempt: Zero-based attempt index.
 
         Returns:
             BlobUploadResult | None: A terminal result, or ``None`` to
@@ -402,7 +417,7 @@ class IngestClient:
 
         Args:
             resp (Any): The ``requests`` response.
-            fallback_url (str): The URL the PUT was issued against.
+            fallback_url: The URL the PUT was issued against.
 
         Returns:
             str: A resolvable remote URI.
@@ -421,7 +436,7 @@ class IngestClient:
         """Exponential backoff with jitter, capped at ``MAX_BACKOFF_SEC``.
 
         Args:
-            attempt (int): Zero-based attempt index.
+            attempt: Zero-based attempt index.
 
         Returns:
             float: Seconds to sleep before the next attempt.

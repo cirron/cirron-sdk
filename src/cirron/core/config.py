@@ -5,7 +5,7 @@ The layered resolver
 constructor kwargs) drives ``__init__``; instance methods mirror the
 module-level functions in ``cirron/__init__.py``, most as pure delegators
 (``scope``, ``mark``, ``env``, ``secret``, ``epochs``, ``batches``,
-``inference``, ``wrap``, ``load``). The one exception is ``profile()`` —
+``inference``, ``wrap``, ``load``). The one exception is ``profile()``:
 it delegates to :func:`cirron.core.profiler.profile` with ``cirron=self``
 so an explicitly-constructed ``Cirron`` drives transport selection,
 spool location, and the rest of the orchestration.
@@ -68,9 +68,9 @@ def find_cirron_yaml(start: str | Path | None = None) -> Path | None:
     """Walk upward from *start* (default cwd) looking for a cirron config file.
 
     Args:
-        start (str | Path | None): Where to begin the upward walk. ``None``
-            uses ``Path.cwd()``. If a file path is passed, the walk begins
-            in that file's parent directory.
+        start: Where to begin the upward walk. ``None`` uses ``Path.cwd()``.
+            If a file path is passed, the walk begins in that file's parent
+            directory.
 
     Returns:
         Path | None: Resolved path to the first ``cirron.yaml`` /
@@ -95,7 +95,7 @@ def _parse_file(path: Path) -> dict[str, Any]:
     """Read and parse a YAML or JSON config file into a top-level mapping.
 
     Args:
-        path (Path): The file to read; suffix selects the parser
+        path: The file to read; suffix selects the parser
             (``.json`` uses :mod:`json`, anything else uses YAML).
 
     Returns:
@@ -131,9 +131,9 @@ def _warn_on_unknown_fields(data: dict[str, Any], path: Path) -> None:
     """Emit a forward-compat warning when YAML contains unrecognized top-level keys.
 
     Args:
-        data (dict[str, Any]): The parsed top-level mapping.
-        path (Path): Source file path; only the basename is included in the
-            warning text.
+        data: The parsed top-level mapping.
+        path: Source file path; only the basename is included in the warning
+            text.
     """
     unknown = set(data.keys()) - _KNOWN_TOP_LEVEL_FIELDS
     if unknown:
@@ -154,8 +154,8 @@ def load_cirron_yaml(path: str | Path | None = None) -> CirronYaml | None:
     validation failure.
 
     Args:
-        path (str | Path | None): Explicit config path, or ``None`` to walk
-            upward from cwd via :func:`find_cirron_yaml`.
+        path: Explicit config path, or ``None`` to walk upward from cwd via
+            :func:`find_cirron_yaml`.
 
     Returns:
         CirronYaml | None: Validated config, or ``None`` only when the
@@ -190,12 +190,11 @@ def load_profiling_config(
     """Return the profiling section of cirron.yaml as a dict, or ``{}`` on miss.
 
     Swallows ``CirronYamlError`` so a malformed config doesn't break the
-    layered resolver — the caller treats a missing/broken YAML as "no
+    layered resolver: the caller treats a missing/broken YAML as "no
     overrides" and falls through to lower layers.
 
     Args:
-        path (str | Path | None): Explicit config path, or ``None`` for the
-            implicit upward walk.
+        path: Explicit config path, or ``None`` for the implicit upward walk.
 
     Returns:
         dict[str, Any]: The validated ``profiling:`` block as a dict
@@ -213,7 +212,6 @@ def load_profiling_config(
     return model.profiling.model_dump(exclude_unset=True)
 
 
-# layered config resolution for the ``Cirron`` class.
 _VALID_SNAPSHOTS = ("stats", "sampled", "full")
 
 # Ordered so iteration over the map is deterministic for tests.
@@ -269,7 +267,7 @@ def _coerce_str(value: Any) -> str | None:
 def _coerce_float(value: Any) -> float | None:
     """Coerce a config value to ``float``, else ``None``.
 
-    Booleans are explicitly rejected — Python's ``bool`` is an ``int``
+    Booleans are explicitly rejected: Python's ``bool`` is an ``int``
     subclass and we don't want ``True`` silently becoming ``1.0``.
 
     Args:
@@ -349,11 +347,11 @@ def _read_home_config_toml(path: Path | None = None) -> dict[str, Any]:
     or parse failure silently returns ``{}``; the SDK must never crash
     because a user's home TOML is malformed. Values that don't coerce
     cleanly (e.g. a string for ``sample_rate``, an unknown value for
-    ``snapshots``) are dropped silently — lower layers (env, defaults)
+    ``snapshots``) are dropped silently, and lower layers (env, defaults)
     fill in.
 
     Args:
-        path (Path | None): Explicit TOML path. ``None`` resolves to
+        path: Explicit TOML path. ``None`` resolves to
             ``~/.cirron/config.toml`` (skipping if the home directory
             isn't accessible).
 
@@ -388,7 +386,7 @@ def _read_home_config_toml(path: Path | None = None) -> dict[str, Any]:
 def _read_env_overrides() -> dict[str, Any]:
     """Read ``CIRRON_*`` env vars for each supported field, with coercion.
 
-    Same coercion rules as TOML — malformed values are dropped, not
+    Same coercion rules as TOML: malformed values are dropped, not
     raised. ``.env`` loading runs eagerly at ``cirron.core.env`` import
     time, so ``os.environ`` already reflects the project ``.env`` here.
     We also call :func:`cirron.core.env._load_dotenv_once` defensively
@@ -423,14 +421,14 @@ def _resolve_config(
     ``None`` in *explicit* is treated as "not passed" so the lower layers
     can supply a value. Explicit ``None`` for ``api_key`` / ``workspace_id``
     (the only fields whose resolved type is ``str | None``) is
-    indistinguishable from "not passed" — that's fine because both cases
+    indistinguishable from "not passed", which is fine because both cases
     mean "fall back to env / TOML / default (= None)".
 
     Args:
-        explicit (dict[str, Any]): Constructor kwargs map. ``None`` values
-            are treated as unset.
-        toml_path (Path | None): Override for the home-config TOML path;
-            forwarded to :func:`_read_home_config_toml`.
+        explicit: Constructor kwargs map. ``None`` values are treated as
+            unset.
+        toml_path: Override for the home-config TOML path; forwarded to
+            :func:`_read_home_config_toml`.
 
     Returns:
         dict[str, Any]: Fully-resolved config map, one entry per supported
@@ -456,17 +454,41 @@ class Cirron:
     explicit args > ``CIRRON_*`` env vars > ``~/.cirron/config.toml``
     ``[default]`` table > hardcoded defaults.
 
-    Constructor parameters: ``api_key`` / ``api_endpoint`` / ``workspace_id``
-    select the platform; ``output_dir`` controls the local spool / snapshot
-    root (``./.cirron/`` by default); ``snapshots`` / ``sample_rate`` set
-    the snapshot policy; ``flush_interval`` (seconds) and
-    ``spool_max_bytes`` shape the background flush; ``ingest_path`` is the
-    HTTP path appended to ``api_endpoint`` for span ingestion;
-    ``load_warn_bytes`` / ``load_max_bytes`` configure the size-tier guard
-    used by ``ci.load``; ``output`` selects sinks (``"spool"``, ``"stream"``,
-    ``"both"``); ``trace_buffer_max_spans`` caps the in-memory trace ring
-    used by ``ci.trace`` read-back. All are ``None`` by default and resolve
-    through the layered stack.
+    Every constructor parameter is ``None`` by default; the corresponding
+    attribute below holds the value the layered stack resolved.
+
+    Attributes:
+        api_key: Workspace API key, normally read from ``CIRRON_API_KEY``.
+            ``None`` leaves the SDK in standalone (spool-only) mode.
+        api_endpoint: Control-plane base URL; point it at a self-hosted
+            install. Defaults to ``"https://api.cirron.com"``.
+        workspace_id: Target workspace, normally read from
+            ``CIRRON_WORKSPACE_ID``.
+        output_dir: Local spool + snapshots root. Defaults to
+            ``"./.cirron/"``.
+        snapshots: Snapshot mode, one of ``"stats"`` / ``"sampled"`` /
+            ``"full"``. Defaults to ``"stats"``.
+        sample_rate: Fraction of epochs to snapshot in ``"sampled"`` mode.
+            Defaults to ``0.01``.
+        flush_interval: Flush-thread wake interval in seconds. Defaults to
+            ``1.0``.
+        spool_max_bytes: Oldest batch files are evicted once the spool
+            exceeds this. Defaults to 1 GB.
+        ingest_path: HTTP path appended to ``api_endpoint`` for span
+            ingestion. Defaults to
+            :data:`cirron.core.ingest.DEFAULT_INGEST_PATH`.
+        load_warn_bytes: ``ci.load()`` logs a WARNING at or above this
+            estimated size. Defaults to 1 GB.
+        load_max_bytes: ``ci.load()`` raises ``CirronDataSizeError`` at or
+            above this estimated size unless ``confirm_large=True``.
+            Defaults to 10 GB.
+        output: Default ``output=`` for ``profile()`` calls on this
+            instance, drawn from ``"spool"`` / ``"log"`` / ``"stdout"`` /
+            ``"none"``. ``None`` means ``"spool"``. Read straight from the
+            constructor rather than through the layered stack.
+        trace_buffer_max_spans: Cap on spans retained in the in-memory
+            ``ci.trace()`` ring. ``None`` takes the buffer's own default.
+            Read straight from the constructor, like ``output``.
     """
 
     def __init__(
@@ -511,11 +533,10 @@ class Cirron:
         self.ingest_path: str = merged["ingest_path"]
         self.load_warn_bytes: int = merged["load_warn_bytes"]
         self.load_max_bytes: int = merged["load_max_bytes"]
-        # Instance-level default for ``output=`` and the trace
-        # buffer cap. ``profile(output=...)`` overrides; otherwise the
-        # value flows through here. Not part of the layered TOML/env
-        # resolver yet — those layers are reserved for
-        # core fields.
+        # Instance-level default for ``output=`` and the trace buffer cap.
+        # ``profile(output=...)`` overrides; otherwise the value flows
+        # through here. Not part of the layered TOML/env resolver yet: those
+        # layers are reserved for core fields.
         self.output: str | list[str] | None = output
         self.trace_buffer_max_spans: int | None = trace_buffer_max_spans
         self._profile_config: dict[str, Any] = {}
@@ -567,13 +588,13 @@ class Cirron:
 
         Thin delegator to :func:`cirron.core.trace.trace`. The trace ring
         is process-wide, so reading it through any ``Cirron`` instance
-        returns the same data — the instance method exists for symmetry
+        returns the same data; the instance method exists for symmetry
         with the other delegators.
 
         Args:
-            format (Literal["tree", "dict", "json", "df"]): Output shape.
-            name (str | None): Optional span-name filter.
-            last (int | None): Optional cap on root spans returned.
+            format: Output shape.
+            name: Optional span-name filter.
+            last: Optional cap on root spans returned.
 
         Returns:
             Any: Shape determined by ``format``.
@@ -602,13 +623,12 @@ class Cirron:
         profiler orchestrator to read.
 
         Args:
-            config (dict[str, Any] | None): Inline profiling-section dict.
-            frameworks (list[str] | None): Subset of frameworks to
-                instrument.
-            snapshots (str | None): Snapshot-policy override.
-            sample_rate (float | None): Per-epoch sample probability.
-            flush_interval (float | None): Seconds between flushes.
-            path (str | None): Override ``cirron.yaml`` discovery path.
+            config: Inline profiling-section dict.
+            frameworks: Subset of frameworks to instrument.
+            snapshots: Snapshot-policy override.
+            sample_rate: Per-epoch sample probability.
+            flush_interval: Seconds between flushes.
+            path: Override ``cirron.yaml`` discovery path.
 
         Returns:
             Cirron: ``self``, for chaining.
@@ -632,11 +652,10 @@ class Cirron:
                 resolved[key] = value
 
         self._profile_config = ProfilingConfig.model_validate(resolved).model_dump()
-        # Surface the resolved values on the instance so downstream code
-        # (framework hooks, snapshot capture) reads the effective profile
-        # config rather than the constructor-time defaults. Without this,
-        # ``ci.profile(snapshots="full")`` would never take effect because
-        # capture() reads ``cirron.snapshots`` directly.
+        # Surface the resolved values so framework hooks and snapshot capture
+        # read the effective profile config, not the constructor-time
+        # defaults. Without this ``ci.profile(snapshots="full")`` never takes
+        # effect, because capture() reads ``cirron.snapshots`` directly.
         self.snapshots = self._profile_config["snapshots"]
         self.sample_rate = self._profile_config["sample_rate"]
         self.flush_interval = self._profile_config["flush_interval"]
@@ -760,8 +779,8 @@ class Cirron:
         Thin delegator to :func:`cirron.core.deps.deps`.
 
         Args:
-            *required (str): Optional list of import names or extras
-                names; when empty, returns the full registry.
+            *required: Optional list of import names or extras names; when
+                empty, returns the full registry.
 
         Returns:
             dict[str, str | None]: Mapping of import name to installed
@@ -813,9 +832,9 @@ def get_default() -> Cirron:
 def _reset_default_for_tests() -> None:
     """Clear the default instance so tests start from a clean slate.
 
-    Paired with ``cirron.core.profiler._profiler`` reset in test fixtures
-    — both singletons must be cleared together, otherwise a test that
-    calls ``ci.profile()`` leaks orchestration state into the next test.
+    Paired with the ``cirron.core.profiler._profiler`` reset in test
+    fixtures: both singletons must be cleared together, otherwise a test
+    that calls ``ci.profile()`` leaks orchestration state into the next.
     """
     global _default_instance
     with _default_lock:

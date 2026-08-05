@@ -2,7 +2,7 @@
 
 ``ci.profile()`` is the main SDK entry point. It resolves config, selects a
 transport, detects installed frameworks, opens a root scope, and starts the
-background flush thread. It is idempotent — a second call logs a warning and
+background flush thread. It is idempotent: a second call logs a warning and
 returns the existing ``Profiler``.
 
 The common call style is ``ci.profile()`` with no assignment. Advanced users
@@ -56,10 +56,9 @@ _profiler_lock = threading.Lock()
 _atexit_registered = False
 
 # Callable that returns the model the user passed to ``ci.watch()``, or
-# ``None`` once the model is gone. Normally a ``weakref.ref``; falls back
-# to a ``lambda`` holding a strong reference for objects that don't
-# support weakref (C-extension types, bare ``object()``). Snapshot
-# capture calls it at epoch boundaries.
+# ``None`` once the model is gone. Normally a ``weakref.ref``, falling back
+# to a ``lambda`` holding a strong reference for objects that don't support
+# weakref (C-extension types, bare ``object()``).
 _watched_model_ref: Callable[[], Any] | None = None
 _watched_warning_emitted = False
 
@@ -69,10 +68,10 @@ def _populate_device_attrs(attrs: dict[str, Any]) -> None:
 
     Writes ``device`` / ``cuda_count`` / ``mixed_precision`` into ``attrs``
     in place. Guarded so the absence of torch (core-only install) doesn't
-    surface an import error — CPU-only sessions just get ``device=cpu``.
+    surface an import error; CPU-only sessions just get ``device=cpu``.
 
     Args:
-        attrs (dict[str, Any]): Root-scope attribute dict, mutated in place
+        attrs: Root-scope attribute dict, mutated in place
             with ``device`` / ``cuda_count`` / ``mixed_precision`` keys.
     """
     try:
@@ -300,14 +299,13 @@ class Profiler:
         profiler too.
 
         Args:
-            format (Literal["tree", "dict", "json", "df"]): Output shape.
-                ``"tree"`` is the printable text rendering; ``"dict"`` /
-                ``"json"`` return structured data; ``"df"`` returns a
-                pandas DataFrame.
-            name (str | None): Optional span-name filter — return only
-                subtrees rooted at spans matching this name.
-            last (int | None): Optional cap on number of root spans
-                returned; most-recent first.
+            format: Output shape. ``"tree"`` is the printable text
+                rendering; ``"dict"`` / ``"json"`` return structured data;
+                ``"df"`` returns a pandas DataFrame.
+            name: Optional span-name filter, returning only subtrees rooted
+                at spans matching this name.
+            last: Optional cap on number of root spans returned,
+                most-recent first.
 
         Returns:
             Any: Shape determined by ``format``.
@@ -343,7 +341,7 @@ class Profiler:
                 log.warning("cirron: closing root scope failed", exc_info=True)
         # Uninstall hooks in reverse order so layered installs (e.g.
         # transformers on top of torch) unwind cleanly. Failures are logged
-        # and swallowed — one bad uninstall must not block shutdown.
+        # and swallowed: one bad uninstall must not block shutdown.
         for handle in reversed(self._hook_handles):
             try:
                 handle.uninstall()
@@ -381,15 +379,15 @@ def _close_root_scope(root: Scope) -> None:
     """Close the session root scope at shutdown.
 
     If shutdown is running on the same thread that opened the scope (the
-    common case — profile() and shutdown() are both called from the main
-    thread), we unwind the stack with regular ``pop()`` so any user scopes
+    common case, since profile() and shutdown() are both called from the
+    main thread), we unwind the stack with regular ``pop()`` so any user scopes
     left open above the root are closed too, and the stack doesn't retain
     a dangling reference. Cross-thread shutdown falls back to
     ``close_scope``, which only marks ``end_ns`` + appends to the owning
     thread's closed deque without mutating that thread's stack list.
 
     Args:
-        root (Scope): The session root scope opened by :func:`profile`.
+        root: The session root scope opened by :func:`profile`.
     """
     stack = get_default_stack()
     if threading.get_ident() == root.thread_id:
@@ -570,11 +568,9 @@ def profile(
         )
 
         # Validate ``output=`` BEFORE installing hooks or selecting a
-        # transport. ``normalize_output`` raises ``ValueError`` for
-        # unknown sink names; doing it here means a misconfigured call
-        # leaves no side effects (no double-wrapped DataLoader.__iter__,
-        # no orphaned transports). Resolution is the same later: explicit
-        # kwarg > ``Cirron(output=...)`` > "spool".
+        # transport, so a misconfigured call leaves no side effects behind
+        # (no double-wrapped DataLoader.__iter__, no orphaned transports).
+        # Precedence: explicit kwarg > ``Cirron(output=...)`` > "spool".
         output_value = output if output is not None else getattr(ci, "output", None)
         normalized_output = normalize_output(output_value)
 
@@ -587,7 +583,6 @@ def profile(
         else:
             resolved_frameworks = ci._profile_config.get("frameworks")
             if resolved_frameworks is not None:
-                # Explicit YAML/config value (including []) is respected.
                 detected = list(resolved_frameworks)
             else:
                 detected = detect_frameworks()
@@ -628,7 +623,7 @@ def profile(
         root_scope = get_default_stack().push("cirron.session", **root_attrs)
         if root_scope is None:
             # Only possible if the caller already had ``MAX_DEPTH`` scopes open
-            # on this thread before ``ci.profile()``. Unusual but not fatal —
+            # on this thread before ``ci.profile()``. Unusual but not fatal:
             # the profiler continues without a root span; shutdown's
             # ``_root_scope is None`` branch handles this cleanly.
             log.warning(
@@ -677,7 +672,7 @@ def _disabled_health() -> dict[str, Any]:
 
 
 def shutdown() -> None:
-    """Module-level sugar — shut down the active profiler if any."""
+    """Module-level sugar: shut down the active profiler if any."""
     with _profiler_lock:
         active = _profiler
     if active is not None:
@@ -701,7 +696,7 @@ def health() -> dict[str, Any]:
 
 
 def flush() -> None:
-    """Module-level sugar — synchronously flush the active profiler."""
+    """Module-level sugar: synchronously flush the active profiler."""
     with _profiler_lock:
         active = _profiler
     if active is not None:
@@ -713,7 +708,7 @@ def trace(
     name: str | None = None,
     last: int | None = None,
 ) -> Any:
-    """Module-level sugar — read back the current session's scope tree.
+    """Module-level sugar: read back the current session's scope tree.
 
     Always usable, even when no profiler is attached: this call performs
     an on-demand synchronous drain into the in-memory trace buffer, so
@@ -721,9 +716,9 @@ def trace(
     hasn't been started by ``ci.profile()``.
 
     Args:
-        format (Literal["tree", "dict", "json", "df"]): Output shape.
-        name (str | None): Optional span-name filter.
-        last (int | None): Optional cap on root spans returned.
+        format: Output shape.
+        name: Optional span-name filter.
+        last: Optional cap on root spans returned.
 
     Returns:
         Any: Shape determined by ``format``.
@@ -734,7 +729,7 @@ def trace(
 def watch(model: Any | None) -> Any | None:
     """Register ``model`` for snapshot capture.
 
-    Required for bare PyTorch loops — the torch hook sees optimizers and
+    Required for bare PyTorch loops, where the torch hook sees optimizers and
     DataLoaders but never receives a direct model reference, so it can't
     walk ``named_parameters()`` on its own. Keras and HuggingFace users
     don't need this: their callbacks surface the model automatically.
@@ -745,8 +740,8 @@ def watch(model: Any | None) -> Any | None:
     (``model = ci.watch(build_model())``).
 
     Args:
-        model (Any | None): The user's model (typically an
-            ``nn.Module``), or ``None`` to clear the registration.
+        model: The user's model (typically an ``nn.Module``), or ``None``
+            to clear the registration.
 
     Returns:
         Any | None: ``model`` unchanged so the call can be chained, or
@@ -755,7 +750,7 @@ def watch(model: Any | None) -> Any | None:
     global _watched_model_ref, _watched_warning_emitted
     if model is None:
         _watched_model_ref = None
-        # Reset the "did we emit the diagnostic?" flag too — otherwise a
+        # Reset the "did we emit the diagnostic?" flag too, or else a
         # clear-then-re-run sequence silently skips the diagnostic even
         # though the state is effectively fresh.
         _watched_warning_emitted = False
@@ -765,7 +760,7 @@ def watch(model: Any | None) -> Any | None:
     except TypeError:
         # Objects that don't support weakref (bare ``object()``, some
         # C-extension types). Fall back to a strong reference via a
-        # lambda that returns the object — keeps the public contract
+        # lambda that returns the object, which keeps the public contract
         # working without blowing up.
         _watched_model_ref = lambda m=model: m  # noqa: E731
     _watched_warning_emitted = False
@@ -779,12 +774,12 @@ def get_watched_model(*, warn_if_missing: bool = True) -> Any | None:
     is true, emits a single info-level diagnostic the first time a
     bare-PyTorch run hits an epoch boundary with no model registered so
     users notice the silent-skip. Pass ``warn_if_missing=False`` from
-    hooks that run on every step (e.g. torch's ``opt_post`` grad stash)
-    — in HF/Keras workflows those callers never require ``ci.watch()``
+    hooks that run on every step (e.g. torch's ``opt_post`` grad stash),
+    because in HF/Keras workflows those callers never require ``ci.watch()``
     and the diagnostic would be misleading.
 
     Args:
-        warn_if_missing (bool): When ``True``, emit a one-shot
+        warn_if_missing: When ``True``, emit a one-shot
             ``info``-level diagnostic if no model has been registered.
 
     Returns:

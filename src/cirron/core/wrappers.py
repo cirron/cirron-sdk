@@ -1,11 +1,11 @@
-"""``ci.epochs()`` / ``ci.batches()`` — Tier-2 loop wrappers.
+"""``ci.epochs()`` / ``ci.batches()``: Tier-2 loop wrappers.
 
 Transparent generator iterators that open an indexed ``epoch`` or ``batch``
 scope per iteration and close it on the next iteration (or on exhaustion /
 early break: the generator is finalized via ``close()``, which raises
 ``GeneratorExit`` at the paused ``yield`` and unwinds the enclosing
 ``with scope(...)`` block). ``ci.batches()`` additionally attributes
-DataLoader stall time — the wall time spent inside ``__next__`` — as a
+DataLoader stall time (the wall time spent inside ``__next__``) as a
 ``data_load_ns`` attribute on each ``batch`` span.
 """
 
@@ -55,7 +55,7 @@ def epochs(iterable: Iterable[T]) -> Iterator[T]:
     """Wrap a training iterable so each yielded item runs inside an ``epoch`` scope.
 
     Args:
-        iterable (Iterable[T]): Source iterable, typically
+        iterable: Source iterable, typically
             ``range(n_epochs)`` or an enumerable epoch generator.
 
     Yields:
@@ -87,7 +87,7 @@ def batches(iterable: Iterable[T]) -> Iterator[T]:
     attributed to a ``data_load_ns`` attribute on each batch span.
 
     Args:
-        iterable (Iterable[T]): Batch-yielding iterable.
+        iterable: Batch-yielding iterable.
 
     Yields:
         T: Each batch from ``iterable`` unchanged.
@@ -115,7 +115,7 @@ def _batches_with_stall(loader: Iterable[T]) -> Iterator[T]:
     recorded on the batch span.
 
     Args:
-        loader (Iterable[T]): A ``DataLoader`` (or any iterable whose
+        loader: A ``DataLoader`` (or any iterable whose
             ``__next__`` is the data-load phase to time).
 
     Yields:

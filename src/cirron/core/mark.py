@@ -5,7 +5,7 @@ string, or bool) to the innermost open scope on the current thread and
 writes it to a lock-free per-thread ring buffer. The flush thread drains
 the buffer and ships marks alongside their owning spans.
 
-Marks must be cheaper than a scope open/close — the hot path avoids
+Marks must be cheaper than a scope open/close, so the hot path avoids
 locks and keeps attribute lookups local. Budget: 1M marks in < 3s.
 """
 
@@ -24,13 +24,10 @@ DEFAULT_CAPACITY = 65536
 MAX_STRING_BYTES = 256
 ROOT_SPAN_ID = "root"
 
-# Fallback span id for marks fired with no open scope on the caller's
-# thread. ``ci.profile()`` sets this to the session root scope's id at
-# startup and clears it on shutdown, so end-of-epoch logs and worker-
-# thread marks land on ``cirron.session`` instead of the legacy
-# ``"root"`` sentinel. Pre-``ci.profile()`` marks (module-import-time,
-# tests that don't open a session) still fall through to
-# ``ROOT_SPAN_ID``.
+# Fallback span id for marks fired with no open scope on the caller's thread.
+# ``ci.profile()`` sets it to the session root scope's id at startup and clears
+# it on shutdown, so end-of-epoch and worker-thread marks land on
+# ``cirron.session``; with no session open they fall through to ``ROOT_SPAN_ID``.
 _fallback_span_id: str | None = None
 
 
@@ -42,8 +39,8 @@ def set_fallback_span_id(span_id: str | None) -> None:
     startup, and with ``None`` at shutdown.
 
     Args:
-        span_id (str | None): Session root scope id, or ``None`` to
-            restore the legacy ``"root"`` sentinel fallback.
+        span_id: Session root scope id, or ``None`` to restore the
+            legacy ``"root"`` sentinel fallback.
     """
     global _fallback_span_id
     _fallback_span_id = span_id
@@ -62,8 +59,8 @@ def get_fallback_span_id() -> str | None:
 MARK_KIND_POINT = "point"
 MARK_KIND_SUMMARY = "summary"
 # ``frozenset`` membership is O(1) vs tuple's O(n). The hot-path cost of
-# the kind check is tiny but the call count is high — 1M marks/s under
-# the regression test — and frozenset vs tuple is a free swap.
+# the kind check is tiny but the call count is high (1M marks/s under the
+# regression test), and frozenset vs tuple is a free swap.
 _VALID_KINDS = frozenset({MARK_KIND_POINT, MARK_KIND_SUMMARY})
 
 
@@ -109,10 +106,6 @@ class Mark:
         self.name = name
         self.value_type = value_type
         self.value = value
-        # Defensive: the dataclass version defaulted ``attrs`` via
-        # ``default_factory=dict`` so callers could omit it. Keep the
-        # same ergonomics — tests construct ``Mark`` directly with
-        # kwargs and rely on this default.
         self.attrs = attrs if attrs is not None else {}
         self.ts_ns = ts_ns
         self.kind = kind
@@ -159,8 +152,8 @@ class MarkBuffer:
         # can drain ahead of the interval.
         self._wake_event = wake_event
         # Per-thread state keyed by thread id with a ``threading.local``
-        # fast-path cache. Plain dict (not ``WeakValueDictionary``) — see
-        # the matching rationale in ``ScopeStack.__init__``: trailing marks
+        # fast-path cache. Plain dict, not ``WeakValueDictionary``: see the
+        # matching rationale in ``ScopeStack.__init__``, since trailing marks
         # on a dying thread must remain drainable.
         self._local = threading.local()
         self._states_lock = threading.Lock()
@@ -205,7 +198,7 @@ class MarkBuffer:
         so the flush thread can drain ahead of its interval.
 
         Args:
-            mark (Mark): The mark to enqueue. Adopted directly — no copy.
+            mark: The mark to enqueue. Adopted directly; no copy is made.
         """
         state = self._state
         buf = state.buffer
@@ -222,8 +215,6 @@ class MarkBuffer:
             # and (hopefully) stop the bleeding before too many drops.
             if self._wake_event is not None:
                 self._wake_event.set()
-        # ``maxlen`` on ``deque`` makes append O(1) and drops from the
-        # opposite end when full — exactly "drop oldest".
         buf.append(mark)
 
     def drain(self) -> list[Mark]:
@@ -265,8 +256,8 @@ class MarkBuffer:
         """Install (or clear) the cross-thread wake event used on overflow.
 
         Args:
-            event (threading.Event | None): Event the buffer ``set()``s
-                when a per-thread ring fills, or ``None`` to disable.
+            event: Event the buffer ``set()``s when a per-thread ring
+                fills, or ``None`` to disable.
         """
         self._wake_event = event
 
@@ -310,13 +301,10 @@ class MarkBuffer:
 
 _default_buffer = MarkBuffer()
 
-# Cache hot attribute lookups as module-level names. The 3μs/call budget
-# is tight enough that removing per-call attribute resolution matters.
-# We also bind the *buffer's* ``threading.local`` and ``_states`` dict so
-# ``mark()`` can do a cached state lookup without walking through the
-# ``MarkBuffer.append`` method (which hits the ``_state`` property +
-# ``_get_state()`` try/except on every call — a measurable chunk of the
-# 3 μs/call budget on the ubuntu CI runner).
+# Cache hot attribute lookups as module-level names. Binding the buffer's own
+# ``threading.local`` lets ``mark()`` look up its state without walking through
+# ``MarkBuffer.append``, whose ``_state`` property and ``_get_state()``
+# try/except are a measurable chunk of the 3 μs/call budget.
 _time_ns = time.time_ns
 _default_buffer_local = _default_buffer._local
 _default_buffer_capacity = _default_buffer._capacity
@@ -335,15 +323,10 @@ def _get_default_mark_state() -> _MarkState:
     return _default_buffer._get_state()
 
 
-# Mark ids must be globally unique — ``TraceMark.id`` is the primary key
-# on the platform's MySQL table and the worker's idempotency gate
-# (``createMany({ skipDuplicates: true })``) treats duplicate ids as
-# retries and silently drops them. A per-process counter would collide
-# across concurrent runs and silently lose data. ``os.urandom(16).hex()``
-# matches span ids (same format, same 2⁻¹²⁸ collision guarantee); idem-
-# potency of retried batches still holds because the SDK buffers the
-# generated id and re-sends the exact same bytes on retry. This is
-# unchanged from pre-round-3.
+# Mark ids must be globally unique: ``TraceMark.id`` is the primary key on the
+# platform, and the worker's idempotency gate (``createMany({ skipDuplicates:
+# true })``) drops duplicate ids as retries, so a per-process counter would
+# silently lose data across concurrent runs.
 _urandom = os.urandom
 
 
@@ -380,11 +363,11 @@ def mark(
     sentinel.
 
     Args:
-        name (str): Metric name (e.g. ``"loss"``, ``"lr"``).
-        value (float | int | str | bool): Coerced scalar value. String
-            values longer than ``MAX_STRING_BYTES`` are truncated at the
-            nearest valid UTF-8 boundary.
-        kind (str): ``"point"`` (default) or ``"summary"``.
+        name: Metric name (e.g. ``"loss"``, ``"lr"``).
+        value: Coerced scalar value. String values longer than
+            ``MAX_STRING_BYTES`` are truncated at the nearest valid UTF-8
+            boundary.
+        kind: ``"point"`` (default) or ``"summary"``.
         **attrs (Any): Optional metadata stored as ``mark.attrs``.
 
     Raises:
@@ -396,14 +379,14 @@ def mark(
         raise ValueError(
             f"ci.mark() kind must be {MARK_KIND_POINT!r} or {MARK_KIND_SUMMARY!r}; got {kind!r}"
         )
-    # ``type() is X`` is faster than ``isinstance`` for exact-type dispatch
-    # — on the float/int hot path this matters for the 3μs/call budget.
+    # ``type() is X`` is faster than ``isinstance`` for exact-type dispatch,
+    # which matters on the float/int hot path against the 3μs/call budget.
     # Strings are rare and take the ``isinstance`` path so mypy can narrow
     # the type correctly for ``.encode``.
     t = type(value)
     if t is float:
         value_type = "float"
-    elif t is bool:  # bool first — ``isinstance(True, int)`` is True
+    elif t is bool:  # bool first, since ``isinstance(True, int)`` is True
         value_type = "bool"
     elif t is int:
         value_type = "int"
@@ -415,11 +398,10 @@ def mark(
             value = encoded[:MAX_STRING_BYTES].decode("utf-8", errors="ignore")
         value_type = "string"
     elif isinstance(value, bool):
-        # Subclasses of the Python built-ins land here. Note that most
-        # NumPy scalar dtypes do *not* subclass the built-ins (``np.int64``
-        # is not ``isinstance(x, int)``); ``np.float64`` is the usual
-        # exception. Broader numeric support belongs behind an explicit
-        # adapter, not here on the hot path.
+        # Subclasses of the Python built-ins land here. Most NumPy scalar
+        # dtypes do *not* subclass them (``np.int64`` is not
+        # ``isinstance(x, int)``, though ``np.float64`` is); broader numeric
+        # support belongs behind an explicit adapter, not on the hot path.
         value_type = "bool"
     elif isinstance(value, int):
         value_type = "int"
