@@ -13,6 +13,7 @@ so the check is cheap to run at script startup.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from importlib import import_module
 from importlib import metadata as _metadata
 from importlib import util as _util
 from typing import Any
@@ -155,10 +156,8 @@ def driver(module_name: str, extra_name: str) -> Any:
     Raises:
         CirronDependencyError: If the driver isn't installed.
     """
-    import importlib
-
     try:
-        return importlib.import_module(module_name)
+        return import_module(module_name)
     except ImportError as e:
         raise CirronDependencyError(
             f"the {extra_name!r} source backend requires the {module_name!r} "
