@@ -21,6 +21,21 @@ class TraceSnapshot:
     ``stats`` and leave ``blob_uri`` unset. ``"sampled"`` / ``"full"``
     modes additionally serialize tensor values to safetensors and fill
     ``blob_uri``.
+
+    Attributes:
+        id: Unique record identifier.
+        span_id: Span this record attaches to.
+        tensor_name: Parameter name, e.g. ``"layer1.0.weight"`` for a
+            weight or ``"layer1.0.weight.grad"`` for its gradient.
+        shape: Tensor shape; empty when it could not be read.
+        dtype: Dtype name, e.g. ``"float32"``; ``"unknown"`` when the
+            tensor exposes none.
+        mode: One of ``"stats"``, ``"sampled"``, or ``"full"``.
+        stats: Inline ``{mean, std, min, max, norm, histogram}`` summary.
+        blob_uri: Location of the safetensors file holding the raw tensor
+            values; unset in ``"stats"`` mode.
+        ts_ns: Capture timestamp from ``time.time_ns()``.
+        attrs: Free-form extra attributes carried through to the spool.
     """
 
     id: str
@@ -48,7 +63,7 @@ def snapshot_to_dict(s: TraceSnapshot) -> dict[str, Any]:
     serialization.
 
     Args:
-        s (TraceSnapshot): The record to serialize.
+        s: The record to serialize.
 
     Returns:
         dict[str, Any]: Plain-data mapping ready for JSON encoding.
