@@ -56,7 +56,7 @@ Most labels are documented in GitHub's label description field. Note that `bug`,
 
 ## Releases
 
-Releases are driven by [`auto`](https://intuit.github.io/auto/) and triggered on merge to `main` (stable) or `rc` (release candidates). The version bump is computed from PR labels — **you never hand-edit the version in `pyproject.toml`**.
+Releases are driven by [`auto`](https://intuit.github.io/auto/) and triggered on merge to `main` (stable) or `rc` (release candidates). The version bump is computed from PR labels — **you never hand-edit the version in `pyproject.toml`**. The changelog commit, tag and GitHub Release are pushed by the `cirron-release` GitHub App, which is the only actor permitted to push directly to `main`.
 
 ### Release-type labels (apply exactly one per PR)
 
