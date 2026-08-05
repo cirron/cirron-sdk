@@ -1,4 +1,4 @@
-"""scikit-learn ``ci.wrap()`` — unit tests.
+"""scikit-learn ``ci.wrap()``: unit tests.
 
 Skipped when ``scikit-learn`` is not installed so the core CI path stays
 green, matching ``tests/unit/test_hooks_torch.py``.
@@ -70,9 +70,9 @@ def test_proxy_passes_through_attributes(xy):
     model = ci.wrap(est)
     model.fit(X, y)
 
-    # Fitted attribute — passes through to underlying estimator.
+    # Fitted attribute, which passes through to the underlying estimator.
     assert np.array_equal(model.coef_, est.coef_)
-    # Non-wrapped callable — passes through and does not open a scope.
+    # Non-wrapped callable, which passes through and does not open a scope.
     get_default_stack().drain_closed_all()
     params = model.get_params()
     assert params["max_iter"] == 200

@@ -180,7 +180,7 @@ def test_safetensors_roundtrip(require_safetensors, tmp_path):
 def test_size_warning_fires_for_large_payload(require_safetensors, tmp_path, caplog, monkeypatch):
     # Drop the threshold to a few bytes so a trivial tensor trips the
     # warning. Asserting the warning behavior doesn't actually require a
-    # real 100 MB allocation — and skipping it keeps the test fast and
+    # real 100 MB allocation, and skipping it keeps the test fast and
     # OOM-safe on CI.
     monkeypatch.setattr("cirron.snapshots.blob.SIZE_WARN_BYTES", 8)
     model = _FakeModel([("big.weight", _FakeTensor(np.ones((4,), dtype=np.float32)))])
@@ -289,12 +289,12 @@ def test_capture_enqueues_blob(require_safetensors, tmp_path):
     assert pb.attempts == 0
 
 
-# silent-drop safety (Copilot review, PR #28)
+# silent-drop safety
 
 
 def test_unconvertible_tensor_keeps_mode_stats(require_safetensors, tmp_path, monkeypatch):
     """If ``_tensor_to_numpy`` silently drops a tensor on the numpy path,
-    the matching ``TraceSnapshot`` record must stay ``mode="stats"`` —
+    the matching ``TraceSnapshot`` record must stay ``mode="stats"``:
     we never want ``blob_uri`` pointing at a blob that doesn't contain
     the named tensor.
     """
@@ -317,7 +317,7 @@ def test_unconvertible_tensor_keeps_mode_stats(require_safetensors, tmp_path, mo
     bad_rec = next(r for r in records if r.tensor_name == "bad")
     assert good_rec.mode in ("sampled", "full")
     assert good_rec.blob_uri is not None
-    # bad tensor was dropped by the numpy conversion — record must not
+    # bad tensor was dropped by the numpy conversion, so the record must not
     # claim a blob_uri that doesn't actually contain it.
     assert bad_rec.mode == "stats"
     assert bad_rec.blob_uri is None
@@ -375,7 +375,7 @@ def test_full_mode_serialize_failure_does_not_crash(
 
 def test_sampled_named_parameters_exception(require_safetensors, tmp_path, caplog):
     """A model whose ``named_parameters()`` raises must not crash the
-    capture path — ``capture()`` returns whatever partial records it
+    capture path; ``capture()`` returns whatever partial records it
     already collected (zero here) with a WARNING logged."""
 
     class _AngryModel:

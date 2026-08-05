@@ -168,7 +168,7 @@ def test_file_only_send_is_noop_truthy() -> None:
     assert t.send(_small_batch()) is True
 
 
-# IngestClient — headers, compression, idempotency
+# IngestClient: headers, compression, idempotency
 
 
 def _make_client(session: _FakeSession, **kwargs: Any) -> IngestClient:
@@ -208,7 +208,7 @@ def test_http_gzips_large_body() -> None:
     assert client.post_batch(batch).ok is True
     call = session.calls[0]
     assert call["headers"]["Content-Encoding"] == "gzip"
-    # gzip magic bytes — proves we sent a gzipped body, not raw JSON.
+    # gzip magic bytes, which prove we sent a gzipped body, not raw JSON.
     assert call["data"][:2] == b"\x1f\x8b"
     decoded = json.loads(gzip.decompress(call["data"]).decode("utf-8"))
     assert decoded["batch_id"] == "big-one"
@@ -372,7 +372,7 @@ def test_ingest_result_defaults() -> None:
     assert r.status is None
 
 
-# — upload_blob across all three transports
+# upload_blob across all three transports
 
 
 def test_file_only_upload_blob_returns_file_uri(tmp_path) -> None:
@@ -461,8 +461,8 @@ def test_http_upload_blob_missing_local_file_returns_none(tmp_path) -> None:
 
 def test_blob_path_derived_from_custom_ingest_path(tmp_path) -> None:
     """When a user overrides ``ingest_path`` (self-hosted endpoint with a
-    non-default API prefix), the blob route must follow the same prefix
-    — otherwise blob PUTs 404. No explicit ``blob_path`` needed."""
+    non-default API prefix), the blob route must follow the same prefix,
+    or blob PUTs 404. No explicit ``blob_path`` needed."""
     session = _FakeSession([_Resp(200, text="https://blobs.example/x")])
     client = IngestClient(
         api_endpoint="https://api.example.test",

@@ -37,8 +37,8 @@ def test_1m_marks_under_budget(record_result, baseline_metrics, assert_no_regres
         for i in range(N):
             ci.mark("loss", 0.5)
             # Drain periodically so the deque doesn't stay pinned at
-            # maxlen and start incurring drop-counter bookkeeping —
-            # match the scope-overhead test's rhythm.
+            # maxlen and start incurring drop-counter bookkeeping, which
+            # matches the scope-overhead test's rhythm.
             if (i & 0xFFFF) == 0:
                 buf.drain()
         elapsed = time.perf_counter() - start

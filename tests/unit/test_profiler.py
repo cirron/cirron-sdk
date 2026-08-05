@@ -307,7 +307,7 @@ def test_mark_fallback_attaches_to_session_then_clears_on_shutdown():
         assert p._root_scope is not None
         assert mark_mod.get_fallback_span_id() == p._root_scope.id
 
-        # Fire a mark from a worker thread — it never pushes a scope,
+        # Fire a mark from a worker thread, which never pushes a scope,
         # so it would otherwise land on the "root" sentinel.
         import threading as _threading
 

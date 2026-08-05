@@ -16,7 +16,7 @@ def _isolate_secrets_dir(monkeypatch, tmp_path):
     """Every test starts with an empty, tmp-scoped `_SECRETS_DIR`.
 
     Individual tests override with their own path by calling ``monkeypatch.setattr``
-    again — the last set value wins.
+    again; the last set value wins.
     """
     monkeypatch.setattr(client, "_SECRETS_DIR", tmp_path / "__empty__")
     # Make sure no stray CIRRON_SECRET_* leaks in from the host env.

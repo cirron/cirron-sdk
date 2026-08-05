@@ -4,7 +4,7 @@ Covers the shared :mod:`cirron.data.sql` helpers (URI parsing,
 credential resolution, query composition) and the per-driver source
 shims (postgres, mysql, databricks, snowflake). All driver tests mock
 the underlying driver so the suite runs with zero optional deps
-installed — the "missing driver raises CirronDependencyError" path is
+installed, and the "missing driver raises CirronDependencyError" path is
 also exercised explicitly.
 """
 
@@ -57,7 +57,7 @@ def _clean_singletons(monkeypatch):
 
 
 def _cirron() -> Cirron:
-    """Unauthenticated Cirron — forces the env-fallback credential path."""
+    """Unauthenticated Cirron, which forces the env-fallback credential path."""
     return Cirron(api_key=None, api_endpoint="https://api.example.com")
 
 
@@ -93,7 +93,7 @@ class TestParseSqlUri:
         assert uri.table == "events"
 
     def test_postgres_three_segment_path(self):
-        """``/database/schema/table`` — fully qualified, slash-separated."""
+        """``/database/schema/table``: fully qualified, slash-separated."""
         uri = parse_sql_uri("postgres://host/app/public/events")
         assert uri.database == "app"
         assert uri.schema == "public"
@@ -102,7 +102,7 @@ class TestParseSqlUri:
     def test_postgres_dotted_schema_in_last_segment(self):
         """Canonical Postgres ``schema.table`` convention.
 
-        Before PR #35 review this folded into ``table='public.events'``
+        This once folded into ``table='public.events'``
         and emitted invalid ``FROM "public.events"`` (one quoted
         identifier). Now the dot splits into schema + table.
         """
@@ -528,7 +528,7 @@ class TestSnowflakeDataSource:
         """Stub ``snowflake.connector`` in ``sys.modules``.
 
         ``driver()`` resolves the dotted name via ``import_module``, which
-        walks the package chain — so both the ``snowflake`` package and the
+        walks the package chain, so both the ``snowflake`` package and the
         ``snowflake.connector`` submodule have to be present.
         """
 
@@ -557,7 +557,7 @@ class TestSnowflakeDataSource:
         cursor = _FakeCursor([(7,)], [("ID", None)])
         self._install_fake_driver(monkeypatch, connect_calls, cursor)
 
-        # warehouse isn't in the URI — it comes from the platform integration
+        # warehouse isn't in the URI; it comes from the platform integration
         # record or, standalone, from the env.
         monkeypatch.setenv("SNOWFLAKE_WAREHOUSE", "COMPUTE_WH")
 

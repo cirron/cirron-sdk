@@ -113,7 +113,7 @@ def test_safe_attrs_copies_when_a_scalar_is_nonfinite():
     out = _safe_attrs(attrs)
     assert out is not attrs
     assert out == {"lr": "nan", "step": 3}
-    # The original is untouched — the flush thread must not mutate a dict
+    # The original is untouched, because the flush thread must not mutate a dict
     # the producer still owns.
     assert out["step"] == attrs["step"]
 
@@ -279,7 +279,7 @@ def test_safe_attrs_degrades_an_unclassifiable_float_without_raising():
     assert out["step"] == 3
 
 
-# snapshot_to_dict — the third record type in a batch
+# snapshot_to_dict, the third record type in a batch
 
 
 def _snapshot(**overrides) -> TraceSnapshot:

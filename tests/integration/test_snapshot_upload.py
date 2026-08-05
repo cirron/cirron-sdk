@@ -161,7 +161,7 @@ def test_blob_uploads_to_mock_object_storage(server, tmp_path):
     )
 
     # 3. One tick should drain the blob queue (→ PUT) and then produce a JSON
-    # batch (which the /api/traces POST will record but we ignore — the
+    # batch (which the /api/traces POST will record but we ignore, since the
     # ticket criterion is "blob uploads to mock object storage").
     ft._tick()  # type: ignore[attr-defined]
 

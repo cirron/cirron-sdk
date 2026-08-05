@@ -6,7 +6,7 @@ Covers the new behavior added for PR-27 review:
 - failed uploads re-enqueue with an attempt counter; the counter caps at
   ``MAX_BLOB_ATTEMPTS`` after which the blob is dropped.
 - records for blobs that haven't uploaded yet keep their local ``file://``
-  URI on disk — the spool is always internally consistent.
+  URI on disk, so the spool is always internally consistent.
 """
 
 from __future__ import annotations

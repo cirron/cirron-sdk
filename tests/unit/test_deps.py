@@ -88,7 +88,7 @@ def test_deps_multiple_missing_lists_each(fake_env: dict[str, str | None]) -> No
     # torch was present so should not appear in the missing list
     lines = msg.splitlines()
     assert not any(line.strip().startswith("- torch:") for line in lines)
-    # Combined install hint — sorted, deduped
+    # Combined install hint, sorted and deduped
     assert "pip install 'cirron-sdk[pandas,tensorflow]'" in msg
 
 
@@ -124,7 +124,7 @@ def test_deps_unknown_name_raises_value_error(
 def test_deps_does_not_import_heavy_frameworks() -> None:
     # Real probe (not the fake). Ensure ci.deps() does not load torch /
     # tensorflow / transformers into sys.modules even if find_spec finds
-    # them — the invariant is that check-time cost is near zero.
+    # them. The invariant is that check-time cost is near zero.
     before = set(sys.modules)
     ci.deps()
     after = set(sys.modules)
@@ -161,7 +161,7 @@ def test_install_hint_empty_fallback() -> None:
 def test_probe_returns_unknown_when_metadata_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # find_spec succeeds, but metadata.version raises — module is importable
+    # find_spec succeeds, but metadata.version raises: the module is importable
     # (e.g. vendored) but not pip-tracked. Should report "unknown", not None.
     class _FakeSpec:
         pass

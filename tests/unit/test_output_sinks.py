@@ -1,7 +1,7 @@
 """Tests for the ``output=`` sink plumbing.
 
 The flush thread runs on a 1s default interval, so we drive everything
-through the synchronous ``ci.flush()`` path here — that exercises the
+through the synchronous ``ci.flush()`` path here, which exercises the
 same sink list the live tick uses, without flaky timing waits.
 """
 
