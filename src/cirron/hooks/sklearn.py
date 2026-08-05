@@ -1,4 +1,4 @@
-"""``ci.wrap()`` — sklearn opt-in estimator wrapper.
+"""``ci.wrap()``: the sklearn opt-in estimator wrapper.
 
 sklearn has no callback API, so users opt in by wrapping an estimator:
 
@@ -15,7 +15,7 @@ For ``Pipeline`` (and ``FeatureUnion``) we duck-type the ``.steps`` /
 ``.transformer_list`` container and wrap each step's estimator so that
 sklearn's internal per-step dispatch produces child scopes under the
 pipeline's top-level ``fit`` scope. No ``import sklearn`` at module load
-time — sklearn is an optional extra.
+time, since sklearn is an optional extra.
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ class _WrappedEstimator:
         """Forward attribute reads, wrapping profiled methods with a scope.
 
         Args:
-            name (str): Attribute name on the underlying estimator.
+            name: Attribute name on the underlying estimator.
 
         Returns:
             Any: The underlying attribute, or a scope-opening closure when
@@ -71,7 +71,7 @@ class _WrappedEstimator:
         mutate the wrapped estimator instead of rebuilding the proxy.
 
         Args:
-            name (str): Attribute name being set.
+            name: Attribute name being set.
             value (Any): New value.
         """
         if name in type(self).__slots__:
@@ -97,7 +97,7 @@ def _wrap_method(estimator: Any, method_name: str, method: Any) -> Any:
     Args:
         estimator (Any): The underlying sklearn estimator (used for the
             ``estimator=<ClassName>`` span attr and qualname).
-        method_name (str): One of :data:`_METHODS_TO_WRAP`.
+        method_name: One of :data:`_METHODS_TO_WRAP`.
         method (Any): The bound method to delegate to.
 
     Returns:
@@ -126,7 +126,7 @@ def _wrap_method(estimator: Any, method_name: str, method: Any) -> Any:
 def _wrap_pipeline_steps(estimator: Any) -> None:
     """In-place wrap each step of a Pipeline / FeatureUnion, duck-typed.
 
-    Both containers hold ``(name, sub_estimator)`` tuples — ``Pipeline``
+    Both containers hold ``(name, sub_estimator)`` tuples: ``Pipeline``
     exposes them as ``.steps`` and ``FeatureUnion`` as
     ``.transformer_list``. We don't import sklearn; we just look for the
     attribute and shape.

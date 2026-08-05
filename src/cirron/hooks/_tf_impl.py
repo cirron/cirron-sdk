@@ -1,13 +1,13 @@
 """TensorFlow / Keras hook implementation.
 
-Kept out of ``tensorflow.py`` so self-registration at package import
-stays cheap — ``install()`` defers ``import keras`` until called by
+Kept out of ``tensorflow.py`` so self-registration at package import stays
+cheap: ``install()`` defers ``import keras`` until called by
 ``ci.profile()``.
 
 Auto-attaches a ``keras.callbacks.Callback`` to every ``Model.fit`` call
 so users get ``epoch`` / ``batch`` scopes plus metric marks from the
 Keras ``logs`` dict with zero user code. Every callback entry point is
-wrapped in :func:`_catch` — a bad ``logs`` payload or a scope push
+wrapped in :func:`_catch`, because a bad ``logs`` payload or a scope push
 failure must never crash training.
 """
 
@@ -30,7 +30,7 @@ def _catch(label: str, fn: Any, *args: Any, **kwargs: Any) -> Any:
     """Call ``fn(*args, **kwargs)``; log + swallow exceptions.
 
     Args:
-        label (str): Diagnostic label included in the log line.
+        label: Diagnostic label included in the log line.
         fn (Any): Callable to invoke under the guard.
         *args (Any): Positional args forwarded to ``fn``.
         **kwargs (Any): Keyword args forwarded to ``fn``.
@@ -58,7 +58,7 @@ class TFHookHandle:
         """Record a labeled undo callback to fire in ``uninstall``.
 
         Args:
-            label (str): Diagnostic label logged on undo failure.
+            label: Diagnostic label logged on undo failure.
             fn (Any): Zero-arg callable that reverses one patch.
         """
         self._undos.append((label, fn))
@@ -87,10 +87,9 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
     ``fit`` is actually running.
 
     Args:
-        scope_stack (ScopeStack): Per-process scope stack.
-        cirron (Cirron): The owning :class:`Cirron` instance.
-        context (HookContext): Shared install context — see
-            ``hooks/_registry.py``.
+        scope_stack: Per-process scope stack.
+        cirron: The owning :class:`Cirron` instance.
+        context: Shared install context; see ``hooks/_registry.py``.
 
     Returns:
         type: The ``CirronKerasCallback`` subclass.
@@ -101,7 +100,7 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
         """Push a scope, swallowing exceptions.
 
         Args:
-            name (str): Span name.
+            name: Span name.
             **attrs (Any): Attrs attached to the new scope.
 
         Returns:
@@ -117,7 +116,7 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
         """Close ``scope_obj``, falling back to ``close_scope`` if it isn't on top.
 
         Args:
-            scope_obj (Scope | None): The scope to close. ``None`` is a no-op.
+            scope_obj: The scope to close. ``None`` is a no-op.
         """
         if scope_obj is None:
             return
@@ -140,7 +139,7 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
 
         Args:
             model (Any): The Keras model being trained.
-            span_id (str): Id of the epoch span the records link to.
+            span_id: Id of the epoch span the records link to.
         """
         from cirron.core.snapshot_buffer import get_default_snapshot_buffer
         from cirron.snapshots.stats import capture
@@ -221,7 +220,7 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
             """Open an ``epoch`` scope indexed by Keras's epoch counter.
 
             Args:
-                epoch (int): Zero-based epoch index from Keras.
+                epoch: Zero-based epoch index from Keras.
                 logs (Any): Keras-supplied logs payload (unused).
             """
 
@@ -235,15 +234,15 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
             """Record per-epoch logs, snapshot weights, then close the ``epoch`` scope.
 
             Args:
-                epoch (int): Zero-based epoch index from Keras.
-                logs (Any): Keras-supplied logs payload — emitted as marks.
+                epoch: Zero-based epoch index from Keras.
+                logs (Any): Keras-supplied logs payload, emitted as marks.
             """
 
             def _do() -> None:
                 """Emit logs as marks, snapshot weights, and close the epoch scope."""
                 _catch("on_epoch_end.logs", _record_logs, logs)
                 # Capture weight stats against the open epoch span
-                # before we close it — keras callbacks expose the model
+                # before we close it. Keras callbacks expose the model
                 # as ``self.model``, set by the fit() runtime.
                 scope_obj = self._epoch_scope
                 if scope_obj is not None:
@@ -262,7 +261,7 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
             """Open a ``batch`` scope indexed by Keras's batch counter.
 
             Args:
-                batch (int): Zero-based batch index from Keras.
+                batch: Zero-based batch index from Keras.
                 logs (Any): Keras-supplied logs payload (unused).
             """
 
@@ -276,8 +275,8 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
             """Record per-batch logs and close the ``batch`` scope.
 
             Args:
-                batch (int): Zero-based batch index from Keras.
-                logs (Any): Keras-supplied logs payload — emitted as marks.
+                batch: Zero-based batch index from Keras.
+                logs (Any): Keras-supplied logs payload, emitted as marks.
             """
 
             def _do() -> None:
@@ -299,10 +298,9 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> TF
     as transformers).
 
     Args:
-        scope_stack (ScopeStack): Per-process scope stack.
-        cirron (Cirron): The owning :class:`Cirron` instance.
-        context (HookContext): Shared install context — see
-            ``hooks/_registry.py``.
+        scope_stack: Per-process scope stack.
+        cirron: The owning :class:`Cirron` instance.
+        context: Shared install context; see ``hooks/_registry.py``.
 
     Returns:
         TFHookHandle: Handle whose ``uninstall()`` reverses every patch.
@@ -322,9 +320,9 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> TF
     def _fit(self: Any, *args: Any, **kwargs: Any) -> Any:
         """Patched ``Model.fit``: append the cirron callback before delegating.
 
-        Always builds a fresh ``callbacks`` list — never mutates the
-        caller's container — to avoid leaking instrumentation across
-        unrelated ``fit`` calls that share an aliased list.
+        Always builds a fresh ``callbacks`` list, never mutating the
+        caller's container, so instrumentation cannot leak across unrelated
+        ``fit`` calls that share an aliased list.
 
         Args:
             self (Any): The Keras model instance.
@@ -335,10 +333,6 @@ def install(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> TF
             Any: Whatever the original ``Model.fit`` returns.
         """
         cbs = kwargs.get("callbacks")
-        # Always build a fresh list — never mutate the caller's container.
-        # Appending our callback to an aliased user list leaks the
-        # instrumentation across later unrelated ``fit`` calls that share
-        # the list.
         if cbs is None:
             cbs_list: list[Any] = []
         else:
