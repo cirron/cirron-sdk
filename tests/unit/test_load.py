@@ -32,7 +32,7 @@ from cirron.data.returns import NumpyAdapter
 from cirron.data.sources import DataSource, SourceConfig
 
 # ``cirron.data.__init__`` re-exports the ``load`` function, which shadows
-# the submodule attribute — so ``from cirron.data import load`` binds the
+# the submodule attribute, so ``from cirron.data import load`` binds the
 # function. Grab the submodule through ``importlib`` so ``monkeypatch.setattr``
 # can swap internal helpers.
 load_mod = importlib.import_module("cirron.data.load")
@@ -546,7 +546,7 @@ def test_object_store_missing_driver_raises_dependency_error(
     monkeypatch, module_name, extra, factory
 ):
     """Object-store backends must raise the same structured error the SQL
-    shims do — a bare ImportError can't be caught uniformly and its
+    shims do: a bare ImportError can't be caught uniformly and its
     hand-written pip string drifts away from the EXTRAS registry."""
     import sys
 
@@ -644,7 +644,7 @@ def test_azure_account_url_raises_without_account_name():
 
 def test_platform_match_and_ext_forwarded_as_query_params(monkeypatch, tmp_path):
     """Platform source must push match/ext to the listing route as query
-    params so filtering runs server-side (platform PR #525)."""
+    params so filtering runs server-side."""
     path = _write_parquet(tmp_path, [{"x": 1}])
     parquet_bytes = path.read_bytes()
 
@@ -702,7 +702,7 @@ def test_platform_match_and_ext_forwarded_as_query_params(monkeypatch, tmp_path)
 
 
 def test_platform_regex_filename_is_post_filtered(monkeypatch, tmp_path):
-    """A regex filename cannot be pushed to the platform route — the
+    """A regex filename cannot be pushed to the platform route, so the
     SDK must re-filter after listing."""
     path = _write_parquet(tmp_path, [{"x": 1}])
     parquet_bytes = path.read_bytes()
@@ -873,7 +873,7 @@ def test_search_raises_platform_feature(tmp_path):
 
 def test_non_tabular_json_default_passes_through(tmp_path):
     """``ci.load('file.json')`` with default as_='pandas' returns the raw
-    parsed JSON (dict/list) rather than raising — non-tabular payloads
+    parsed JSON (dict/list) rather than raising, because non-tabular payloads
     are usable in the permissive default path."""
     path = tmp_path / "cfg.json"
     path.write_text(json.dumps({"threshold": 0.5, "labels": ["a", "b"]}))

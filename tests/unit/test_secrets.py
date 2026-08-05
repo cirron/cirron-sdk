@@ -16,7 +16,7 @@ def _isolate_secrets_dir(monkeypatch, tmp_path):
     """Every test starts with an empty, tmp-scoped `_SECRETS_DIR`.
 
     Individual tests override with their own path by calling ``monkeypatch.setattr``
-    again — the last set value wins.
+    again; the last set value wins.
     """
     monkeypatch.setattr(client, "_SECRETS_DIR", tmp_path / "__empty__")
     # Make sure no stray CIRRON_SECRET_* leaks in from the host env.
@@ -87,7 +87,7 @@ def test_permission_error_raises_distinct_message(monkeypatch, tmp_path):
 
 
 def test_secret_never_appears_in_logs(monkeypatch, tmp_path, caplog):
-    """Neither successful reads nor the not-found path should emit the secret value via logging."""
+    """Neither a successful read nor the not-found path may log the secret."""
     caplog.set_level(logging.DEBUG)
 
     # env path

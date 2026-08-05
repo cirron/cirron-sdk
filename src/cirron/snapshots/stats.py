@@ -2,7 +2,7 @@
 
 Default snapshot mode. Fires at epoch boundaries from framework hooks
 (torch ``_rotate_epoch``, Keras ``on_epoch_end``, HF ``on_epoch_end``)
-and at most once per epoch for gradient stats — per-step gradient
+and at most once per epoch for gradient stats. Per-step gradient
 capture would blow the SDK's < 50 ms/epoch budget on a ResNet50-sized
 model, and the last backward's ``.grad`` tensors are still live at the
 epoch boundary (before the next ``zero_grad()``), which is what we read.
@@ -38,18 +38,15 @@ _ACTIVE_MODES = ("stats", "sampled", "full")
 # enough tensors to amortize it. ResNet50 has ~161 tensors; small models
 # (a single linear layer, a test fixture) stay on the serial path.
 _PARALLEL_MIN_TENSORS = 32
-# Small worker count — torch reductions release the GIL during ``.item()``
+# Small worker count: torch reductions release the GIL during ``.item()``
 # / ``.tolist()`` but the CPU-bound math between syncs doesn't, so more
 # than ~4 workers quickly hits diminishing returns. Capped at the host's
 # reported CPU count so we don't oversubscribe tiny containers.
 _PARALLEL_MAX_WORKERS = max(1, min(4, (os.cpu_count() or 1)))
-# Persistent pool keeps worker threads warm across epochs — spinning up a
-# new ``ThreadPoolExecutor`` per snapshot measurably inflates variance and
-# occasionally pushes a single epoch past the 50 ms budget. Lazily created
-# on first call so the SDK stays importable without any thread handles and
-# cleanly releases them at interpreter shutdown via ``atexit``. A lock
-# guards first-time construction so two concurrent callers can't each
-# build a pool and leak threads / duplicate the atexit handler.
+# A persistent pool keeps worker threads warm across epochs; building a
+# new ``ThreadPoolExecutor`` per snapshot measurably inflates variance
+# and occasionally pushes a single epoch past the 50 ms budget. Created
+# lazily so the SDK stays importable without holding thread handles.
 _stats_pool: ThreadPoolExecutor | None = None
 _stats_pool_lock = threading.Lock()
 
@@ -69,9 +66,6 @@ def _get_stats_pool() -> ThreadPoolExecutor:
     if pool is not None:
         return pool
     with _stats_pool_lock:
-        # Double-checked: another thread may have initialized the pool
-        # while we were waiting on the lock. Reuse it instead of
-        # constructing another.
         pool = _stats_pool
         if pool is None:
             import atexit
@@ -86,9 +80,10 @@ def _get_stats_pool() -> ThreadPoolExecutor:
 
 
 def _is_torch_tensor(tensor: Any) -> bool:
-    """Cheap ``isinstance(tensor, torch.Tensor)`` without importing torch
-    when it isn't already loaded. ``type(x).__module__`` is a zero-cost
-    attribute lookup — the full isinstance check would force us to have
+    """Test for a torch tensor without importing torch when it isn't loaded.
+
+    ``type(x).__module__`` is a zero-cost attribute lookup, whereas the full
+    ``isinstance(tensor, torch.Tensor)`` check would force us to have
     ``torch`` imported.
 
     Args:
@@ -105,9 +100,8 @@ def _to_numpy(tensor: Any) -> Any:
     """Best-effort conversion of a tensor to a ``numpy.ndarray``.
 
     Used on the Keras / generic path. The torch fast path in
-    :func:`_tensor_stats` skips this to avoid a full host-side copy per
-    parameter — on a ResNet50-scale model ``np.histogram`` on the
-    numpy view dominated the budget.
+    :func:`_compute_stats` skips this because ``np.histogram`` over the
+    resulting array dominated the budget on a ResNet50-scale model.
 
     Args:
         tensor (Any): Tensor-like object (torch / TF / numpy / generic).
@@ -201,7 +195,7 @@ def _histogram_range(lo: float, hi: float) -> tuple[float, float] | None:
     differently: ``np.histogram`` raises ``ValueError("supplied range ...
     is not finite")``, which :func:`_make_record`'s ``except Exception``
     turns into a silently dropped record, while ``torch.histc`` raises
-    ``RuntimeError`` — except on tensors small enough to take the
+    ``RuntimeError``, except on tensors small enough to take the
     arithmetic-bins branch, which never calls it and would emit 17 ``NaN``
     bin edges straight into the batch. Deciding here means the same
     diverged tensor produces the same record on every path: stats without
@@ -209,12 +203,12 @@ def _histogram_range(lo: float, hi: float) -> tuple[float, float] | None:
 
     When ``lo == hi`` (a constant tensor) the range is widened by 1.0 so
     the backend doesn't return an all-zero histogram. The *reported*
-    ``max`` is unaffected — callers report ``hi``, which equals ``lo`` in
-    that case anyway.
+    ``max`` is unaffected, since callers report ``hi``, which equals ``lo``
+    in that case anyway.
 
     Args:
-        lo (float): Tensor minimum.
-        hi (float): Tensor maximum.
+        lo: Tensor minimum.
+        hi: Tensor maximum.
 
     Returns:
         tuple[float, float] | None: The range to bin over, or ``None``
@@ -229,27 +223,23 @@ def _histogram_range(lo: float, hi: float) -> tuple[float, float] | None:
 
 
 def _tensor_stats_torch(tensor: Any) -> dict[str, Any]:
-    """Fast path for ``torch.Tensor`` — uses native reductions and
-    ``torch.histc`` to skip the host-side copy the NumPy path would
-    require.
+    """Compute tensor statistics with native reductions and ``torch.histc``.
 
-    Two fusion moves vs. the naive implementation:
+    The tensor is moved to CPU once, then three fusion moves cut the work
+    down versus the naive implementation:
 
-    1. ``torch.var_mean(flat, unbiased=False)`` returns variance + mean
-       in a single pass; ``.std()`` would internally recompute the mean.
-    2. ``torch.aminmax`` returns (min, max) in one pass.
-    3. All five scalar reductions are materialized via a *single*
+    1. ``torch.aminmax`` returns (min, max) in one pass.
+    2. The L2 ``norm`` is derived algebraically from ``mean`` / ``std`` /
+       ``N`` rather than via a second reduction pass. Mathematically
+       identical to a direct ``vector_norm``, but last-ULP float values
+       will differ.
+    3. The four scalar reductions are materialized in a *single*
        ``torch.stack(...).tolist()`` round-trip (batched host sync)
-       instead of five ``.item()`` calls.
+       instead of four ``.item()`` calls.
 
-    On the ubuntu CI runner the old five-``.item()`` variant ran ~4×
-    over the 50 ms ResNet50 budget; the fused variant + persistent
-    thread pool brings it inside.
-
-    The L2 ``norm`` is derived algebraically from ``mean`` / ``std`` /
-    ``N`` rather than via a second reduction pass — mathematically
-    identical to the old direct ``vector_norm`` but last-ULP float values
-    will differ.
+    On the ubuntu CI runner the per-``.item()`` variant ran ~4× over the
+    50 ms ResNet50 budget; the fused variant + persistent thread pool
+    brings it inside.
 
     Args:
         tensor (Any): A ``torch.Tensor`` (any dtype, any device).
@@ -263,24 +253,16 @@ def _tensor_stats_torch(tensor: Any) -> dict[str, Any]:
     t = tensor.detach()
     if not t.is_floating_point():
         t = t.to(torch.float32)
-    # Move to CPU once; every downstream reduction then runs on CPU
-    # without further device transfer.
     if t.device.type != "cpu":
         t = t.cpu()
     flat = t.reshape(-1)
     if flat.numel() == 0:
         return _empty_stats()
 
-    # Fused reductions:
-    # * ``aminmax`` returns (min, max) in one pass.
-    # * ``mean`` + ``std(unbiased=False)`` together are two passes.
-    # * ``norm`` is derived algebraically from mean + std + N via
-    # ``‖x‖₂ = √(N * (mean² + std²))`` (since ``var = E[x²] − E[x]²``).
-    # Skipping the dedicated ``vector_norm`` call saves one full
-    # pass over the data per tensor — measurable on ResNet50 on CI.
-    # Four scalar materializations land in a single ``.tolist()``.
-    # ``var_mean`` was tried here and measured slower than the explicit
-    # mean/std pair on CPU-contiguous tensors.
+    # ``norm`` comes from ``‖x‖₂ = √(N * (mean² + std²))`` (since
+    # ``var = E[x²] - E[x]²``), which saves a full pass over the data per
+    # tensor versus a dedicated ``vector_norm``. ``var_mean`` was tried here
+    # and measured slower than the explicit mean/std pair below.
     lo_t, hi_t = torch.aminmax(flat)
     mean_t = flat.mean()
     std_t = flat.std(unbiased=False)
@@ -290,7 +272,6 @@ def _tensor_stats_torch(tensor: Any) -> dict[str, Any]:
         dim=0,
     ).tolist()
     numel = flat.numel()
-    # Float-only algebra; we already forced float32 above.
     norm = (numel * (mean * mean + std * std)) ** 0.5
 
     # ``torch.histc`` requires a range; reuse the min/max we already
@@ -299,11 +280,10 @@ def _tensor_stats_torch(tensor: Any) -> dict[str, Any]:
     if hist_range is None:
         return {"mean": mean, "std": std, "min": lo, "max": hi, "norm": norm}
     hist_lo, hist_hi = hist_range
-    # Tiny tensors (<2×bins) can't meaningfully fill 16 buckets — skip
-    # ``torch.histc`` and emit a single-bucket histogram to avoid paying
-    # the dispatch for a degenerate case. ResNet50's many 64/128/256-long
-    # BN scale/shift tensors still use the full path; this only catches
-    # shapes like ``[1]`` or ``[]`` that round-tripping are wasteful for.
+    # Tiny tensors (under 2x bins) can't meaningfully fill 16 buckets, so
+    # they skip ``torch.histc`` and take a single-bucket histogram rather
+    # than pay the dispatch. ResNet50's 64/128/256-long BN tensors still
+    # take the full path; only shapes like ``[1]`` and ``[]`` short-circuit.
     step = (hist_hi - hist_lo) / HISTOGRAM_BINS
     bins = [hist_lo + step * i for i in range(HISTOGRAM_BINS + 1)]
     if flat.numel() < HISTOGRAM_BINS * 2:
@@ -322,16 +302,18 @@ def _tensor_stats_torch(tensor: Any) -> dict[str, Any]:
 
 
 def _tensor_stats_numpy(arr: Any) -> dict[str, Any]:
-    """Shared NumPy reduction kernel. Used by both the direct-numpy path
-    (Keras weights, generic array-likes) and the CPU-tensor fast path
-    from :func:`_tensor_stats_torch`.
+    """Shared NumPy reduction kernel.
+
+    Reached through :func:`_tensor_stats` for the direct-numpy path (Keras
+    weights, generic array-likes), and as the fallback in
+    :func:`_compute_stats` when the torch fast path raises.
 
     Args:
         arr (Any): A ``numpy.ndarray`` (any shape; dtype coerced to
             float64 if non-float).
 
     Returns:
-        dict[str, Any]: Same shape as :func:`_tensor_stats_torch` —
+        dict[str, Any]: Same shape as :func:`_tensor_stats_torch`,
             ``{mean, std, min, max, norm, histogram}``.
     """
     import numpy as np
@@ -343,13 +325,10 @@ def _tensor_stats_numpy(arr: Any) -> dict[str, Any]:
     # runs on the same contiguous buffer.
     if flat.dtype.kind != "f":
         flat = flat.astype(np.float64, copy=False)
-    # A diverged tensor is exactly what this profiler exists to capture, and
-    # summing a tensor holding both infinities is legitimately indeterminate:
-    # numpy warns "invalid value encountered in reduce" and yields nan. That
-    # nan is the correct answer and is substituted downstream by
-    # ``stats_to_wire``, so the warning carries no information the caller can
-    # act on. Suppressing it keeps the SDK from printing RuntimeWarnings into
-    # a user's training log at the precise moment their model blew up.
+    # Summing a diverged tensor that holds both infinities is genuinely
+    # indeterminate, so the nan numpy warns about is the correct answer here
+    # and ``stats_to_wire`` substitutes it downstream. Suppressed so a blown-up
+    # run doesn't print RuntimeWarnings into the user's training log.
     with np.errstate(invalid="ignore"):
         lo = float(flat.min())
         hi = float(flat.max())
@@ -376,8 +355,10 @@ def _tensor_stats_numpy(arr: Any) -> dict[str, Any]:
 
 
 def _tensor_stats(arr: Any) -> dict[str, Any]:
-    """Compute the six statistics from a numpy array (Keras / generic
-    array-like path). Thin alias over :func:`_tensor_stats_numpy`.
+    """Compute the six statistics from a numpy array.
+
+    Thin alias over :func:`_tensor_stats_numpy` for the Keras / generic
+    array-like path.
 
     Args:
         arr (Any): A numpy array (or array-like).
@@ -392,7 +373,7 @@ def _iter_named_params(model: Any) -> list[tuple[str, Any]]:
     """Return ``(name, tensor)`` pairs for a PyTorch or Keras model.
 
     PyTorch: ``model.named_parameters()``.
-    Keras: ``model.weights`` — each weight exposes ``.name`` and a
+    Keras: ``model.weights``, where each weight exposes ``.name`` and a
     ``.numpy()`` method.
     Anything else: empty list (with a single debug log).
 
@@ -433,8 +414,8 @@ def _iter_named_params(model: Any) -> list[tuple[str, Any]]:
 def _compute_stats(tensor: Any) -> dict[str, Any] | None:
     """Dispatch to the torch fast path when possible; fall back to numpy.
 
-    Returns ``None`` when the tensor cannot be read at all — the caller
-    skips the record.
+    Returns ``None`` when the tensor cannot be read at all, in which case
+    the caller skips the record.
 
     Args:
         tensor (Any): Tensor-like object.
@@ -462,10 +443,10 @@ def _make_record(
     """Build one ``TraceSnapshot`` record for a single named tensor.
 
     Args:
-        span_id (str): Span this record attaches to.
-        tensor_name (str): Display name (e.g. ``"layer1.0.weight"``).
+        span_id: Span this record attaches to.
+        tensor_name: Display name (e.g. ``"layer1.0.weight"``).
         tensor (Any): The tensor itself.
-        ts_ns (int): Capture timestamp, ``time.time_ns()``.
+        ts_ns: Capture timestamp, ``time.time_ns()``.
 
     Returns:
         TraceSnapshot | None: A record, or ``None`` on failure.
@@ -496,17 +477,19 @@ def _make_records_parallel(
     ts_ns: int,
     name_fmt: str = "{name}",
 ) -> list[TraceSnapshot]:
-    """Compute records across ``items`` in parallel for models large enough
-    to amortize the thread-pool setup cost. Torch reductions release the
-    GIL inside ``.item()`` / ``.tolist()``, so overlapping the per-tensor
-    work halves wall time on ResNet50-scale models.
+    """Compute records across ``items`` in parallel on a shared thread pool.
+
+    Used for models large enough to amortize the thread-pool setup cost.
+    Torch reductions release the GIL inside ``.item()`` / ``.tolist()``, so
+    overlapping the per-tensor work halves wall time on ResNet50-scale
+    models.
 
     Args:
-        items (list[tuple[str, Any]]): Named tensors.
-        span_id (str): Span this batch of records attaches to.
-        ts_ns (int): Common capture timestamp.
-        name_fmt (str): Format string applied to each name (used to add
-            a ``.grad`` suffix when capturing gradients).
+        items: Named tensors.
+        span_id: Span this batch of records attaches to.
+        ts_ns: Common capture timestamp.
+        name_fmt: Format string applied to each name (used to add a
+            ``.grad`` suffix when capturing gradients).
 
     Returns:
         list[TraceSnapshot]: Successfully computed records, in input
@@ -527,14 +510,14 @@ def capture_weight_stats(model: Any, span_id: str) -> list[TraceSnapshot]:
     """Compute stats for every parameter tensor on ``model``.
 
     Framework is duck-typed: PyTorch via ``named_parameters()``, Keras
-    via ``weights``. One bad tensor is logged and skipped — the rest of
-    the capture still proceeds. The caller owns mode-gating; this
+    via ``weights``. One bad tensor is logged and skipped; the rest of
+    the capture still proceeds. The caller owns mode-gating, and this
     function unconditionally returns a ``"stats"`` record for every
     readable tensor.
 
     Args:
         model (Any): A PyTorch / Keras model (duck-typed).
-        span_id (str): Span the records attach to.
+        span_id: Span the records attach to.
 
     Returns:
         list[TraceSnapshot]: One record per readable parameter tensor.
@@ -560,13 +543,12 @@ def capture_grad_stats_from_refs(
     every ``Parameter.grad`` as soon as the user's training loop
     completes a step, so by the time the epoch boundary fires there's
     nothing left to read off the model. The torch hook works around
-    this by stashing the grad tensors at ``opt_post`` — the refs keep
+    this by stashing the grad tensors at ``opt_post``; the refs keep
     the tensors alive past ``zero_grad()`` without copying the data.
 
     Args:
-        grad_refs (list[tuple[str, Any]]): Pre-stashed
-            ``(parameter_name, grad_tensor)`` pairs.
-        span_id (str): Span the records attach to.
+        grad_refs: Pre-stashed ``(parameter_name, grad_tensor)`` pairs.
+        span_id: Span the records attach to.
 
     Returns:
         list[TraceSnapshot]: Records named ``<param>.grad``; tensors
@@ -596,7 +578,7 @@ def capture_gradient_stats(model: Any, span_id: str) -> list[TraceSnapshot]:
 
     Args:
         model (Any): A PyTorch model.
-        span_id (str): Span the records attach to.
+        span_id: Span the records attach to.
 
     Returns:
         list[TraceSnapshot]: One record per parameter with a live
@@ -624,7 +606,7 @@ def capture(
 ) -> list[TraceSnapshot]:
     """One-shot gate used by framework hooks at epoch boundaries.
 
-    Returns ``[]`` — and does no work — when snapshots are disabled or
+    Returns ``[]``, and does no work, when snapshots are disabled or
     no model is available. The empty return lets call sites stay
     single-line: ``buffer.extend(capture(ci, model, span_id))``.
 
@@ -637,23 +619,23 @@ def capture(
     the dashboard never has to download a blob just to render a
     histogram.
 
-    Callers on the torch hook path may pass ``grad_refs`` — the
+    Callers on the torch hook path may pass ``grad_refs``: the
     pre-stashed ``(name, grad_tensor)`` pairs collected at ``opt_post``
     before ``zero_grad()`` nulled them. When provided, these replace the
     live ``.grad`` read performed by :func:`capture_gradient_stats`.
 
     If the weight pass raises partway through, any records already
-    collected are returned — an epoch with 900 of 1000 tensors captured
+    collected are returned: an epoch with 900 of 1000 tensors captured
     is strictly more useful than a dropped epoch.
 
     Args:
-        cirron (Cirron): The active config — read for ``snapshots`` mode,
+        cirron: The active config, read for ``snapshots`` mode,
             ``sample_rate``, and ``output_dir``.
-        model (Any | None): Model under capture; ``None`` short-circuits.
-        span_id (str): Span the records attach to.
-        include_grads (bool): When ``False``, skip the gradient pass.
-        grad_refs (list[tuple[str, Any]] | None): Pre-stashed grad refs
-            from the torch hook; falls back to a live read when ``None``.
+        model: Model under capture; ``None`` short-circuits.
+        span_id: Span the records attach to.
+        include_grads: When ``False``, skip the gradient pass.
+        grad_refs: Pre-stashed grad refs from the torch hook; falls back
+            to a live read when ``None``.
 
     Returns:
         list[TraceSnapshot]: Snapshot records; empty when snapshots are
@@ -710,14 +692,14 @@ def _maybe_serialize_blobs(
     stays ``None``) so the epoch's summary data still reaches the spool.
 
     Args:
-        cirron (Cirron): Active config (sample-rate / output-dir source).
+        cirron: Active config (sample-rate / output-dir source).
         model (Any): Model under capture.
-        span_id (str): Span the records attach to.
-        mode (str): Snapshot mode — ``"sampled"`` or ``"full"``.
-        records (list[TraceSnapshot]): Stats records to upgrade in place
-            with ``blob_uri`` and the new ``mode``.
-        grad_refs (list[tuple[str, Any]] | None): Pre-stashed grad refs.
-        include_grads (bool): Whether to also serialize gradients.
+        span_id: Span the records attach to.
+        mode: Snapshot mode, ``"sampled"`` or ``"full"``.
+        records: Stats records to upgrade in place with ``blob_uri`` and
+            the new ``mode``.
+        grad_refs: Pre-stashed grad refs.
+        include_grads: Whether to also serialize gradients.
     """
     from cirron.snapshots.sampled import serialize_and_enqueue, should_sample
 
@@ -756,7 +738,7 @@ def _resolve_grad_tensors(
     Args:
         model (Any): Model to read live grads from when ``grad_refs`` is
             ``None``.
-        grad_refs (list[tuple[str, Any]] | None): Pre-stashed grads.
+        grad_refs: Pre-stashed grads.
 
     Returns:
         list[tuple[str, Any]]: Non-``None`` ``(name, grad)`` pairs.

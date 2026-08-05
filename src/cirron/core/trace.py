@@ -1,4 +1,4 @@
-"""``ci.trace()`` — in-process read-back of the current session's spans.
+"""``ci.trace()``: in-process read-back of the current session's spans.
 
 This is the on-demand companion to the continuous ``output=`` sinks: a
 notebook user calling ``ci.trace()`` after a training cell sees the
@@ -49,12 +49,12 @@ class _TraceTreeRepr:
     def __str__(self) -> str:
         return self._text
 
-    def _repr_pretty_(self, p: Any, cycle: bool) -> None:  # noqa: ARG002 — IPython API
+    def _repr_pretty_(self, p: Any, cycle: bool) -> None:
         """IPython pretty-print hook.
 
         Args:
             p (Any): The IPython pretty-printer.
-            cycle (bool): Cycle detection flag (unused).
+            cycle: Cycle detection flag (unused).
         """
         p.text(self._text)
 
@@ -92,10 +92,9 @@ def _filter_by_name(
     """Keep only spans whose ``name`` matches and their descendants.
 
     Args:
-        spans (list[dict[str, Any]]): Flat span list.
-        marks_by_span_id (dict[str, list[dict[str, Any]]]): Marks indexed
-            by owning span id.
-        name (str): Span name to filter on.
+        spans: Flat span list.
+        marks_by_span_id: Marks indexed by owning span id.
+        name: Span name to filter on.
 
     Returns:
         tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
@@ -117,7 +116,7 @@ def _filter_by_name(
         """Mark ``root_id`` and every descendant as kept.
 
         Args:
-            root_id (str): Subtree root.
+            root_id: Subtree root.
         """
         stack = [root_id]
         while stack:
@@ -135,7 +134,7 @@ def _filter_by_name(
 
     filtered_spans = [s for s in spans if s.get("id") in keep_ids]
     filtered_marks = {sid: list(ms) for sid, ms in marks_by_span_id.items() if sid in keep_ids}
-    # ``by_id`` is built but unused in the filter path — kept for parity
+    # ``by_id`` is built but unused in the filter path, kept for parity
     # with future filters that may need O(1) span lookup.
     del by_id
     return filtered_spans, filtered_marks
@@ -149,10 +148,9 @@ def _filter_by_last(
     """Keep the ``last`` most recently closed spans by ``end_ns``.
 
     Args:
-        spans (list[dict[str, Any]]): Flat span list.
-        marks_by_span_id (dict[str, list[dict[str, Any]]]): Marks indexed
-            by owning span id.
-        last (int): Maximum number of closed spans to retain.
+        spans: Flat span list.
+        marks_by_span_id: Marks indexed by owning span id.
+        last: Maximum number of closed spans to retain.
 
     Returns:
         tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
@@ -174,24 +172,23 @@ def trace(
     last: int | None = None,
 ) -> _TraceTreeRepr | dict[str, Any] | str | pd.DataFrame | None:
     """Return the current session's scope tree.
-    * ``format="tree"`` (default) — pretty text tree. In Jupyter returns
-    a :class:`_TraceTreeRepr` so the cell renders the tree; in a
-    plain script prints to stdout and returns ``None``.
-    * ``format="dict"`` — nested dict, one node per span with
+
+    * ``format="tree"`` (default) renders a pretty text tree. In Jupyter
+    it returns a :class:`_TraceTreeRepr` so the cell renders the tree; in a
+    plain script it prints to stdout and returns ``None``.
+    * ``format="dict"`` returns a nested dict, one node per span with
     ``children``.
-    * ``format="json"`` — JSON string of the dict form.
-    * ``format="df"`` — flat ``pandas.DataFrame``, one row per span.
+    * ``format="json"`` returns a JSON string of the dict form.
+    * ``format="df"`` returns a flat ``pandas.DataFrame``, one row per span.
     Raises :class:`CirronDependencyError` if pandas is missing.
-    * ``name="epoch"`` — keep only ``epoch`` spans plus their
-    descendants.
-    * ``last=N`` — keep only the N most recently closed spans by
-    ``end_ns``.
+    * ``name="epoch"`` keeps only ``epoch`` spans plus their descendants.
+    * ``last=N`` keeps only the N most recently closed spans by ``end_ns``.
 
     Args:
-        format (TraceFormat): Output shape — ``"tree"`` (default),
-            ``"dict"``, ``"json"``, or ``"df"``.
-        name (str | None): Optional span-name filter.
-        last (int | None): Optional max-closed-spans filter.
+        format: Output shape: ``"tree"`` (default), ``"dict"``, ``"json"``,
+            or ``"df"``.
+        name: Optional span-name filter.
+        last: Optional max-closed-spans filter.
 
     Returns:
         _TraceTreeRepr | dict[str, Any] | str | pd.DataFrame | None: The
@@ -203,11 +200,10 @@ def trace(
             installed.
         ValueError: When ``format`` isn't one of the supported values.
     """
-    # Synchronous drain into the in-memory buffer so anything closed
-    # between the last tick and now is visible. We deliberately do NOT
-    # call ``flush_now()`` here — that would write a spool file as a
-    # side effect of a read-only inspection call, which is surprising
-    # in notebooks and breaks on read-only filesystems.
+    # Synchronous drain into the in-memory buffer so anything closed since
+    # the last tick is visible. Deliberately not ``flush_now()``: that would
+    # write a spool file as a side effect of a read-only inspection call,
+    # which surprises notebook users and breaks on read-only filesystems.
     try:
         from cirron.core.flush import flush_to_trace_buffer
 

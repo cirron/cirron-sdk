@@ -5,7 +5,7 @@ default ``uv run pytest`` stays fast; CI sets the env var for the
 dedicated overhead job. Each test records its measurement via the
 ``record_result`` fixture, aggregated into a JSON document at session
 end. CI uploads that document as an artifact (see
-``.github/workflows/ci.yml`` — the ``overhead`` job).
+``.github/workflows/ci.yml``, the ``overhead`` job).
 """
 
 from __future__ import annotations
@@ -36,11 +36,9 @@ _BASELINE_PATH = Path(__file__).parent / "baseline.json"
 REGRESSION_TOLERANCE = 1.20
 
 #: Timed iterations per configuration in the reference loop. Three was not
-#: enough to hold any useful tolerance: one measured cycle costs roughly
-#: 10 ms, so the entire sampled workload was ~30 ms of a job that runs for
-#: 18 seconds, and the metric's run-to-run spread on unchanged code
-#: exceeded the +20% it enforces. See tests/overhead/README.md ("Sampling")
-#: and issue #73. At ~10 ms a cycle this costs a few seconds per job.
+#: enough: at ~10 ms a cycle the whole sampled workload was ~30 ms of an
+#: 18-second job, and the run-to-run spread on unchanged code exceeded the
+#: +20% the suite enforces. A hundred cycles costs a few seconds per job.
 DEFAULT_REPEATS = 100
 
 _results: list[dict[str, Any]] = []
@@ -187,8 +185,8 @@ def reset_profiler(isolated_output_dir):
     ``Profiler.shutdown()`` clears the module singleton on its own, so a
     second ``ci.profile()`` call is *not* a no-op by itself. But the
     overhead suite runs multiple profile/shutdown cycles per test and
-    touches broader state — flush thread, watched-model weakref, blob
-    queue, snapshot buffer, default ``Cirron`` — that shutdown doesn't
+    touches broader state (flush thread, watched-model weakref, blob
+    queue, snapshot buffer, default ``Cirron``) that shutdown doesn't
     have to reset. ``_reset_for_tests`` does reset all of it, so we wrap
     each test in a clean boundary rather than depending on any specific
     shutdown path.
@@ -239,9 +237,8 @@ class Measurement(NamedTuple):
 
     ``median`` is the number gates compare against. Everything else exists
     so a reader of the CI artifact can tell an internally noisy run from a
-    run that simply sat at a different level — a question the pre-#73
-    artifacts could not answer, because the harness returned a bare float
-    and discarded its samples.
+    run that simply sat at a different level, which a harness returning a
+    bare float and discarding its samples cannot answer.
     """
 
     median: float
@@ -276,7 +273,7 @@ class Measurement(NamedTuple):
         """Median of the last third of samples over the first third.
 
         Meaningfully above 1.0 means the measured cost grew *during* the
-        run — a leak, a growing directory, a hook that installs without
+        run: a leak, a growing directory, a hook that installs without
         fully uninstalling. Extra sampling cannot average that away, and
         it biases whichever configuration is measured later.
         """
@@ -358,10 +355,10 @@ def measure_interleaved() -> Callable[..., dict[str, Measurement]]:
     :func:`measure` runs one callable to completion before the next
     starts, so each configuration occupies a different window of the job's
     wall clock. A *ratio* between two of them then carries whatever
-    changed between those windows — runner throttling, a noisy neighbour,
-    a growing spool directory — as though it were profiling overhead.
-    That is the mechanism behind the 2.3x swing on identical code reported
-    in #73 (0.3639 then 0.1573 on consecutive release pushes).
+    changed between those windows (runner throttling, a noisy neighbour, a
+    growing spool directory) as though it were profiling overhead. That is
+    the mechanism behind a measured 2.3x swing on identical code: 0.3639
+    then 0.1573 on consecutive release pushes.
 
     Running one iteration of every configuration per round means a slow
     stretch lands on all of them. The within-round order rotates so no
@@ -369,7 +366,7 @@ def measure_interleaved() -> Callable[..., dict[str, Measurement]]:
 
     ``between_rounds`` runs untimed before every round, warmup included.
     It exists for state that accumulates across rounds and would
-    otherwise bias whichever configuration produces it — see
+    otherwise bias whichever configuration produces it; see
     :func:`clear_spool`.
 
     Returns:
@@ -432,7 +429,7 @@ def _results_path() -> Path:
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     """Flush collected results to disk at session end.
 
-    Writes even on failure — the regression message is only useful if
+    Writes even on failure, because the regression message is only useful if
     the numbers that produced it are preserved. Missing output dir is
     created lazily so the default path works out-of-the-box.
     """

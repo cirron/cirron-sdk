@@ -1,16 +1,15 @@
 """The installed ``cirron-sdk`` version, resolved once per process.
 
-Every outbound path stamps this string somewhere — the ``X-Cirron-SDK-Version``
+Every outbound path stamps this string somewhere: the ``X-Cirron-SDK-Version``
 header on ingest / dataset-resolve / integration-resolve requests, and the
-``sdk_version`` field on spool batches and event-stream envelopes. It had been
-copy-pasted into four modules, two of which re-read distribution metadata on
-*every* request; that lookup walks ``sys.path`` for a value that cannot change
-while the process is alive.
+``sdk_version`` field on spool batches and event-stream envelopes. The value is
+cached because reading distribution metadata walks ``sys.path`` for something
+that cannot change while the process is alive.
 
-This module deliberately holds nothing else. ``data/`` imports it, and pulling
-in ``core.flush`` (the previous cache's home) would drag the flush thread's
-atexit and signal handlers, blob queue, and scope/mark buffers into a plain
-``ci.load()`` call.
+This module deliberately holds nothing else. ``data/`` imports it, and hosting
+the cache in ``core.flush`` instead would drag the flush thread's atexit and
+signal handlers, blob queue, and scope/mark buffers into a plain ``ci.load()``
+call.
 """
 
 from __future__ import annotations

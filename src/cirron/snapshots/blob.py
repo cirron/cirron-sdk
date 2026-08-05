@@ -2,8 +2,8 @@
 
 The stats path emits inline per-tensor summaries; sampled/full
 additionally persist the raw tensor values. One safetensors file is
-written per (span, kind) — ``weights.safetensors`` and
-``gradients.safetensors`` under ``./.cirron/snapshots/<span_id>/`` — so
+written per (span, kind): ``weights.safetensors`` and
+``gradients.safetensors`` under ``./.cirron/snapshots/<span_id>/``, so
 a 200-layer model produces two files per captured epoch instead of 400.
 Safetensors is natively a multi-tensor container; this honours the
 format's mmap/random-access story.
@@ -24,7 +24,7 @@ from cirron.core.swallow import swallowed
 
 log = logging.getLogger("cirron.snapshots.blob")
 
-SIZE_WARN_BYTES = 100 * 1024 * 1024  # 100 MB —
+SIZE_WARN_BYTES = 100 * 1024 * 1024  # 100 MB
 SNAPSHOTS_SUBDIR = "snapshots"
 WEIGHTS_FILENAME = "weights.safetensors"
 GRADIENTS_FILENAME = "gradients.safetensors"
@@ -47,7 +47,7 @@ def _require_safetensors() -> Any:
     """Import ``safetensors`` lazily; raise with an install hint on miss.
 
     Kept out of module import so the SDK stays importable without
-    safetensors installed — the dependency is only needed when a user
+    safetensors installed; the dependency is only needed when a user
     actually opts into ``sampled``/``full``.
 
     Returns:
@@ -57,7 +57,7 @@ def _require_safetensors() -> Any:
         CirronDependencyError: When the package is not installed.
     """
     try:
-        import safetensors  # noqa: F401
+        import safetensors
 
         return safetensors
     except ImportError as e:
@@ -85,7 +85,7 @@ def _is_torch_tensor(t: Any) -> bool:
 def _dtype_bytes(t: Any) -> int:
     """Best-effort per-element byte size for size-warning accounting.
 
-    Returns 4 when the dtype is unknown — a conservative float32 guess
+    Returns 4 when the dtype is unknown: a conservative float32 guess
     that keeps the warning threshold roughly right on exotic frameworks
     rather than silently under-reporting.
 
@@ -136,7 +136,7 @@ def _total_bytes(named_tensors: list[tuple[str, Any]]) -> int:
     """Estimate the on-disk byte cost of a batch of named tensors.
 
     Args:
-        named_tensors (list[tuple[str, Any]]): Tensors to size.
+        named_tensors: Tensors to size.
 
     Returns:
         int: Sum of ``numel * dtype_bytes`` across all tensors.
@@ -148,10 +148,10 @@ def _maybe_warn_size(total_bytes: int, param_count: int, kind: str, span_id: str
     """Log a warning when a single snapshot exceeds ``SIZE_WARN_BYTES``.
 
     Args:
-        total_bytes (int): Estimated blob size.
-        param_count (int): Number of tensors in the blob.
-        kind (str): ``"weights"`` or ``"gradients"``.
-        span_id (str): Span the blob attaches to (for log context).
+        total_bytes: Estimated blob size.
+        param_count: Number of tensors in the blob.
+        kind: ``"weights"`` or ``"gradients"``.
+        span_id: Span the blob attaches to (for log context).
     """
     if total_bytes < SIZE_WARN_BYTES:
         return
@@ -166,17 +166,18 @@ def _maybe_warn_size(total_bytes: int, param_count: int, kind: str, span_id: str
 
 
 def _to_serializable_dict(named_tensors: list[tuple[str, Any]]) -> tuple[dict[str, Any], bool]:
-    """Split the input into a ``{tensor_name: tensor}`` dict and a flag
-    indicating whether everything is a torch tensor (torch writer path)
-    or we need the numpy writer.
+    """Split the input into a ``{tensor_name: tensor}`` dict and a writer flag.
 
-    Tensor names are passed through unchanged — safetensors accepts
+    The flag indicates whether everything is a torch tensor (torch writer
+    path) or the numpy writer is needed.
+
+    Tensor names are passed through unchanged: safetensors accepts
     arbitrary UTF-8 strings as keys. Keeping the name identical to
     ``TraceSnapshot.tensor_name`` means consumers can do
     ``safetensors[record.tensor_name]`` without any extra mapping.
 
     Args:
-        named_tensors (list[tuple[str, Any]]): Input pairs.
+        named_tensors: Input pairs.
 
     Returns:
         tuple[dict[str, Any], bool]: ``(name_to_tensor, all_torch)``.
@@ -239,11 +240,11 @@ def _to_numpy_dict(named: dict[str, Any]) -> dict[str, Any]:
 
     Used on the non-torch path (Keras, pre-stashed grad refs that were
     already detached, etc.). Individual failures are logged and the
-    tensor is skipped — partial capture is strictly more useful than
+    tensor is skipped, since partial capture is strictly more useful than
     dropping the entire epoch.
 
     Args:
-        named (dict[str, Any]): Source ``{name: tensor}`` map.
+        named: Source ``{name: tensor}`` map.
 
     Returns:
         dict[str, Any]: ``{name: numpy_array}``; failed entries omitted.
@@ -259,11 +260,11 @@ def _to_numpy_dict(named: dict[str, Any]) -> dict[str, Any]:
 
 
 def snapshot_dir(output_dir: str | Path, span_id: str) -> Path:
-    """``<output_dir>/snapshots/<span_id>/`` — the per-span blob directory.
+    """Return ``<output_dir>/snapshots/<span_id>/``, the per-span blob directory.
 
     Args:
-        output_dir (str | Path): Root output directory.
-        span_id (str): Span the directory is for.
+        output_dir: Root output directory.
+        span_id: Span the directory is for.
 
     Returns:
         Path: ``<output_dir>/snapshots/<span_id>``.
@@ -272,13 +273,14 @@ def snapshot_dir(output_dir: str | Path, span_id: str) -> Path:
 
 
 def blob_remote_key(span_id: str, filename: str) -> str:
-    """Remote object key for the platform blob store. Mirrors the on-disk
-    layout under the ``snapshots/`` prefix — the platform worker
-    uses the same path to look up the blob.
+    """Return the remote object key for the platform blob store.
+
+    The key mirrors the on-disk layout under the ``snapshots/`` prefix: the
+    platform worker uses the same path to look up the blob.
 
     Args:
-        span_id (str): Span the blob attaches to.
-        filename (str): Blob filename (e.g. ``"weights.safetensors"``).
+        span_id: Span the blob attaches to.
+        filename: Blob filename (e.g. ``"weights.safetensors"``).
 
     Returns:
         str: ``snapshots/<span_id>/<filename>``.
@@ -296,17 +298,17 @@ def serialize_tensors(
 
     Returns ``(path, total_bytes, written_keys)`` on success, or ``None``
     when the input is empty or serialization fails. ``written_keys`` is
-    the set of tensor names actually present in the file — on the numpy
+    the set of tensor names actually present in the file: on the numpy
     path some tensors can be skipped if ``_tensor_to_numpy`` fails, so
     callers must use this set (not the input names) when annotating
     records with a ``blob_uri``. ``kind`` must be ``"weights"`` or
-    ``"gradients"`` — it selects the filename.
+    ``"gradients"``, which selects the filename.
 
     Args:
-        span_id (str): Span the blob attaches to.
-        kind (str): ``"weights"`` or ``"gradients"``.
-        named_tensors (list[tuple[str, Any]]): Tensors to serialize.
-        output_dir (str | Path): Root output directory.
+        span_id: Span the blob attaches to.
+        kind: ``"weights"`` or ``"gradients"``.
+        named_tensors: Tensors to serialize.
+        output_dir: Root output directory.
 
     Returns:
         tuple[Path, int, set[str]] | None: ``(path, total_bytes,

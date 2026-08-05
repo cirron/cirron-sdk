@@ -1,8 +1,8 @@
 """Process-wide buffer for ``TraceSnapshot`` records.
 
-Snapshots fire at most once per epoch from a framework callback — not
-from the per-scope hot path — so a simple ``threading.Lock`` around a
-list is fine. Contrast with ``MarkBuffer``, where the lock-free
+Snapshots fire at most once per epoch from a framework callback, not from
+the per-scope hot path, so a simple ``threading.Lock`` around a list is
+fine. Contrast with ``MarkBuffer``, where the lock-free
 per-thread deque exists because marks come in from every producer
 thread at step-level frequency.
 
@@ -41,7 +41,7 @@ class SnapshotBuffer:
         """Add one snapshot record (drops + bumps ``drop_count`` past cap).
 
         Args:
-            snapshot (TraceSnapshot): The record to append.
+            snapshot: The record to append.
         """
         with self._lock:
             if len(self._items) >= self._soft_cap:
@@ -53,7 +53,7 @@ class SnapshotBuffer:
         """Add many records, partially accepting up to the cap.
 
         Args:
-            snapshots (list[TraceSnapshot]): The records to append.
+            snapshots: The records to append.
         """
         if not snapshots:
             return

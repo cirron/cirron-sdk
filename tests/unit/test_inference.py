@@ -108,7 +108,7 @@ def test_concurrent_async_isolation():
     rids = {r.attrs["request_id"] for r in requests}
     assert len(rids) == 20
 
-    # Each inner's parent_id matches exactly one request's id — no crossover.
+    # Each inner's parent_id matches exactly one request's id, so no crossover.
     req_ids = {r.id for r in requests}
     for inner in inners:
         assert inner.parent_id in req_ids
@@ -245,7 +245,7 @@ def test_isolated_state_registry_pruned_after_drain():
 
 
 def test_works_without_ci_profile():
-    """``ci.profile()`` was never called — decorator must not require it."""
+    """``ci.profile()`` was never called; the decorator must not require it."""
 
     @ci.inference
     def predict(x):

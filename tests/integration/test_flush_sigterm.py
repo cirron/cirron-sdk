@@ -1,14 +1,14 @@
 """Integration test: SIGTERM flushes the spool, then chains the prior handler.
 
 SIGTERM is how Kubernetes stops every container, so this is the shutdown path
-that matters most in production — yet only the ``atexit`` path was covered.
+that matters most in production, yet only the ``atexit`` path was covered.
 ``_signal_handler`` runs ``_shutdown()`` (flush + stop) *first*, then chains:
 ``SIG_IGN`` is honored, a callable prior handler is invoked, and anything else
 (i.e. ``SIG_DFL``) is restored and re-raised via ``os.kill`` so the process
 still dies with the correct exit signature.
 
 Both children below are built with ``str.format``, so the scripts must not
-contain a literal ``{`` or ``}`` anywhere — no dicts, no f-strings, no set
+contain a literal ``{`` or ``}`` anywhere: no dicts, no f-strings, no set
 literals.
 """
 
@@ -27,22 +27,10 @@ pytestmark = pytest.mark.skipif(
     reason="POSIX signal semantics: os.kill(SIGTERM) on Windows terminates without running the handler",
 )
 
-# The sentinel handler is installed BEFORE start_flush_thread, because
-# _register_exit_handlers snapshots signal.getsignal(SIGTERM) into
-# _prior_sigterm. Installed afterwards it would never be seen.
-#
-# The scope is closed before the signal is raised: flush_now() only drains
-# *closed* scopes, so signalling from inside the `with` block would prove
-# nothing.
-#
-# The trailing sleep is a liveness backstop, NOT synchronization — the handler
-# terminates the process long before it elapses, and the parent's timeout
-# bounds it either way.
-#
-# The prior handler records whether the spool was ALREADY written by the time
-# it ran. Without that, this test would be vacuous: prior() calls sys.exit(0),
-# which triggers atexit, which also flushes — so the mere presence of spool
-# data would not prove the signal handler flushed *before* chaining.
+# Ordering is load-bearing. _register_exit_handlers snapshots
+# signal.getsignal(SIGTERM), so the sentinel handler must precede
+# start_flush_thread. flush_now() drains only closed scopes, so the signal is
+# raised outside the `with`. The trailing sleep is liveness only, not a barrier.
 CHAINED_SCRIPT = """
 import glob, os, signal, sys, time
 sys.path.insert(0, {src!r})
@@ -107,7 +95,13 @@ def _read_spool(out_dir: Path, stderr: str) -> dict:
 
 
 def test_sigterm_flushes_then_chains_prior_handler(tmp_path: Path):
-    """A callable prior SIGTERM handler must still run — after the flush."""
+    """A callable prior SIGTERM handler must still run, after the flush.
+
+    The prior handler records whether the spool was already on disk by the time it
+    ran, which is what keeps this test from being vacuous: prior() calls
+    sys.exit(0), which triggers atexit, which also flushes, so the mere presence of
+    spool data would not prove the signal handler flushed before chaining.
+    """
     out_dir = tmp_path / ".cirron"
     marker = tmp_path / "chained.marker"
     result = _run(
@@ -132,7 +126,7 @@ def test_sigterm_flushes_then_chains_prior_handler(tmp_path: Path):
 
 def test_sigterm_default_disposition_flushes_then_reraises(tmp_path: Path):
     """With no prior handler the disposition is SIG_DFL, so the handler must
-    restore it and re-kill — the process dies with the SIGTERM signature and
+    restore it and re-kill, so the process dies with the SIGTERM signature and
     the data is still on disk."""
     out_dir = tmp_path / ".cirron"
     result = _run(DEFAULT_SCRIPT.format(src=_src_dir(), out=str(out_dir)))

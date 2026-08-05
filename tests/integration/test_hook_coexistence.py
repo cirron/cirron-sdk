@@ -1,6 +1,6 @@
 """Integration test: the real ``install_hooks`` dispatcher with both real hooks.
 
-Scope note — what this adds over the unit tests. ``test_hooks_transformers.py``
+Scope note on what this adds over the unit tests. ``test_hooks_transformers.py``
 already co-installs the two REAL installers (``tr_install`` then
 ``torch_install``) through a hand-built ``HookContext`` and asserts single
 epoch ownership. What it does NOT cover, and what this file does, is the
@@ -13,7 +13,7 @@ production entry point itself: ``install_hooks()``, which
 
 Both of those are covered today only by STUB installers
 (``test_hook_registry.py``). Joining the real dispatcher to the real installers
-and a real ``Trainer`` run is the gap this closes — and it doubles as the
+and a real ``Trainer`` run is the gap this closes, and it doubles as the
 canary for transformers 5.x compatibility.
 
 The tiny model / dataset / args harness is copied from

@@ -128,8 +128,24 @@ target-version = "py311"
 extend-exclude = ["src/cirron/_version.py"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B"]
-ignore = ["E501"]
+select = ["E", "F", "I", "UP", "B", "W", "A", "D", "RUF100"]
+# Rationale for every entry below: docs/style-guide.md
+ignore = [
+    "E501",  # code-line length is ruff-format's job; doc lines use W505
+    "D107",  # ctor params belong in the class docstring's Args:
+    "D105",  # __len__ / __repr__ / __enter__ are self-describing
+    "D203",  # conflicts with D211
+    "D213",  # conflicts with D212
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.pycodestyle]
+max-doc-length = 88
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D"]  # exempt test modules
 
 [tool.mypy]
 python_version = "3.11"

@@ -2,7 +2,7 @@
 
 Spawns a subprocess that opens a scope and emits a mark, then exits without
 calling ``flush()``. The parent asserts that the spool directory contains a
-batch JSON with the expected content — proof the ``atexit`` hook ran.
+batch JSON with the expected content, proving the ``atexit`` hook ran.
 """
 
 from __future__ import annotations

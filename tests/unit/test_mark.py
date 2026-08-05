@@ -79,7 +79,7 @@ def test_mark_without_scope_attaches_to_root():
 def test_mark_without_scope_uses_fallback_span_id_when_set():
     """When ``ci.profile()`` has set the session root scope id as the
     fallback, marks fired with no open scope on the current thread
-    attach to the session span — not to the legacy ``"root"`` sentinel."""
+    attach to the session span, not to the legacy ``"root"`` sentinel."""
     set_fallback_span_id("session-id-abc")
     try:
         ci.mark("top-level", 42)
@@ -174,7 +174,7 @@ def test_coercion_float_int_bool():
 
     assert by_name["i"].value_type == "int"
     assert by_name["i"].value == 7
-    # bool before int — ``isinstance(True, int)`` is True
+    # bool before int, because ``isinstance(True, int)`` is True
     assert by_name["b_true"].value_type == "bool"
     assert by_name["b_true"].value is True
     assert by_name["b_false"].value_type == "bool"
@@ -203,7 +203,7 @@ def test_coercion_string_truncation_multibyte_clean():
     assert isinstance(m.value, str)
     encoded = m.value.encode("utf-8")
     assert len(encoded) <= MAX_STRING_BYTES
-    # round-trip is clean — no UnicodeDecodeError, no replacement chars
+    # round-trip is clean: no UnicodeDecodeError, no replacement chars
     assert m.value == encoded.decode("utf-8")
     assert "\ufffd" not in m.value
 
@@ -239,7 +239,7 @@ def test_threads_have_isolated_buffers():
 
 def test_drain_all_crosses_threads():
     # Marks emitted on a worker thread are drainable from any thread via
-    # drain_all() — required for the flush thread.
+    # drain_all(), which the flush thread requires.
     get_default_mark_buffer().drain_all()  # clear lingering
     get_default_stack().drain_closed_all()
 
@@ -264,7 +264,7 @@ def test_buffer_full_sets_wake_event():
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         buf.append(Mark(id="c", span_id="s", name="n", value_type="int", value=2))
-    # Third append is on a full buffer — should signal the consumer.
+    # Third append is on a full buffer, so it should signal the consumer.
     assert wake.is_set()
 
 

@@ -68,7 +68,7 @@ def test_tree_format_jupyter_returns_repr(monkeypatch, capsys):
     result = ci.trace()
     assert isinstance(result, _TraceTreeRepr)
     assert "epoch[0]" in repr(result)
-    # Jupyter path must NOT print to stdout — the cell renders the value.
+    # Jupyter path must NOT print to stdout; the cell renders the value.
     assert capsys.readouterr().out == ""
 
 
@@ -150,7 +150,7 @@ def test_invalid_format_raises():
 
 
 def test_trace_works_without_profile():
-    """No ``ci.profile()`` — buffer still populates from raw scope/mark
+    """No ``ci.profile()``: the buffer still populates from raw scope/mark
     use, and ``ci.trace()`` renders whatever's there."""
     set_default_trace_buffer(_TraceBuffer())
     with ci.scope("standalone"):
@@ -161,8 +161,8 @@ def test_trace_works_without_profile():
 
 
 def test_trace_without_profile_does_not_write_spool(tmp_path):
-    """PR #43 review #5: ``ci.trace()`` in a profile-less process must
-    not write a spool file as a side effect — that breaks read-only
+    """``ci.trace()`` in a profile-less process must
+    not write a spool file as a side effect, which breaks read-only
     filesystems and surprises notebook users."""
     set_default_trace_buffer(_TraceBuffer())
     with ci.scope("standalone"):
@@ -174,14 +174,14 @@ def test_trace_without_profile_does_not_write_spool(tmp_path):
 
 
 def test_trace_buffer_caps_marks_per_span():
-    """PR #43 review #4: marks for an open (never-evicted) span must be
+    """Marks for an open (never-evicted) span must be
     bounded so long-running processes can't grow ``_marks`` unbounded."""
     from cirron.core.flush import Batch
     from cirron.core.trace_buffer import _TraceBuffer
 
     buf = _TraceBuffer(max_spans=10, max_marks_per_span=4)
     open_span_id = "open-session"
-    # No span entry for ``open_span_id`` — it's still open, so it'll
+    # No span entry for ``open_span_id``, which is still open, so it'll
     # never appear in batch.spans. Push 100 point marks at it.
     marks = [
         {"span_id": open_span_id, "name": "loss", "value": i, "kind": "point"} for i in range(100)
@@ -225,7 +225,7 @@ def _produce_nonfinite_span():
 
 def test_tree_format_renders_the_nonfinite_token(capsys):
     # The local inspect surface must not print ``loss=None`` for a
-    # diverged loss — that hides the thing the trace was opened for.
+    # diverged loss, which hides the thing the trace was opened for.
     _produce_nonfinite_span()
     ci.trace()
     out = capsys.readouterr().out

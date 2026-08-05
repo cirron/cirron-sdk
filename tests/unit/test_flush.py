@@ -1,6 +1,7 @@
 """Tests for the flush thread (src/cirron/core/flush.py).
 
-Covers the acceptance criteria on ``drain_once`` empties both buffers into a well-formed batch
+Covers the acceptance criteria on ``drain_once``: it empties both buffers
+into a well-formed batch
 - ``SpoolWriter.write`` produces a parseable file matching the schema
 - spool cap enforced; oldest files dropped and counter incremented
 - supervisor respawns the worker after a thread death
@@ -367,8 +368,8 @@ def test_spool_eviction_keeps_total_when_file_still_present(tmp_path, monkeypatc
 
 
 def test_spool_periodic_rescan_reconciles_counter(tmp_path, monkeypatch):
-    """Under-cap drift is corrected by the forced periodic rescan — the
-    guard that keeps the cap honest when several ranks share a spool dir."""
+    """Under-cap drift is corrected by the forced periodic rescan, the guard
+    that keeps the cap honest when several ranks share a spool dir."""
     from cirron.core import flush as flush_mod
 
     monkeypatch.setattr(flush_mod, "SPOOL_RESCAN_EVERY_WRITES", 2)
@@ -634,7 +635,7 @@ def test_tick_writes_spool_and_invokes_transport(tmp_path):
     thread = _make_thread(tmp_path, writer=writer, transport=FakeTransport())
     with ci.scope("s"):
         ci.mark("x", 1)
-    thread._tick()  # direct call — no need to start the thread
+    thread._tick()  # direct call, no need to start the thread
 
     files = list(writer.spool_dir.glob("*.json"))
     assert len(files) == 1
@@ -642,15 +643,9 @@ def test_tick_writes_spool_and_invokes_transport(tmp_path):
     assert sent[0]["schema_version"] == SPOOL_SCHEMA_VERSION
 
 
-# ---------------------------------------------------------------------------
-# Durability: failure paths inside ``_tick_body``
-#
-# These tests call ``_tick_body()`` directly rather than ``_tick()``. ``_tick``
-# is a deliberate catch-all wrapper (flush.py) that turns *any* escaping
-# exception into a WARNING, so testing through it would pass even if the
-# per-sink / per-transport try-except blocks were deleted. Driving
-# ``_tick_body`` makes those inner blocks the actual subject.
-# ---------------------------------------------------------------------------
+# Durability tests below drive ``_tick_body()`` rather than ``_tick()``, whose
+# catch-all turns *any* escaping exception into a WARNING and would pass even
+# with the per-sink / per-transport try-except blocks deleted.
 
 
 class _RaisingSink:
@@ -679,7 +674,7 @@ def test_failing_sink_does_not_block_other_sinks(tmp_path, caplog):
     """A sink raising in ``emit`` must not stop later sinks from receiving
     the batch, and must not propagate out of ``_tick_body``.
 
-    The raising sink is listed *first* on purpose — that ordering is what
+    The raising sink is listed *first* on purpose, because that ordering is what
     proves the loop continues past a failure rather than merely tolerating a
     failure at the end.
     """
@@ -736,7 +731,7 @@ def test_raising_transport_keeps_spool(tmp_path):
 def test_transport_false_return_keeps_spool(tmp_path):
     """``send`` returning ``False`` (the protocol's soft failure) keeps the spool.
 
-    Verified behavior: ``_tick_body`` **discards** ``send``'s return value —
+    Verified behavior: ``_tick_body`` **discards** ``send``'s return value:
     there is no ``if not ok:`` branch, so ``False`` and ``True`` are
     indistinguishable to the flush thread. The ``Transport`` docstring's
     "``False`` to leave the batch in spool" is honored *structurally*, because
@@ -812,11 +807,10 @@ def test_live_flush_thread_drains_cross_thread(tmp_path):
 
 
 def test_buffer_full_event_wakes_thread_before_interval(tmp_path):
-    # 60s interval — the wake event is the only thing that can trigger a
-    # tick inside the test window. We observe the tick via ``_tick_hook``
-    # instead of the drain path because scope/mark state is thread-local
-    #: a scope closed on the main thread is not visible from the
-    # flush thread, so file-existence is not a reliable signal here.
+    # With a 60s interval the wake event is the only thing that can trigger a tick
+    # inside the test window. We observe the tick via ``_tick_hook`` rather than the
+    # drain path: scope state is thread-local, so a scope closed on the main thread
+    # is invisible to the flush thread and file-existence proves nothing.
     wake = threading.Event()
     ticked = threading.Event()
     writer = _make_writer(tmp_path)
@@ -948,7 +942,7 @@ def test_tick_survives_unserializable_scope_attr(tmp_path):
     assert len(files) == 1, "batch was dropped instead of sanitized"
     payload = json.loads(files[0].read_text())
     assert payload["spans"][0]["name"] == "epoch"
-    # Set ordering is not stable — assert the degradation, not the text.
+    # Set ordering is not stable, so assert the degradation, not the text.
     assert isinstance(payload["spans"][0]["attrs"]["tags"], str)
     assert payload["marks"][0]["name"] == "loss"
 
@@ -1082,11 +1076,10 @@ def test_transport_receives_sanitized_snapshots(tmp_path):
 
 
 def test_every_sink_encodes_the_same_hostile_batch(tmp_path):
-    # The invariant behind issue #57: a batch the spool can write is a batch
-    # the transports can ship. Assertions run against the *in-memory* dict the
-    # worker handed each sink, never a copy read back from the spool file — a
-    # JSON round-trip launders the batch, so reading the file back would make
-    # this pass even with sanitization removed.
+    # A batch the spool can write is a batch the transports can ship. Assertions
+    # run against the *in-memory* dict the worker handed each sink, never a copy
+    # read back from the spool file: a JSON round-trip launders the batch, so
+    # reading the file back would pass even with sanitization removed.
     writer = _make_writer(tmp_path)
     captured: list[dict] = []
 
@@ -1114,10 +1107,9 @@ def test_every_sink_encodes_the_same_hostile_batch(tmp_path):
     batch = captured[0]
 
     # No ``default=``, so an unencodable value raises TypeError, and
-    # ``allow_nan=False``, so a leaked non-finite float raises ValueError.
-    # Both are needed: the stdlib default permits ``NaN`` / ``Infinity`` and
-    # would let a leak through as a token no conforming parser accepts. This
-    # is the assertion the encoders' own fallbacks would otherwise paper over.
+    # ``allow_nan=False``, so a leaked non-finite float raises ValueError. Both are
+    # needed: the stdlib default emits ``NaN`` / ``Infinity``, a token no conforming
+    # parser accepts. This is what the encoders' own fallbacks would paper over.
     json.dumps(batch, allow_nan=False)
 
     assert isinstance(batch["spans"][0]["attrs"]["tags"], str)
@@ -1297,14 +1289,10 @@ def test_every_batch_assembly_site_substitutes_identically(tmp_path):
     assert buffered[0]["value_nonfinite"] == "-inf"
 
 
-# flush_now()'s fallback writer after the flush thread is gone (issue #59).
-#
 # ``stop_flush_thread`` clears ``_writer``, and the atexit handler calls
-# ``flush_now()`` on every interpreter exit — including after an explicit
-# ``ci.shutdown()``. The ad-hoc writer that path builds used to be hardcoded
-# to ``./.cirron/spool/`` at the 1 GB default cap, so it wrote to an
-# unconfigured directory and could evict spool files the user configured a
-# larger cap to keep.
+# ``flush_now()`` on every interpreter exit, including after an explicit
+# ``ci.shutdown()``. The ad-hoc writer that path builds must honour the configured
+# directory and cap, or it evicts spool files the user raised the cap to keep.
 
 
 @pytest.fixture

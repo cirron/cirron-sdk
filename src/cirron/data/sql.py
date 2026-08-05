@@ -3,15 +3,15 @@
 The per-driver modules (``postgres``, ``mysql``, ``databricks``,
 ``snowflake``) are thin shims: import the driver lazily, hand the
 resolved credentials to the driver's ``connect()``, and pipe the cursor
-through :func:`execute_to_pandas`. Everything else — URI parsing,
-credential resolution, ``SELECT`` composition — lives here so the four
+through :func:`execute_to_pandas`. Everything else (URI parsing,
+credential resolution, ``SELECT`` composition) lives here so the four
 sources stay consistent.
 
 Credential resolution (:class:`CredentialResolver`) is two-stage:
 
 1. Ask the platform (``GET /api/integrations/resolve?scheme=&host=&database=``)
    for scoped short-lived credentials. 404 / 5xx / connection failure
-   are treated as "no registered integration" rather than fatal — the
+   are treated as "no registered integration" rather than fatal, because
    platform endpoint is planned work and the SDK path must tolerate its
    absence.
 2. Fall back to credentials already present in the URI, then to
@@ -19,7 +19,7 @@ Credential resolution (:class:`CredentialResolver`) is two-stage:
 
 If neither resolves, raise :class:`CirronPlatformRequired` with an
 actionable message. ``where=`` is passed through unescaped ("SQL
-injection is the user's problem — they're querying their own data").
+injection is the user's problem; they're querying their own data").
 """
 
 from __future__ import annotations
@@ -61,10 +61,23 @@ _TIMEOUT_SEC = 10.0
 class SqlUri:
     """Parsed components of a SQL-scheme URI.
 
-    The four supported schemes carry different identifier hierarchies —
+    The four supported schemes carry different identifier hierarchies.
     Postgres/MySQL use ``database/table``; Snowflake/Databricks use a
-    three-part ``database.schema.table`` namespace — so this struct
-    holds the union and individual drivers read the fields they need.
+    three-part ``database.schema.table`` namespace. This struct holds the
+    union and individual drivers read the fields they need.
+
+    Attributes:
+        scheme: URI scheme, one of ``postgres``, ``mysql``, ``snowflake``,
+            ``databricks``.
+        user: Username carried inline in the URI, if any.
+        password: Password carried inline in the URI, if any.
+        host: Hostname, or the account / workspace identifier for
+            Snowflake and Databricks.
+        port: Explicit port, or ``None`` to use the driver default.
+        database: Database or catalog name.
+        schema: Schema name, for the three-part namespaces only.
+        table: Table name, the only component every scheme requires.
+        raw: The URI exactly as the caller passed it.
     """
 
     scheme: str
@@ -88,11 +101,11 @@ def parse_sql_uri(uri: str) -> SqlUri:
     * ``snowflake://account/database.schema.table`` (or slash-separated)
     * ``databricks://workspace/catalog.schema.table`` (or slash-separated)
 
-    Postgres/MySQL accept a single-element path (table only) — the driver
+    Postgres/MySQL accept a single-element path (table only), and the driver
     falls back to its default database.
 
     Args:
-        uri (str): A SQL-scheme URI in one of the supported formats.
+        uri: A SQL-scheme URI in one of the supported formats.
 
     Returns:
         SqlUri: Parsed components.
@@ -176,10 +189,10 @@ def _parse_pg_mysql_path(
 
     Accepts three shapes:
 
-    * ``/table`` — no database, no schema.
-    * ``/database/table`` — database + table, default schema.
-    * ``/database/schema/table`` — fully qualified.
-    * ``/database/schema.table`` — schema dotted into the last segment.
+    * ``/table``: no database, no schema.
+    * ``/database/table``: database + table, default schema.
+    * ``/database/schema/table``: fully qualified.
+    * ``/database/schema.table``: schema dotted into the last segment.
 
     A 2-segment path with a dot in the last segment (``/db/public.events``)
     is treated as ``database=db, schema=public, table=events`` so the
@@ -189,10 +202,10 @@ def _parse_pg_mysql_path(
     identifier), which is invalid SQL.
 
     Args:
-        scheme (str): ``"postgres"`` or ``"mysql"`` — used in error
+        scheme: ``"postgres"`` or ``"mysql"``, used in error
             messages.
-        path_parts (list[str]): Non-empty path segments split on ``/``.
-        uri (str): The original URI, included verbatim in error
+        path_parts: Non-empty path segments split on ``/``.
+        uri: The original URI, included verbatim in error
             messages.
 
     Returns:
@@ -208,7 +221,7 @@ def _parse_pg_mysql_path(
             f"(expected {scheme}://host/database[/schema]/table)"
         )
     if len(path_parts) == 1:
-        # Bare table — possibly with a dotted schema (``/public.events``).
+        # Bare table, possibly with a dotted schema (``/public.events``).
         if "." in path_parts[0]:
             schema_part, _, table = path_parts[0].partition(".")
             if not schema_part or not table:
@@ -216,7 +229,7 @@ def _parse_pg_mysql_path(
             return None, schema_part, table
         return None, None, path_parts[0]
     if len(path_parts) == 2:
-        # ``/database/table`` — or ``/database/schema.table``.
+        # ``/database/table``, or ``/database/schema.table``.
         database = path_parts[0]
         if "." in path_parts[1]:
             schema_part, _, table = path_parts[1].partition(".")
@@ -243,6 +256,16 @@ class SqlCredentials:
     specific fields (e.g., Snowflake ``warehouse`` / ``role``, Databricks
     ``http_path``) that the platform's resolve endpoint may return
     alongside standard host/user/password.
+
+    Attributes:
+        user: Username to authenticate as.
+        password: Password, for the schemes that authenticate with one.
+        host: Hostname, account, or workspace to connect to.
+        port: Explicit port, or ``None`` to use the driver default.
+        database: Database or catalog to connect to.
+        schema: Schema to connect to, for the three-part namespaces.
+        token: Bearer token, used by Databricks in place of a password.
+        extra: Driver-specific connection fields.
     """
 
     user: str | None = None
@@ -260,13 +283,13 @@ class CredentialResolver:
 
     Order is deliberate:
 
-    1. **URI-carried credentials** always win when present — the user
-       put them there explicitly, so the platform shouldn't second-guess.
+    1. **URI-carried credentials** always win when present. The user put
+       them there explicitly, so the platform shouldn't second-guess.
     2. **Platform resolve endpoint** (``GET /api/integrations/resolve``)
-       — when the workspace has a registered integration for
+       is next: when the workspace has a registered integration for
        ``(scheme, host, database)``, the platform vends scoped short-
        lived credentials. 404 / connection failure means "fall back".
-    3. **``ci.secret()`` / env fallback** — ``ci.secret(f"{scheme}-{host}")``
+    3. **``ci.secret()`` / env fallback**: ``ci.secret(f"{scheme}-{host}")``
        for the password, standard driver env vars (``PGPASSWORD``,
        ``MYSQL_PWD``, ``SNOWFLAKE_PASSWORD``) as last-resort. Lets the
        SQL backends work standalone before the platform integrations
@@ -306,7 +329,7 @@ class CredentialResolver:
         if not creds.password and not creds.token:
             fallback = self._try_env_secret()
             if fallback is not None:
-                # Databricks auth is a bearer token, not a password —
+                # Databricks auth is a bearer token, not a password:
                 # route it to the right field so the driver doesn't
                 # see a stray password= kwarg.
                 if self.uri.scheme == "databricks":
@@ -350,12 +373,12 @@ class CredentialResolver:
             },
         )
         try:
-            with urllib.request.urlopen(req, timeout=_TIMEOUT_SEC) as resp:  # noqa: S310
+            with urllib.request.urlopen(req, timeout=_TIMEOUT_SEC) as resp:
                 body = resp.read().decode("utf-8")
                 payload = json.loads(body)
         except urllib.error.HTTPError as e:
             # 404 = no matching integration registered. 401/403 = bad
-            # token — log it but don't block the fallback path, since
+            # token. Log it but don't block the fallback path, since
             # the user may be on a laptop with stale credentials trying
             # to hit a local database.
             if e.code in (404, 501):
@@ -413,11 +436,9 @@ class CredentialResolver:
         from cirron.core.env import env as _env
         from cirron.secrets.client import secret as _secret
 
-        # ``ci.secret()`` first — that's the documented "credentials
-        # from the platform runtime" path (CIRRON_SECRET_* env vars or
-        # /etc/cirron/secrets/ mounts). The key convention is
-        # ``<scheme>-<host>`` which ``_env_key`` uppercases and
-        # underscorizes.
+        # ``ci.secret()`` first: that is the documented "credentials from the
+        # platform runtime" path (CIRRON_SECRET_* env vars or
+        # /etc/cirron/secrets/ mounts), keyed ``<scheme>-<host>``.
         if self.uri.host:
             candidate = f"{self.uri.scheme}-{self.uri.host}"
             try:
@@ -425,7 +446,7 @@ class CredentialResolver:
             except CirronSecretNotFound:
                 pass
 
-        # Standard driver env vars as a last resort — lets users point
+        # Standard driver env vars as a last resort; lets users point
         # the SDK at an existing psql / mysql / snowsql setup without
         # registering anything.
         driver_env = {
@@ -443,13 +464,13 @@ class CredentialResolver:
     def _require_connectable(self, creds: SqlCredentials) -> None:
         """Hard-fail early when the bundle can't drive a real connection.
 
-        Each driver has its own minimum — Postgres/MySQL need host +
+        Each driver has its own minimum: Postgres/MySQL need host +
         user + password (or a Unix socket, which we don't currently
         support); Databricks needs host + token; Snowflake needs
         account (= host) + user + (password or token).
 
         Args:
-            creds (SqlCredentials): The bundle assembled by ``resolve``.
+            creds: The bundle assembled by ``resolve``.
 
         Raises:
             CirronPlatformRequired: If any required field is missing,
@@ -490,7 +511,7 @@ def _env_hint_for(scheme: str) -> str:
     """Return a human-readable env-var hint string for ``scheme``.
 
     Args:
-        scheme (str): The SQL scheme (``"postgres"``, ``"mysql"``, ...).
+        scheme: The SQL scheme (``"postgres"``, ``"mysql"``, ...).
 
     Returns:
         str: A short string naming the conventional secret keys / env
@@ -509,9 +530,9 @@ def _merge_into(base: SqlCredentials, override: SqlCredentials) -> None:
     """Fill ``None`` fields on ``base`` from ``override``.
 
     Args:
-        base (SqlCredentials): Mutated in place. Existing non-``None``
+        base: Mutated in place. Existing non-``None``
             fields are preserved.
-        override (SqlCredentials): Source of fill-in values; ``extra``
+        override: Source of fill-in values; ``extra``
             entries are added to ``base.extra``.
     """
     for field_name in ("user", "password", "host", "port", "database", "schema", "token"):
@@ -520,7 +541,7 @@ def _merge_into(base: SqlCredentials, override: SqlCredentials) -> None:
             if value is not None:
                 setattr(base, field_name, value)
     if override.extra:
-        # Extras are additive — the resolver doesn't set these on the
+        # Extras are additive; the resolver doesn't set these on the
         # URI path, so there's nothing on ``base`` to preserve.
         base.extra.update(override.extra)
 
@@ -534,7 +555,7 @@ def _quote_double(identifier: str) -> str:
     """ANSI double-quote identifier quoting (Postgres, Snowflake, Databricks).
 
     Args:
-        identifier (str): A raw SQL identifier.
+        identifier: A raw SQL identifier.
 
     Returns:
         str: ``identifier`` wrapped in double quotes with embedded quotes
@@ -548,7 +569,7 @@ def _quote_backtick(identifier: str) -> str:
     """Backtick identifier quoting (MySQL).
 
     Args:
-        identifier (str): A raw SQL identifier.
+        identifier: A raw SQL identifier.
 
     Returns:
         str: ``identifier`` wrapped in backticks with embedded backticks
@@ -574,17 +595,17 @@ def build_query(
 ) -> str:
     """Compose a ``SELECT`` query from the URI + request filters.
 
-    ``where`` is passed through **unescaped** — the SDK does not guard
+    ``where`` is passed through **unescaped**; the SDK does not guard
     against SQL injection because the caller is running their own
     queries against their own database. Identifier quoting is applied
     to the table name and column list so valid identifiers with
     reserved keywords or mixed case work on every dialect.
 
     Args:
-        uri (SqlUri): Parsed URI carrying the table reference.
-        where (str | None): Optional ``WHERE`` clause body. Spliced in
+        uri: Parsed URI carrying the table reference.
+        where: Optional ``WHERE`` clause body. Spliced in
             verbatim.
-        columns (list[str] | None): Optional column projection. ``None``
+        columns: Optional column projection. ``None``
             emits ``SELECT *``.
 
     Returns:
@@ -611,8 +632,8 @@ def _qualified_table(uri: SqlUri, quote: Quoter) -> str:
     user specified a schema) is emitted.
 
     Args:
-        uri (SqlUri): Parsed URI.
-        quote (Quoter): Dialect-appropriate identifier quoter.
+        uri: Parsed URI.
+        quote: Dialect-appropriate identifier quoter.
 
     Returns:
         str: The dotted, quoted table reference (e.g.
@@ -640,23 +661,17 @@ def execute_to_pandas(cursor: Any, query: str) -> Any:
     ``description``) so every driver works without a SQLAlchemy engine
     layer. Returning a pandas DataFrame means the existing
     :class:`~cirron.data.returns.PandasAdapter` handles ``as_="polars"``
-    / ``"iter"`` / ``"tensor"`` / ``"hf"`` — SQL sources don't need
+    / ``"iter"`` / ``"tensor"`` / ``"hf"``, so SQL sources don't need
     their own conversion path.
 
-    TODO: streaming path for ``as_='iter'`` / ``lazy=True``.
-    Today ``fetchall`` materializes the whole result set into memory
-    before the adapter slices it into batches — effectively negating
-    ``as_='iter'`` for large tables. A proper fix uses per-driver
-    server-side cursors (Postgres named cursor, PyMySQL ``SSCursor``,
-    ``snowflake.cursor.fetch_pandas_batches``, ``databricks.cursor.
-    fetchmany_arrow``) and routes them through a new
-    ``execute_to_iter`` / streaming ``DataSource`` path. The per-driver
-    surface diverges enough to be worth its own ticket. Raised in PR #35
-    review; tracked as a SQL-streaming follow-up.
+    This path does not stream. ``fetchall`` materializes the whole result
+    set before the adapter slices it, so ``as_='iter'`` and ``lazy=True``
+    on a SQL source peak at the size of the full table rather than one
+    batch. Bound large queries with ``LIMIT`` or a ``where=`` clause.
 
     Args:
         cursor (Any): An open DB-API 2.0 cursor.
-        query (str): The composed ``SELECT`` to execute.
+        query: The composed ``SELECT`` to execute.
 
     Returns:
         Any: A pandas DataFrame whose columns come from
@@ -693,7 +708,7 @@ def run_select(
 
     The shared tail for all four per-driver shims. What genuinely differs
     between drivers is the import name, the ``conn_kwargs`` mapping, and
-    the connect callable — those stay in the shims. The
+    the connect callable, and those stay in the shims. The
     connect/cursor/cleanup skeleton does not differ, and when each shim
     hand-rolled it they drifted into three different cleanup styles.
 
@@ -703,10 +718,10 @@ def run_select(
     the other three drivers don't offer equivalent semantics.
 
     Args:
-        connect (Callable[..., Any]): The driver's ``connect`` callable.
-        conn_kwargs (dict[str, Any]): Driver-specific connect keywords.
-        query (str): The composed ``SELECT``.
-        cursor_close (bool): Close the cursor explicitly before the
+        connect: The driver's ``connect`` callable.
+        conn_kwargs: Driver-specific connect keywords.
+        query: The composed ``SELECT``.
+        cursor_close: Close the cursor explicitly before the
             connection. Snowflake requires this; drivers that clean up
             their own cursors on ``conn.close()`` leave it ``False``.
 

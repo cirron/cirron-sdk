@@ -83,7 +83,7 @@ class S3DataSource(DataSource):
         """Decode an S3 ``get_object`` response according to the source format.
 
         Args:
-            obj_response (dict[str, Any]): A raw boto3 ``get_object``
+            obj_response: A raw boto3 ``get_object``
                 response.
 
         Returns:

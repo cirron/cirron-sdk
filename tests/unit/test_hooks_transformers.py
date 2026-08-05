@@ -1,4 +1,4 @@
-"""HuggingFace transformers hook — unit tests.
+"""HuggingFace transformers hook: unit tests.
 
 Skipped in environments without ``transformers`` (or ``torch``) so the
 core CI path stays green. When available, we exercise the
@@ -164,7 +164,7 @@ def test_steps_are_children_of_their_epoch(stack, ci, ctx, tmp_path):
 
 def test_no_duplicate_epoch_spans_with_torch_installed(stack, ci, ctx, tmp_path):
     """With both hooks active, only one ``epoch`` span is emitted per
-    actual epoch — the transformers ``TrainerCallback`` owns epoch
+    actual epoch, because the transformers ``TrainerCallback`` owns epoch
     semantics and torch's ``DataLoader.__iter__`` rotation yields."""
     h = tr_install(stack, ci, ctx)
     th = torch_install(stack, ci, ctx)
@@ -218,8 +218,8 @@ def test_torch_hooks_nest_inside_transformers_step(stack, ci, ctx, tmp_path):
     assert torch_spans, "expected at least one torch hook span"
     for sp in torch_spans:
         # Skip the outermost forward span if the span itself happens to
-        # be a step ancestor (e.g. eval forwards before train begins) —
-        # we only care that *every* torch span produced inside a training
+        # be a step ancestor (e.g. eval forwards before train begins).
+        # We only care that *every* torch span produced inside a training
         # step has the step in its ancestor chain.
         assert _has_step_ancestor(sp), (
             f"{sp.name} span (id={sp.id}, parent={sp.parent_id}) is not nested inside a step scope"

@@ -3,7 +3,7 @@
 Serialization runs on the main thread inside the snapshot capture path;
 the resulting safetensors file sits on the local filesystem under
 ``./.cirron/snapshots/<span_id>/``. For FileOnly transport that *is* the
-final destination — nothing more to do. For HTTP / event-stream transports
+final destination, with nothing more to do. For HTTP / event-stream transports
 the flush thread drains this queue each tick and asks the transport to
 upload, so that by the time the JSON batch referencing the blob is sent
 the platform worker can find the blob where its metadata says it should
@@ -30,10 +30,19 @@ class PendingBlob:
     ``local_uri`` is the ``file://`` URI that was stamped on the matching
     ``TraceSnapshot.blob_uri`` at capture time. The flush thread uses it
     as the match key when swapping in the remote URI after a successful
-    upload — records pointing at the same local file belong to the same
-    blob. ``attempts`` is the number of upload attempts already tried;
-    failures re-enqueue up to ``MAX_BLOB_ATTEMPTS`` before giving up so
-    transient network errors don't permanently strand a blob.
+    upload: records pointing at the same local file belong to the same blob.
+
+    Attributes:
+        local_path: Local safetensors file produced by the capture path.
+        local_uri: ``file://`` URI stamped on the matching
+            ``TraceSnapshot.blob_uri``, and the flush thread's match key.
+        remote_key: Object key the transport should upload to.
+        span_id: Span the snapshot was captured against.
+        kind: ``"weights"`` or ``"gradients"``.
+        size_bytes: Size of ``local_path`` at capture time.
+        attempts: Upload attempts already tried. Failures re-enqueue up to
+            ``MAX_BLOB_ATTEMPTS`` before giving up, so transient network
+            errors don't permanently strand a blob.
     """
 
     local_path: Path
@@ -51,7 +60,7 @@ class BlobUploadQueue:
     The cap is a pressure-relief valve only; under normal operation the
     flush thread drains each tick and the queue stays near-empty. A run
     that somehow backs up 10k pending blobs is already in a degraded
-    state — dropping new entries and surfacing ``drop_count`` on the
+    state, and dropping new entries while surfacing ``drop_count`` on the
     health endpoint is better than OOMing the process.
     """
 
@@ -65,7 +74,7 @@ class BlobUploadQueue:
         """Add one pending blob (drops + bumps ``drop_count`` past cap).
 
         Args:
-            blob (PendingBlob): The blob to enqueue.
+            blob: The blob to enqueue.
         """
         with self._lock:
             if len(self._items) >= self._soft_cap:

@@ -24,10 +24,8 @@ from cirron.data.sources import DataSource
 logger = logging.getLogger(__name__)
 
 # Extensions the directory loader concatenates into a single DataFrame.
-# ``.json`` is deliberately excluded: _load_file returns a Python dict/list
-# for JSON, which pd.concat can't stitch together. JSONL/record-arrays
-# would need their own parsing path; until that lands, JSON directories
-# fall through to the "list of whatever each file loaded to" behavior.
+# ``.json`` is excluded because :func:`_load_file` returns a dict or list
+# for JSON, which ``pd.concat`` cannot stitch together.
 _CONCAT_EXTS = {".csv", ".parquet"}
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png"}
 
@@ -94,13 +92,14 @@ class LocalDataSource(DataSource):
         return self._load_file(path, fmt)
 
     def _load_filtered(self, root: Path, match_cfg: MatchConfig) -> Any:
-        """Walk ``root`` recursively and concat files that satisfy
-        ``match_cfg``. Uses POSIX-style relative paths for matching so
-        the user-facing glob is the same on every OS.
+        """Walk ``root`` recursively and concat the files matching ``match_cfg``.
+
+        Matching uses POSIX-style relative paths so the user-facing glob
+        is the same on every OS.
 
         Args:
-            root (Path): Directory to walk recursively.
-            match_cfg (MatchConfig): Filter spec.
+            root: Directory to walk recursively.
+            match_cfg: Filter spec.
 
         Returns:
             Any: A concatenated DataFrame for homogeneous csv/parquet
@@ -129,8 +128,8 @@ class LocalDataSource(DataSource):
         """Load a single file according to its inferred format.
 
         Args:
-            path (Path): Absolute path to the file.
-            fmt (str | None): Format hint (``"csv"``, ``"parquet"``,
+            path: Absolute path to the file.
+            fmt: Format hint (``"csv"``, ``"parquet"``,
                 ``"json"``, ``"png"``, ...). ``None`` falls through to
                 a plain text read.
 
@@ -150,7 +149,7 @@ class LocalDataSource(DataSource):
         if fmt == "parquet":
             import pandas as pd
 
-            # Parquet supports cheap column pushdown — honour it when the
+            # Parquet supports cheap column pushdown, so honour it when the
             # caller asked for specific columns.
             return pd.read_parquet(path, columns=columns)
         if fmt == "json":
@@ -165,8 +164,8 @@ class LocalDataSource(DataSource):
         """Load every file under a directory.
 
         Args:
-            path (Path): Directory to read (non-recursive).
-            fmt (str | None): Format hint applied to each file.
+            path: Directory to read (non-recursive).
+            fmt: Format hint applied to each file.
 
         Returns:
             Any: A concatenated DataFrame for homogeneous csv/parquet
@@ -176,8 +175,8 @@ class LocalDataSource(DataSource):
             FileNotFoundError: If the directory is empty.
         """
         # Eagerly concat a homogeneous directory (e.g. every file is
-        # parquet). Mixed directories fall through to the legacy "return a
-        # list of whatever each file loaded to" behavior.
+        # parquet). Mixed directories fall through to returning a list of
+        # whatever each file loaded to.
         files = sorted(p for p in path.iterdir() if p.is_file())
         if not files:
             raise FileNotFoundError(f"no files found under {path}")
@@ -194,7 +193,7 @@ class LocalDataSource(DataSource):
         """Return the lowercased file extension without the leading dot.
 
         Args:
-            path (Path): The file or directory path.
+            path: The file or directory path.
 
         Returns:
             str | None: Extension string, or ``None`` if the path has no
@@ -207,7 +206,7 @@ class LocalDataSource(DataSource):
         """Load a single image or a directory of images via PIL.
 
         Args:
-            path (Path): Either an image file or a directory containing
+            path: Either an image file or a directory containing
                 images.
 
         Returns:
@@ -282,7 +281,7 @@ class LocalDataSource(DataSource):
                     total += rel_map[rel].stat().st_size
                     count += 1
             else:
-                # No match filter — sum every file under the directory so
+                # Without a match filter, sum every file under the directory so
                 # nested layouts are still accounted for.
                 for p in path.rglob("*"):
                     if p.is_file():

@@ -7,8 +7,8 @@ find what's importable and then :func:`install_hooks` to attach them.
 
 Per-framework hook bodies (PyTorch module hooks, Keras callback,
 HuggingFace ``TrainerCallback``) live in the per-framework modules
-alongside this registry. sklearn is intentionally not auto-registered —
-it is opt-in via ``ci.wrap()``.
+alongside this registry. sklearn is intentionally not auto-registered; it
+is opt-in via ``ci.wrap()``.
 """
 
 from __future__ import annotations
@@ -47,13 +47,14 @@ _FRAMEWORK_PRIORITY: dict[str, int] = {
 class HookContext:
     """Cross-installer coordination state for a single ``install_hooks`` call.
 
-    ``owned_scopes`` maps a semantic scope name (``"epoch"``, ``"step"``)
-    to the framework that opens and closes it. Installers consult this
-    at install time to decide whether to open their own span for the
-    same semantic unit — e.g. torch yields ``epoch`` when transformers
-    has already claimed it, because HF ``Trainer`` drives torch's
-    ``DataLoader.__iter__`` itself and would otherwise cause two
-    ``epoch`` spans per epoch.
+    Attributes:
+        owned_scopes: Maps a semantic scope name (``"epoch"``, ``"step"``)
+            to the framework that opens and closes it. Installers consult
+            it before opening their own span for the same semantic unit:
+            torch yields ``epoch`` when transformers has already claimed
+            it, because HF ``Trainer`` drives torch's
+            ``DataLoader.__iter__`` itself and would otherwise cause two
+            ``epoch`` spans per epoch.
     """
 
     owned_scopes: dict[str, str] = field(default_factory=dict)
@@ -61,7 +62,11 @@ class HookContext:
 
 @runtime_checkable
 class HookHandle(Protocol):
-    """Returned by every framework installer; ``uninstall()`` reverses install."""
+    """Returned by every framework installer; ``uninstall()`` reverses install.
+
+    Attributes:
+        name: Framework this handle was installed for.
+    """
 
     name: str
 
@@ -82,7 +87,7 @@ class NoopHookHandle:
         self.name = name
 
     def uninstall(self) -> None:
-        """No-op — nothing was installed, so nothing to reverse."""
+        """No-op: nothing was installed, so nothing to reverse."""
         return None
 
 
@@ -99,8 +104,8 @@ class HookRegistry:
         """Register ``installer`` under ``name``, overwriting any prior entry.
 
         Args:
-            name (str): Framework name (e.g. ``"torch"``).
-            installer (Installer): Callable that returns a ``HookHandle``.
+            name: Framework name (e.g. ``"torch"``).
+            installer: Callable that returns a ``HookHandle``.
         """
         self._installers[name] = installer
 
@@ -108,7 +113,7 @@ class HookRegistry:
         """Return the installer registered under ``name``, or ``None``.
 
         Args:
-            name (str): Framework name.
+            name: Framework name.
 
         Returns:
             Installer | None: The registered installer, or ``None`` if absent.
@@ -135,8 +140,8 @@ def register_installer(name: str, installer: Installer) -> None:
     """Module-level helper used by framework hook modules at import time.
 
     Args:
-        name (str): Framework name (e.g. ``"torch"``).
-        installer (Installer): Callable invoked by :func:`install_hooks`.
+        name: Framework name (e.g. ``"torch"``).
+        installer: Callable invoked by :func:`install_hooks`.
     """
     _REGISTRY.register(name, installer)
 
@@ -166,7 +171,7 @@ def detect_frameworks() -> list[str]:
             if importlib.util.find_spec(module_name) is not None:
                 detected.append(name)
         except (ValueError, ModuleNotFoundError):
-            # find_spec raises on malformed packages in the import path —
+            # find_spec raises on malformed packages in the import path;
             # treat that the same as "not importable."
             continue
     return detected
@@ -180,28 +185,24 @@ def install_hooks(
     """Install hooks for the given framework names. Never raises.
 
     Unknown names log a WARNING and are skipped. An installer that raises
-    is logged at WARNING with traceback and skipped — other frameworks
-    still install. Returns the handles that installed successfully.
+    is logged at WARNING with traceback and skipped; other frameworks still
+    install. Returns the handles that installed successfully.
 
     Args:
-        names (Iterable[str]): Framework names to install. Deduped while
-            preserving original order, then sorted by install-order priority
-            (transformers > tensorflow > torch).
-        scope_stack (ScopeStack): Per-process scope stack passed to each
-            installer.
-        cirron (Cirron): The owning :class:`Cirron` instance — installers
-            consult it for config (snapshots, ``epoch_steps``, ...).
+        names: Framework names to install. Deduped while preserving original
+            order, then sorted by install-order priority (transformers >
+            tensorflow > torch).
+        scope_stack: Per-process scope stack passed to each installer.
+        cirron: The owning :class:`Cirron` instance, which installers consult
+            for config (snapshots, ``epoch_steps``, ...).
 
     Returns:
         list[HookHandle]: Handles for installers that returned successfully.
     """
-    # Make sure framework hook modules have had a chance to self-register.
-    # Importing the package executes ``hooks/__init__.py``, which pulls in
-    # the per-framework submodules. Use importlib to avoid shadowing the
-    # local ``cirron`` parameter with the top-level package name. A broken
-    # framework submodule (e.g. one accidentally importing ``torch`` at
-    # module top) must not propagate — log and continue with whatever was
-    # already registered.
+    # Imported for the self-registration side effect, via importlib so the
+    # top-level package name cannot shadow the local ``cirron`` parameter. A
+    # framework submodule that fails (e.g. one importing ``torch`` at module
+    # top) must not propagate; log and keep what is already registered.
     try:
         importlib.import_module("cirron.hooks")
     except Exception:
@@ -215,7 +216,7 @@ def install_hooks(
     handles: list[HookHandle] = []
     # Dedupe while preserving order so a user-supplied ``frameworks=["torch",
     # "torch"]`` doesn't double-register torch's global forward/optimizer
-    # hooks or double-wrap ``Tensor.backward`` — ``uninstall`` records one
+    # hooks or double-wrap ``Tensor.backward``: ``uninstall`` records one
     # undo per call and would only reverse the second layer.
     deduped = list(dict.fromkeys(names))
     # Sort by semantic priority (transformers → tensorflow → torch), with

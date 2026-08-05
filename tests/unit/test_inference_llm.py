@@ -171,7 +171,7 @@ def test_stream_emits_request_duration_ms():
     span_id = _request_span_id()
     marks = {m.name: m for m in get_default_mark_buffer().drain_all() if m.span_id == span_id}
     assert "request_duration_ms" in marks
-    # total latency >= TTFT — sanity check the three-number story
+    # total latency >= TTFT, a sanity check on the three-number story
     assert marks["request_duration_ms"].value >= marks["time_to_first_token_ms"].value
 
 
@@ -344,7 +344,7 @@ def test_install_hf_generate_patch_returns_false_when_transformers_missing(monke
 
 
 def test_hf_patch_marks_from_nested_user_scope(monkeypatch):
-    """PR #30 review: ``generate()`` called under ``ci.scope("beam")``
+    """``generate()`` called under ``ci.scope("beam")``
     (or any non-``request`` scope) inside ``@ci.inference`` must still
     attribute token marks to the request via the parent chain."""
     llm_mod.uninstall_hf_generate_patch()
@@ -369,8 +369,8 @@ def test_hf_patch_marks_from_nested_user_scope(monkeypatch):
             for m in get_default_mark_buffer().drain_all()
             if m.name in {"input_tokens", "output_tokens", "total_tokens"}
         ]
-        # marks land on the innermost open scope (the beam_search scope)
-        # — the dashboard follows parent_id up to the request for roll-up.
+        # marks land on the innermost open scope (the beam_search scope);
+        # the dashboard follows parent_id up to the request for roll-up.
         assert token_marks, "expected HF token marks to be emitted"
         assert {m.span_id for m in token_marks} == {beam.id}
         by_name = {m.name: m.value for m in token_marks}
@@ -384,7 +384,7 @@ def test_hf_patch_marks_from_nested_user_scope(monkeypatch):
 
 def test_sync_non_stream_does_not_leak_context_after_return():
     """After a non-stream call returns, the caller's ContextVar must be
-    reset — subsequent ``ci.mark`` / ``ci.scope`` should NOT attach to
+    reset, so subsequent ``ci.mark`` / ``ci.scope`` must NOT attach to
     the now-closed request span."""
     from cirron.core.scope import _ctx_state
 
@@ -421,7 +421,7 @@ def test_stream_return_does_not_leak_context_into_caller():
 
     assert _ctx_state.get() is None
     stream = predict()
-    # Stream not yet iterated — caller Context must already be clean.
+    # Stream not yet iterated, so the caller Context must already be clean.
     assert _ctx_state.get() is None
 
     # Any ``ci.mark`` the caller makes between receiving the stream and

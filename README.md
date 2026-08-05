@@ -221,7 +221,7 @@ handle = ci.load("./events.parquet", lazy=True)          # LazyHandle; call hand
 df = ci.load("embeddings", source="platform", search="billing complaints", top_k=50)
 ```
 
-**Size guardrails.** Before downloading anything, `ci.load()` sums the matched bytes. Over 1 GB logs a warning with narrowing hints; over 10 GB raises `CirronDataSizeError` unless you pass `confirm_large=True`. The thresholds live on the `Cirron` instance:
+**Size guardrails.** Before downloading anything, `ci.load()` sums the matched bytes. Over 1 GB logs a warning with narrowing hints; over 10 GB raises `CirronDataSizeError` unless you pass `confirm_large=True`. SQL sources are the exception: a result set cannot be sized without running the query, so the guard does not apply and you bound the load with `LIMIT` or `where=` instead. The thresholds live on the `Cirron` instance:
 
 ```python
 from cirron import Cirron
@@ -312,6 +312,8 @@ df = c.load("training-data")
 
 The same pattern applies for running against multiple workspaces or control planes from one process.
 
+What varies per instance is configuration: endpoint, credentials, output directory, and the size thresholds. Instrumentation state does not. The scope stack, mark buffer, `ci.trace()` ring, and flush thread are process-wide singletons shared by every instance, so separate instances point at different backends rather than isolating two concurrent trace trees.
+
 ## Framework support
 
 | Framework            | Profiling | Snapshots | Notes                                |
@@ -349,39 +351,14 @@ uv run ruff format --check src tests
 uv run mypy src                  # typecheck
 ```
 
+Comment and docstring conventions live in [`docs/style-guide.md`](docs/style-guide.md). `ruff` enforces the mechanical half through its `D` rules, so `ruff check` will tell you about most violations before review does.
+
 Cross-validate the Pydantic model against a real `cirron-sample-models` checkout:
 
 ```bash
 CIRRON_SAMPLE_MODELS_PATH=/path/to/cirron-sample-models/models \
   uv run pytest tests/unit -v
 ```
-
-### Status
-
-Shipped:
-
-- `ci.profile()` with framework autodetect, `ci.scope` / `ci.mark`, `ci.epochs` / `ci.batches`
-- Flush thread + local spool; HTTP and kernel-event-stream transports
-- Framework hooks for PyTorch, TensorFlow / Keras, HuggingFace `transformers`, and opt-in scikit-learn via `ci.wrap()`
-- Snapshots: `snapshots="stats" | "sampled" | "full"` with safetensors blob upload
-- `@ci.inference` — sync and async, per-request ContextVar isolation, OpenAI / HF LLM detectors with TTFT and throughput marks
-- `ci.env` / `ci.secret`, the `Cirron` config class, and YAML loader
-- `ci.trace()` — in-process scope-tree reader (`tree` / `dict` / `json` / `df` formats, `name=` / `last=` filters, Jupyter-aware rendering)
-- `ci.load()` — local-first dispatcher, explicit `source="platform"`, scheme routing for `s3://` / `gs://` / `azure://` / `file://`, multi-source concat, all five `as_=` return types, `lazy=True`
-- Filesystem filtering: `match=` glob + regex and `ext=` shorthand via `MatchConfig`, with column pushdown to Parquet readers
-- SQL sources: `postgres://` / `mysql://` / `databricks://` / `snowflake://` with `where=` pushdown and a 4-tier credential resolver (URI-inline → platform integrations → `ci.secret` → driver env var)
-- `map=` row-wise transforms at load time, plus `@ci.map` for batch-wise
-- Size-tier guardrails: `<1 GB` silent, `<10 GB` logs a warning with narrowing hints, `≥10 GB` raises `CirronDataSizeError` unless `confirm_large=True` (thresholds configurable via `Cirron(load_warn_bytes=, load_max_bytes=)`)
-- Platform bucket resolver (SDK-side client for `GET /v1/datasets/resolve`)
-- `ci.deps()` — in-process extras check; reports installed versions, or raises `CirronDependencyError` listing every missing dep with a combined `pip install` command
-
-Coming:
-
-- Platform-managed embeddings search (`search=` / `top_k=`)
-
-Platform follow-up (not SDK work):
-
-- `GET /v1/datasets/resolve` and `GET /api/integrations/resolve` endpoints — the SDK clients are in place and fail with a clear fallback message until the backend ships
 
 ## Community
 
@@ -393,6 +370,8 @@ Platform follow-up (not SDK work):
 ## Further reading
 
 - Platform documentation: [docs.cirron.com](https://docs.cirron.com)
+- [`docs/spool-format.md`](docs/spool-format.md): the local spool format, which is public API
+- [`docs/style-guide.md`](docs/style-guide.md): comment and docstring conventions
 - Pipelines: how `ci.profile()` context is injected
 - Deployments: how `@ci.inference` binds to deployment records
 - Self-hosted and air-gapped installations

@@ -1,7 +1,6 @@
-"""Platform-resolved bucket source — ``ci.load(name, source='platform')``.
+"""Platform-resolved bucket source for ``ci.load(name, source='platform')``.
 
-Replaces the legacy ``/v1/datasets/resolve`` flow with a bucket-
-oriented HTTP contract served by the platform:
+The platform serves a bucket-oriented HTTP contract:
 
     GET {api_endpoint}/api/data/{bucket}/objects?limit=<n>&prefix=<p>
     GET {api_endpoint}/api/data/{bucket}/objects/{key}
@@ -51,7 +50,7 @@ _OBJECT_URL_PATH_TEMPLATE = "/api/data/{bucket}/objects/{key}"
 _TIMEOUT_SEC = 10.0
 _DOWNLOAD_TIMEOUT_SEC = 300.0
 _LIST_PAGE_LIMIT = 10_000
-# Hard ceiling on listing pagination — protects against a buggy cursor
+# Hard ceiling on listing pagination, protecting against a buggy cursor
 # loop silently hammering the API. 10 pages × 10k = 100k objects, which
 # is far above the sane ci.load() working set.
 _MAX_LIST_PAGES = 10
@@ -61,7 +60,7 @@ def _bearer(api_key: str) -> str:
     """Format an API key as an HTTP ``Authorization`` header value.
 
     Args:
-        api_key (str): The workspace-scoped JWT.
+        api_key: The workspace-scoped JWT.
 
     Returns:
         str: ``"Bearer <api_key>"``.
@@ -74,13 +73,13 @@ class RegisteredDataset:
 
     The heavy work happens in two stages:
 
-    * ``resolve()`` — HTTP listing only. Cheap. Populates
+    * ``resolve()``: HTTP listing only. Cheap. Populates
       ``self._objects`` with ``{key, size_bytes}`` entries and computes
       ``self._total_size_bytes``. Returns a :class:`PlatformBucketSource`
       whose ``estimate_size`` / ``count`` satisfy the dispatcher's tier
       check without downloading anything.
 
-    * ``PlatformBucketSource.load()`` — runs after the tier check
+    * ``PlatformBucketSource.load()``: runs after the tier check
       passes. Downloads each object through a presigned URL into a
       per-call tempdir, then delegates to ``LocalDataSource``.
     """
@@ -129,7 +128,7 @@ class RegisteredDataset:
         have to aggregate here rather than streaming per-page.
 
         ``match=`` / ``ext=`` on the request are pushed to the platform
-        route as query params — the route filters server-side via
+        route as query params. The route filters server-side via
         ``minimatch`` + case-insensitive extension match, so we avoid
         downloading a full bucket manifest just to drop most of it. A
         regex ``filename`` in ``match`` is *not* pushed (the platform
@@ -187,7 +186,7 @@ class RegisteredDataset:
             page_total = payload.get("total_size_bytes")
             if isinstance(page_total, int):
                 # Each page reports the total for its own set, not the
-                # grand total — but the last page typically carries the
+                # grand total, but the last page typically carries the
                 # whole sum when it's a single-page listing. Track the
                 # max we've seen as a sanity value.
                 platform_total = (
@@ -207,7 +206,7 @@ class RegisteredDataset:
                 )
 
         # Client-side regex filename pass for a match dict whose filename
-        # isn't a glob — the platform route only supports glob, so we
+        # isn't a glob. The platform route only supports glob, so we
         # have to re-filter here. ``apply_match`` against just the regex
         # is equivalent to filtering on the basename.
         all_normalized = self._post_filter(all_normalized)
@@ -228,8 +227,7 @@ class RegisteredDataset:
         return {"objects": all_normalized, "total_size_bytes": total}
 
     def _platform_filter_params(self) -> dict[str, str]:
-        """Translate the request's ``MatchConfig`` into platform-route
-        query params.
+        """Translate the request's ``MatchConfig`` into query params.
 
         The platform route accepts ``match`` (single glob), ``ext``
         (comma-separated), and ``prefix``. ``path`` + ``filename_glob``
@@ -257,8 +255,9 @@ class RegisteredDataset:
         return params
 
     def _has_post_filter(self) -> bool:
-        """True when we must re-filter the platform's response locally —
-        only ``filename_regex`` qualifies; the glob / path / extension
+        """Return ``True`` when the platform's response needs a local re-filter.
+
+        Only ``filename_regex`` qualifies; the glob / path / extension
         filters are already applied server-side.
 
         Returns:
@@ -272,7 +271,7 @@ class RegisteredDataset:
         """Re-apply the regex ``filename`` filter against the listing.
 
         Args:
-            objects (list[dict[str, Any]]): Normalized listing entries.
+            objects: Normalized listing entries.
 
         Returns:
             list[dict[str, Any]]: Entries whose key satisfies the regex,
@@ -299,7 +298,7 @@ def _sanitize_bucket_prefix(bucket: str) -> str:
     """Produce a filesystem-safe prefix fragment from a bucket name.
 
     Args:
-        bucket (str): Raw bucket name.
+        bucket: Raw bucket name.
 
     Returns:
         str: A 64-char-max ASCII fragment safe for ``mkdtemp(prefix=...)``.
@@ -316,7 +315,7 @@ def _rmtree_quiet(path: Path) -> None:
     where propagating an OSError would be unhelpful noise.
 
     Args:
-        path (Path): Tempdir to remove.
+        path: Tempdir to remove.
     """
     shutil.rmtree(path, ignore_errors=True)
 
@@ -324,7 +323,7 @@ def _rmtree_quiet(path: Path) -> None:
 def _materialize_file_handles(result: Any) -> Any:
     """Force any lazy file-backed objects in ``result`` to fully load.
 
-    Today only PIL ``Image`` handles are lazy — ``Image.open`` keeps the
+    Only PIL ``Image`` handles are lazy; ``Image.open`` keeps the
     source file open until pixel data is read. Before we hand ``result``
     back to the caller (at which point the tempdir may be reclaimed by
     the finalizer), call ``.load()`` on each image and copy it into a
@@ -346,15 +345,13 @@ def _materialize_file_handles(result: Any) -> Any:
         """Force a PIL ``Image`` to fully load and return a detached copy.
 
         Args:
-            img (Image.Image): A possibly file-backed PIL image.
+            img: A possibly file-backed PIL image.
 
         Returns:
             Image.Image: An in-memory copy whose data is no longer
                 bound to the original file handle.
         """
         img.load()
-        # Image.copy() returns an in-memory image whose data is no
-        # longer bound to the original file handle.
         detached = img.copy()
         try:
             img.close()
@@ -373,13 +370,12 @@ class PlatformBucketSource(DataSource):
     """Materializes a platform bucket listing into a local directory.
 
     Args:
-        bucket (str): Bucket name (the ``ci.load(name=...)`` argument).
-        cirron (Cirron): Active Cirron instance.
-        request (LoadRequest | None): Per-call request.
-        objects (list[dict[str, Any]]): Normalized listing entries from
+        bucket: Bucket name (the ``ci.load(name=...)`` argument).
+        cirron: Active Cirron instance.
+        request: Per-call request.
+        objects: Normalized listing entries from
             :meth:`RegisteredDataset._fetch_listing`.
-        total_size_bytes (int): Aggregate size used for the size-tier
-            check.
+        total_size_bytes: Aggregate size used for the size-tier check.
     """
 
     def __init__(
@@ -410,7 +406,7 @@ class PlatformBucketSource(DataSource):
         return (self._total_size_bytes, len(self._objects))
 
     def validate(self) -> bool:
-        """Always ``True`` — listing already succeeded if we got this far.
+        """Always ``True``; listing already succeeded if we got this far.
 
         Returns:
             bool: ``True``.
@@ -436,12 +432,8 @@ class PlatformBucketSource(DataSource):
         tempdir = Path(tempfile.mkdtemp(prefix=prefix))
         self._tempdir = tempdir
 
-        # Register a finalizer bound to *this source instance* so the
-        # tempdir is removed whenever the source is garbage-collected —
-        # covering the typical case where the caller holds only the
-        # returned DataFrame. The finalizer captures ``tempdir`` by
-        # value (not ``self``) to avoid creating a reference cycle that
-        # would keep the source alive indefinitely.
+        # The finalizer captures ``tempdir`` by value rather than ``self``,
+        # avoiding a reference cycle that would keep the source alive.
         self._finalizer = weakref.finalize(self, _rmtree_quiet, tempdir)
 
         for obj in self._objects:
@@ -454,13 +446,9 @@ class PlatformBucketSource(DataSource):
             self._request_for_local(),
         )
         result = local.load()
-        # Eagerly materialize any file-backed handles so the tempdir can
-        # be reclaimed cleanly when the finalizer runs. On Windows, an
-        # open PIL handle would cause ``rmtree(ignore_errors=True)`` to
-        # silently leak the directory; on Unix it works by accident
-        # because open fds keep the inode alive. Both cases are fragile
-        # — force a full read while the tempdir is still guaranteed to
-        # exist and close the underlying file.
+        # Materialize file-backed handles before the tempdir is reclaimed.
+        # On Windows an open handle makes ``rmtree(ignore_errors=True)``
+        # silently leak the directory.
         return _materialize_file_handles(result)
 
     def _request_for_local(self) -> LoadRequest | None:
@@ -472,7 +460,7 @@ class PlatformBucketSource(DataSource):
         downloading. Running those filters a second time against the
         tempdir would drop every object (the tempdir is flat, so e.g.
         a ``path='year=2025/*'`` glob won't match). Hand LocalDataSource
-        a match with only ``columns`` preserved — that's still needed
+        a match with only ``columns`` preserved, which is still needed
         for parquet column pushdown.
 
         Returns:
@@ -511,8 +499,8 @@ class PlatformBucketSource(DataSource):
         """Fetch a presigned URL for ``key`` and stream the bytes to disk.
 
         Args:
-            tempdir (Path): Per-call download root.
-            key (str): Object key returned by the listing endpoint.
+            tempdir: Per-call download root.
+            key: Object key returned by the listing endpoint.
 
         Raises:
             CirronPlatformRequired: If the platform returns no
@@ -529,7 +517,7 @@ class PlatformBucketSource(DataSource):
         dest.parent.mkdir(parents=True, exist_ok=True)
 
         try:
-            with urllib.request.urlopen(presigned, timeout=_DOWNLOAD_TIMEOUT_SEC) as resp:  # noqa: S310
+            with urllib.request.urlopen(presigned, timeout=_DOWNLOAD_TIMEOUT_SEC) as resp:
                 with dest.open("wb") as fh:
                     shutil.copyfileobj(resp, fh)
         except OSError as e:
@@ -540,17 +528,17 @@ class PlatformBucketSource(DataSource):
             ) from e
 
     def _resolve_dest(self, tempdir: Path, key: str) -> Path:
-        """Map an object key to a path under ``tempdir`` that preserves
-        its directory structure while rejecting path-traversal tricks.
+        """Map an object key to a path under ``tempdir``.
 
-        Downstream loaders may use the directory layout as semantics
-        (``year=2025/month=01/...``), so we can't flatten; but a
-        platform-returned key like ``../../etc/passwd`` must not
-        materialize outside the tempdir.
+        The mapping preserves the key's directory structure while
+        rejecting path-traversal tricks. Downstream loaders may use the
+        directory layout as semantics (``year=2025/month=01/...``), so we
+        can't flatten; but a platform-returned key like
+        ``../../etc/passwd`` must not materialize outside the tempdir.
 
         Args:
-            tempdir (Path): The per-call download root.
-            key (str): The object key returned by the listing endpoint.
+            tempdir: The per-call download root.
+            key: The object key returned by the listing endpoint.
 
         Returns:
             Path: A path under ``tempdir`` whose components mirror
@@ -581,7 +569,7 @@ class PlatformBucketSource(DataSource):
         """Hit the platform's per-object URL endpoint.
 
         Args:
-            key (str): The object key.
+            key: The object key.
 
         Returns:
             dict[str, Any]: The decoded JSON payload (expected to
@@ -608,9 +596,9 @@ def _http_json_get(url: str, api_key: str, bucket_for_error: str) -> dict[str, A
     pre-resolver so callers see the same exception shape.
 
     Args:
-        url (str): Fully qualified GET URL.
-        api_key (str): Workspace API key for the bearer token.
-        bucket_for_error (str): Bucket name embedded in error messages
+        url: Fully qualified GET URL.
+        api_key: Workspace API key for the bearer token.
+        bucket_for_error: Bucket name embedded in error messages
             so callers can identify the failed call.
 
     Returns:
@@ -630,7 +618,7 @@ def _http_json_get(url: str, api_key: str, bucket_for_error: str) -> dict[str, A
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=_TIMEOUT_SEC) as resp:  # noqa: S310
+        with urllib.request.urlopen(req, timeout=_TIMEOUT_SEC) as resp:
             body = resp.read().decode("utf-8")
             return json.loads(body)  # type: ignore[no-any-return]
     except urllib.error.HTTPError as e:

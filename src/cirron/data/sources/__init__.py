@@ -33,6 +33,23 @@ class SourceConfig:
     dispatcher carries the user-facing ``match`` / ``columns`` / ``map``
     / ``where`` / ``search`` parameters; backends read from it to decide
     how to filter + project.
+
+    Attributes:
+        source_type: Backend selector, one of ``local``, ``s3``, ``gs``,
+            ``azure``, ``postgres``, ``mysql``, ``databricks``,
+            ``snowflake``, ``platform``.
+        format: Explicit format hint (``csv``, ``parquet``, ``json``, ...).
+            ``None`` infers it from the file extension.
+        path: Filesystem path or bare name, for the local backend.
+        cloud_provider: Object-store provider label, where a backend serves
+            more than one.
+        bucket_name: Bucket for the S3 and GCS backends.
+        container_name: Container for the Azure backend.
+        folder_path: Key prefix within the bucket or container.
+        account_name: Storage account for the Azure backend.
+        credentials: Backend-specific credentials, when the caller supplies
+            them instead of relying on ambient provider config.
+        extra: Backend-specific options that do not warrant a named field.
     """
 
     source_type: str
@@ -51,11 +68,10 @@ class DataSource(ABC):
     """Abstract base class for all source backends.
 
     Args:
-        config (SourceConfig): Static configuration for the source —
-            scheme, paths, credentials.
-        request (LoadRequest | None): Per-call request whose ``match`` /
-            ``columns`` / ``where`` / ``map`` fields decide how the
-            source filters and projects.
+        config: Static configuration for the source: scheme, paths,
+            credentials.
+        request: Per-call request whose ``match`` / ``columns`` / ``where``
+            / ``map`` fields decide how the source filters and projects.
     """
 
     def __init__(self, config: SourceConfig, request: LoadRequest | None = None) -> None:
@@ -67,8 +83,8 @@ class DataSource(ABC):
         """Execute the load and return the materialized payload.
 
         Returns:
-            Any: A DataFrame, list, dict, image, or bytes — whatever the
-                backend produces for the source format.
+            Any: A DataFrame, list, dict, image, or bytes, depending on
+                what the backend produces for the source format.
         """
         ...
 
@@ -85,7 +101,7 @@ class DataSource(ABC):
     def estimate_size(self) -> tuple[int | None, int | None]:
         """Return ``(total_bytes, object_count)`` for the pending load.
 
-        ``None`` means the source cannot cheaply pre-compute the value —
+        ``None`` means the source cannot cheaply pre-compute the value, so
         the dispatcher will skip the size-tier check for this source.
 
         Returns:

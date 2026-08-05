@@ -1,10 +1,10 @@
-"""``ci.secret(name)`` — reads a secret injected by the platform runtime.
+"""``ci.secret(name)``: read a secret injected by the platform runtime.
 
-secrets are mounted two ways:
+Secrets are mounted two ways:
 
 * Cloud / on-prem: as environment variables with a ``CIRRON_SECRET_`` prefix.
 * Air-gapped: as files under ``/etc/cirron/secrets/<name>`` (k8s / Docker
-  secret mount convention — filename matches the secret key verbatim).
+  secret mount convention, so the filename matches the secret key verbatim).
 
 Resolution order is env var → file mount → raise ``CirronSecretNotFound``.
 This module never logs or includes the secret *value* in exceptions; callers
@@ -34,7 +34,7 @@ def _env_key(name: str) -> str:
     ``_`` so the call site doesn't have to care.
 
     Args:
-        name (str): User-facing secret name.
+        name: User-facing secret name.
 
     Returns:
         str: The matching ``CIRRON_SECRET_<NAME>`` environment variable.
@@ -46,7 +46,7 @@ def _validate_name(name: str) -> None:
     """Reject names that could escape the ``/etc/cirron/secrets`` mount.
 
     Args:
-        name (str): The user-supplied secret name.
+        name: The user-supplied secret name.
 
     Raises:
         CirronSecretNotFound: When ``name`` is empty, contains a path
@@ -60,14 +60,14 @@ def _validate_name(name: str) -> None:
 
 
 def secret(name: str) -> str:
-    """Resolve a named secret via env var, then file-mount fallback.
+    r"""Resolve a named secret via env var, then file-mount fallback.
 
     Resolution order is ``CIRRON_SECRET_<NAME>`` env var → file under
     ``/etc/cirron/secrets/<name>`` → raise. The returned value is never
     logged; callers must not pass it to ``ci.mark()``.
 
     Args:
-        name (str): Logical secret name (e.g. ``"openai-api-key"``).
+        name: Logical secret name (e.g. ``"openai-api-key"``).
 
     Returns:
         str: The secret value with any trailing ``\\r``/``\\n`` stripped.
@@ -90,7 +90,7 @@ def secret(name: str) -> str:
     except (FileNotFoundError, NotADirectoryError):
         text = None
     except PermissionError as exc:
-        # Mount exists but is unreadable — distinguish from "not mounted" so
+        # Mount exists but is unreadable. Distinguished from "not mounted" so
         # ops can debug the permission / SELinux / mount-mode issue.
         raise CirronSecretNotFound(
             f"Secret {name!r} is mounted at {path} but is not readable. "

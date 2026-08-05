@@ -65,7 +65,7 @@ def test_parent_child_linkage():
         assert s.end_ns >= s.start_ns
         # ``cpu_ns`` is opt-in (see ``set_capture_cpu_time``); default-off
         # for the overhead budget. We just want to make sure scopes close
-        # cleanly here — a dedicated opt-in test below exercises cpu_ns.
+        # cleanly here; a dedicated opt-in test below exercises cpu_ns.
         if s.cpu_ns is not None:
             assert s.cpu_ns >= 0
 
@@ -128,7 +128,7 @@ def test_context_manager_skips_pop_when_overflow():
     with pytest.warns(UserWarning):
         opened = stack.push("overflow")
     assert opened is None
-    # depth must remain exactly at MAX_DEPTH — no accidental pop of a real scope.
+    # depth must remain exactly at MAX_DEPTH, with no accidental pop of a real scope.
     assert stack.depth() == MAX_DEPTH
 
 
@@ -262,7 +262,7 @@ def test_close_and_remove_surgical():
 
 def test_close_and_remove_cross_thread_falls_back_to_close_scope():
     """From a thread that didn't push the scope, ``close_and_remove``
-    must not touch any thread's stack list — it falls back to
+    must not touch any thread's stack list; it falls back to
     ``close_scope``'s mark-end-only behavior."""
     stack = ScopeStack()
     pushed: list[Scope] = []
@@ -294,11 +294,10 @@ def test_drop_count_all_aggregates_across_threads():
             stack.pop()
 
     threads = [threading.Thread(target=worker) for _ in range(3)]
-    # Overflowing MAX_DEPTH is the point of this test, so the one-shot
-    # per-thread warning is expected output, not noise — assert it here rather
-    # than letting it leak into pytest's warnings summary. Capturing across
-    # threads is safe in this bounded case: every producer is joined inside the
-    # context and nothing else emits concurrently.
+    # Overflow is the point here, so the one-shot per-thread warning is expected
+    # output rather than noise; assert it instead of letting it leak into pytest's
+    # warnings summary. Capturing across threads is safe in this bounded case:
+    # every producer is joined inside the context and nothing else emits.
     with pytest.warns(UserWarning, match="depth exceeded MAX_DEPTH"):
         for t in threads:
             t.start()
@@ -381,8 +380,8 @@ def test_concurrent_drain_conservation():
     duplicate a closed scope.
 
     Every other threaded test in this file joins its producers *before*
-    draining, so the flush thread's real interleaving — ``drain_closed_all``
-    racing live ``push``/``pop`` on several threads — is never exercised.
+    draining, so the flush thread's real interleaving (``drain_closed_all``
+    racing live ``push``/``pop`` on several threads) is never exercised.
     The invariant asserted here is COUNT CONSERVATION, never timing.
     """
     n_producers = 4
@@ -428,9 +427,8 @@ def test_concurrent_drain_conservation():
             else:
                 # Idle backpressure, NOT synchronization: correctness rests
                 # entirely on the joins and the count assertions below. A
-                # free-spinning drainer starves the producers under the GIL
-                # badly enough to matter — measured ~150x slower for the same
-                # workload — so yield briefly when there's nothing to take.
+                # free-spinning drainer starves the producers under the GIL,
+                # measured ~150x slower, so yield when there is nothing to take.
                 producers_done.wait(timeout=0.001)
 
     threads = [threading.Thread(target=producer, name=f"producer-{i}") for i in range(n_producers)]

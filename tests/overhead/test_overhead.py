@@ -1,20 +1,20 @@
 """Reference loop: tiny MLP, synthetic data, CPU.
 
 Measures wall-clock overhead of three configurations:
-  - ``baseline`` — no profiling
-  - ``profile_no_hooks`` — ``ci.profile(frameworks=[], snapshots=None)``
-  - ``profile_torch_hooks`` — ``ci.profile(frameworks=["torch"])``
+  - ``baseline``: no profiling
+  - ``profile_no_hooks``: ``ci.profile(frameworks=[], snapshots=None)``
+  - ``profile_torch_hooks``: ``ci.profile(frameworks=["torch"])``
 
 Asserts each measured overhead ratio stays within a regression
 tolerance of the committed baseline (``baseline.json``). The
-targets (<1% scaffold, <2% torch hooks) are not asserted — the
+targets (<1% scaffold, <2% torch hooks) are not asserted, because the
 current CPU torch-hook path exceeds those goals in this reference
 loop, so this suite's job is to catch *regressions* from today's
 committed behavior rather than fail on the known gap. The recorded
 JSON artifact carries the raw ratios so a reader can compare against
 the SDK targets without re-running the loop.
 
-The model is a two-layer MLP — we're exercising the hook surface
+The model is a two-layer MLP; we're exercising the hook surface
 (forward / backward / optimizer_step / data_load), not training
 anything. A big model just adds CI time without changing what the
 ratio tells us.
@@ -32,7 +32,7 @@ torch = pytest.importorskip("torch")
 
 # Tiny MLP, minimal steps. All we need is enough forward/backward/
 # optimizer/data_load cycles to exercise every hook the torch
-# integration installs — the ratio between configs is what tells us
+# integration installs. The ratio between configs is what tells us
 # about overhead, not the absolute wall time.
 _FEATURES = 32
 _CLASSES = 4
@@ -98,7 +98,7 @@ def test_reference_loop_overhead(
     def run_base() -> None:
         _run_training(loader)
 
-    # profile() with zero framework hooks — isolates scaffold cost
+    # profile() with zero framework hooks, isolating scaffold cost
     # (flush thread, root scope, transport selection).
     def run_no_hooks() -> None:
         ci.profile(frameworks=[], snapshots=None)
@@ -107,7 +107,7 @@ def test_reference_loop_overhead(
         finally:
             ci.shutdown()
 
-    # profile() with torch auto-hooks installed — the full user-visible
+    # profile() with torch auto-hooks installed: the full user-visible
     # overhead: forward/backward/optimizer/data_load spans plus scope
     # stack + mark buffer traffic.
     def run_torch_hooks() -> None:
@@ -117,14 +117,10 @@ def test_reference_loop_overhead(
         finally:
             ci.shutdown()
 
-    # Interleaved rather than one configuration at a time: the metric is a
-    # ratio between configurations, so anything that changes between the
-    # windows they were measured in shows up as profiling overhead. Warmup
-    # rounds burn in the torch allocator / MKL kernels for all three.
-    # ``clear_spool`` runs untimed between rounds. Without it the two
-    # profiled configurations accumulate one spool batch per cycle and pay
-    # a growing startup scan, while the unprofiled baseline in the
-    # denominator does not — a one-sided drift that inflates the ratio.
+    # Interleaved, not one config at a time: the metric is a ratio, so drift between
+    # windows reads as overhead; warmup burns in the torch allocator for all three.
+    # ``clear_spool`` runs untimed between rounds, else profiled configs pay a
+    # growing spool scan the baseline does not, a one-sided drift inflating the ratio.
     m = measure_interleaved(
         {"baseline": run_base, "no_hooks": run_no_hooks, "torch_hooks": run_torch_hooks},
         warmup=2,
@@ -153,14 +149,10 @@ def test_reference_loop_overhead(
             },
         )
 
-        # Regression gate. Compare against the committed baseline, not the
-        # documented budget (CLAUDE.md explains why: the hot path is known
-        # to miss today; we ratchet from where we are).
-        #
-        # Absent key means dormant, matching _assert_no_regression's
-        # documented contract. Previously this indexed the mapping directly
-        # and raised KeyError, so demoting an over-noisy metric to
-        # informational required a code change rather than a baseline edit.
+        # Ratchet against the committed baseline, not the documented budget:
+        # the hot path is known to miss that budget today. An absent key means
+        # dormant, matching _assert_no_regression's contract, so demoting a noisy
+        # metric to informational is a baseline edit rather than a code change.
         baseline = expected.get(name)
         if baseline is None:
             continue

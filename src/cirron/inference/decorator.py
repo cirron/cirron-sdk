@@ -1,4 +1,4 @@
-"""``@ci.inference`` — serving instrumentation decorator.
+"""``@ci.inference``: the serving instrumentation decorator.
 
 Wraps a serving function with profiling: opens a ``request``
 scope tagged with an auto-generated ``request_id``, invokes the function,
@@ -8,13 +8,13 @@ Concurrent requests must not share a scope stack, otherwise a FastAPI/ASGI
 server running many coroutines on one event-loop thread would tangle their
 trees. We get per-request isolation from
 :meth:`cirron.core.scope.ScopeStack.isolated_state`, which installs a fresh
-``_ScopeState`` into a ``ContextVar`` for the duration of the call — asyncio
+``_ScopeState`` into a ``ContextVar`` for the duration of the call. asyncio
 copies ContextVars per task, so each request sees its own stack while
 ``ci.scope()`` / ``ci.mark()`` used inside the function still attach to the
 request scope.
 
 After ``func`` returns, the result is piped through LLM detectors
-(:mod:`cirron.inference.llm`) — OpenAI-style ``usage`` marks, HuggingFace
+(:mod:`cirron.inference.llm`): OpenAI-style ``usage`` marks, HuggingFace
 ``generate`` patching, and streaming TTFT / throughput. When the result is
 a generator, scope ownership is transferred to the stream wrapper so marks
 emitted during iteration still attach to the request span.
@@ -39,14 +39,15 @@ from cirron.inference.llm import (
 
 
 def _make_stream_closer(stack: ScopeStack, opened: Any) -> Callable[[], None]:
-    """Return an idempotent closer that closes ``opened`` when the stream
-    wrapper is exhausted / GC'd. ``isolated_state`` cleanup is *not*
-    routed through here — the decorator always exits the context manager
-    synchronously so the caller's ContextVar is never left bound across
-    stream consumption.
+    """Return an idempotent closer that closes ``opened`` on stream exhaustion.
+
+    The closer also fires when the stream wrapper is garbage collected.
+    ``isolated_state`` cleanup is *not* routed through here: the decorator
+    always exits the context manager synchronously so the caller's ContextVar
+    is never left bound across stream consumption.
 
     Args:
-        stack (ScopeStack): The scope stack the request span lives on.
+        stack: The scope stack the request span lives on.
         opened (Any): The scope handle returned by ``stack.push``.
 
     Returns:
@@ -77,17 +78,18 @@ def _finish_call(
     result: Any,
     cfg: dict[str, Any],
 ) -> tuple[Any, bool]:
-    """Run post-call detectors and decide whether the caller should still
-    pop the scope. Returns ``(final_result, transferred)`` where
-    ``transferred`` means the stream wrapper now owns scope closure.
+    """Run post-call detectors and decide whether the caller still pops the scope.
+
+    Return ``(final_result, transferred)`` where ``transferred`` means the
+    stream wrapper now owns scope closure.
 
     Args:
-        stack (ScopeStack): The scope stack the request span lives on.
+        stack: The scope stack the request span lives on.
         state (Any): Per-request ``_ScopeState`` from ``isolated_state``.
         opened (Any): The scope handle returned by ``stack.push``.
-        start_ns (int): Wall-clock start time of the request.
+        start_ns: Wall-clock start time of the request.
         result (Any): The wrapped function's return value.
-        cfg (dict[str, Any]): Per-decorator config dict.
+        cfg: Per-decorator config dict.
 
     Returns:
         tuple[Any, bool]: ``(final_result, transferred)``.
@@ -120,14 +122,14 @@ def inference(
     ``wrapped._cirron_config.get(...)`` without re-plumbing the dict.
 
     Args:
-        fn (Callable[..., Any] | None): The function being decorated
-            (populated by the bare ``@ci.inference`` form).
-        config (dict[str, Any] | None): Optional per-decorator config —
-            currently honors ``stream_chunk_timing`` (bool).
+        fn: The function being decorated (populated by the bare
+            ``@ci.inference`` form).
+        config: Optional per-decorator config; currently honors
+            ``stream_chunk_timing`` (bool).
 
     Returns:
-        Callable[..., Any]: The wrapped function, or — when ``fn`` is
-            ``None`` — a decorator awaiting ``fn``.
+        Callable[..., Any]: The wrapped function, or a decorator awaiting
+            ``fn`` when ``fn`` is ``None``.
     """
     cfg: dict[str, Any] = dict(config) if config else {}
 
@@ -143,7 +145,7 @@ def inference(
         """Wrap ``func`` (sync or ``async def``) with request instrumentation.
 
         Args:
-            func (Callable[..., Any]): The serving function.
+            func: The serving function.
 
         Returns:
             Callable[..., Any]: The wrapped function (matching ``func``'s
@@ -176,12 +178,10 @@ def inference(
                     final, transferred = _finish_call(stack, state, opened, start_ns, result, cfg)
                     return final
                 finally:
-                    # Always unbind the ContextVar here — if we leaked it
-                    # past a returned stream, the caller's task context
-                    # would attribute its own ``ci.scope`` / ``ci.mark``
-                    # calls to this request until the stream is GC'd.
-                    # The stream wrapper re-binds ``state`` internally
-                    # around each step and around its own cleanup.
+                    # Always unbind the ContextVar here. Leaked past a
+                    # returned stream, it would make the caller's task
+                    # attribute its own ``ci.scope`` / ``ci.mark`` calls to
+                    # this request. The stream wrapper re-binds it itself.
                     if not transferred and opened is not None:
                         stack.pop()
                     cm.__exit__(None, None, None)
@@ -212,8 +212,8 @@ def inference(
                 final, transferred = _finish_call(stack, state, opened, start_ns, result, cfg)
                 return final
             finally:
-                # Always unbind the ContextVar — see ``awrapper`` above
-                # for rationale. The stream wrapper re-binds ``state``
+                # Always unbind the ContextVar; see ``awrapper`` above for
+                # the rationale. The stream wrapper re-binds ``state``
                 # internally around each step.
                 if not transferred and opened is not None:
                     stack.pop()

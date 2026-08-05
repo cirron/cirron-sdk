@@ -1,4 +1,4 @@
-"""PyTorch hooks — unit tests.
+"""PyTorch hooks: unit tests.
 
 Skipped in environments without ``torch`` so the core CI path (no
 frameworks installed) stays green. When ``torch`` is available, we
@@ -237,7 +237,7 @@ def test_no_torch_usage_after_uninstall_produces_no_spans(stack, ci, ctx):
 
 
 def test_many_epochs_do_not_blow_stack_depth(stack, ci, ctx):
-    """Regression for PR#20 comments #1/#2: rotating epochs must actually
+    """Rotating epochs must actually
     leave the stack, not just be close_scope'd in place. A long run should
     stay well below ``MAX_DEPTH`` after uninstall."""
     h = torch_install(stack, ci, ctx)
@@ -260,7 +260,7 @@ def test_many_epochs_do_not_blow_stack_depth(stack, ci, ctx):
 
 
 def test_epoch_scopes_are_siblings_not_nested(stack, ci, ctx):
-    """PR#20 #1: consecutive epochs must not be parent-child of each other."""
+    """Consecutive epochs must not be parent-child of each other."""
     h = torch_install(stack, ci, ctx)
     try:
         xs = torch.zeros(2, 4)
@@ -337,7 +337,7 @@ def test_torch_yields_when_context_claim_appears_after_install(stack, ci):
 
 def test_torch_yields_epoch_when_owned_in_context(stack, ci):
     """When another hook has already claimed ``"epoch"``, torch must
-    not open its own epoch scope — otherwise the stack gets two epoch
+    not open its own epoch scope, or the stack ends up with two epoch
     spans per epoch when transformers is co-installed."""
     ctx_owned = HookContext(owned_scopes={"epoch": "transformers"})
     h = torch_install(stack, ci, ctx_owned)
@@ -353,7 +353,7 @@ def test_torch_yields_epoch_when_owned_in_context(stack, ci):
     closed = stack.drain_closed_all()
     epochs = [s for s in closed if s.name == "epoch"]
     assert epochs == [], f"torch emitted {len(epochs)} epoch spans when ownership was claimed"
-    # data_load spans should still land — only epoch rotation is suppressed.
+    # data_load spans should still land; only epoch rotation is suppressed.
     assert any(s.name == "data_load" for s in closed)
 
 
@@ -459,7 +459,7 @@ def test_user_scope_wrapping_training_loop_survives_epoch_rotation(stack, ci, ct
             for _ in loader:
                 pass
         # The user scope is still open (end_ns unset) and still the
-        # innermost-open scope of ours — the epoch rotation put itself
+        # innermost-open scope of ours, because the epoch rotation put itself
         # on top, then took itself off surgically.
         assert train_phase.end_ns is None
         # Close the user scope ourselves so we don't leave it dangling.
@@ -469,7 +469,7 @@ def test_user_scope_wrapping_training_loop_survives_epoch_rotation(stack, ci, ct
     closed = stack.drain_closed_all()
     epochs = [s for s in closed if s.name == "epoch"]
     assert len(epochs) == 3
-    # Every epoch has the user scope as its parent — siblings of each
+    # Every epoch has the user scope as its parent, so they are siblings of each
     # other, children of ``train_phase``.
     for s in epochs:
         assert s.parent_id == train_phase.id, (
@@ -478,7 +478,7 @@ def test_user_scope_wrapping_training_loop_survives_epoch_rotation(stack, ci, ct
 
 
 def test_stopiteration_does_not_emit_data_load_span(stack, ci, ctx):
-    """PR#20 #3: exhausting the iterator must not produce a trailing span."""
+    """Exhausting the iterator must not produce a trailing span."""
     h = torch_install(stack, ci, ctx)
     try:
         xs = torch.zeros(4, 4)
@@ -494,7 +494,7 @@ def test_stopiteration_does_not_emit_data_load_span(stack, ci, ctx):
 
 
 def test_close_preserves_unrelated_scope_on_top(stack, ci, ctx):
-    """PR#20 #4: if a user scope was opened on top of our forward span,
+    """If a user scope was opened on top of our forward span,
     _close must fall back to close_scope rather than popping the user's
     scope. The user scope must survive until they close it themselves."""
     from cirron.core.scope import get_current_scope  # local import: uses default stack
@@ -510,7 +510,7 @@ def test_close_preserves_unrelated_scope_on_top(stack, ci, ctx):
         # Monkey-patch the post-hook path indirectly by opening a scope
         # inside forward. nn.Module forward hooks fire around __call__,
         # so opening a scope from within Linear.forward isn't possible
-        # without subclassing — subclass it.
+        # without subclassing, so subclass it.
         class Wrapped(torch.nn.Module):
             def __init__(self) -> None:
                 super().__init__()
@@ -560,7 +560,7 @@ def test_epoch_step_threshold_fallback(stack, tmp_path, ctx):
     closed = stack.drain_closed_all()
     epochs = [s for s in closed if s.name == "epoch"]
     # Two rotations on the optimizer path (after step 2 and 4 that never
-    # fires — we only did 3 steps — so at least one epoch rotation).
+    # fires, since we only did 3 steps, so at least one epoch rotation).
     assert len(epochs) >= 1
 
 
@@ -935,12 +935,10 @@ def test_param_cache_survives_model_swap(stack, ci, ctx):
         public_ci.watch(None)
 
 
-# deferred close: CUDA-timed scopes wait for their events
-#
-# CI has no GPU, so pending_cuda is None in a real install and these paths
-# never run there. _drain_cuda only ever calls query() and elapsed_time()
-# on an event, so the holder is driven directly with fakes instead. No
-# torch.cuda internals are mocked.
+# Deferred close: CUDA-timed scopes wait for their events. CI has no GPU, so
+# pending_cuda is None there and these paths never run. _drain_cuda only calls
+# query() and elapsed_time() on an event, so the holder is driven directly with
+# fakes and no torch.cuda internals are mocked.
 
 
 class _FakeEvent:

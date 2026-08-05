@@ -1,3 +1,11 @@
+"""Exception hierarchy raised by the SDK.
+
+Every error below inherits :class:`CirronError`, so callers can catch the
+whole surface with one ``except``. Caller bugs raise plain ``ValueError`` /
+``TypeError`` instead. See the error rule in ``CONTRIBUTING.md``.
+"""
+
+
 class CirronError(Exception):
     """Base class for SDK-raised errors."""
 
@@ -7,16 +15,19 @@ class CirronSecretNotFound(CirronError):
 
 
 class CirronDependencyError(CirronError):
-    """Raised when an optional dependency (pandas, polars, torch, ...) is required but not installed."""
+    """Raised when a required optional dependency is not installed."""
 
 
 class CirronDatasetNotFound(CirronError):
-    """Raised when ``ci.load(name, source='platform')`` cannot resolve ``name`` on the platform."""
+    """Raised when a platform ``ci.load()`` cannot resolve the given name."""
 
 
 class CirronPlatformRequired(CirronError):
-    """Raised when a platform-only operation is attempted without platform credentials or connectivity."""
+    """Raised when a platform-only operation lacks credentials or connectivity."""
 
 
 class CirronDataSizeError(CirronError):
-    """Raised when a ``ci.load()`` query would pull more than ``load_max_bytes`` without ``confirm_large=True``."""
+    """Raised when a ``ci.load()`` query exceeds ``load_max_bytes``.
+
+    Pass ``confirm_large=True`` to proceed anyway.
+    """

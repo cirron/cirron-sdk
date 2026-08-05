@@ -34,7 +34,7 @@ class PostgresDataSource(DataSource):
         self.cirron = cirron
 
     def validate(self) -> bool:
-        """Always ``True`` — connection probes are deferred to ``load``.
+        """Always ``True``; connection probes are deferred to ``load``.
 
         Returns:
             bool: ``True``.
@@ -76,10 +76,10 @@ def build_source(uri_str: str, cirron: Cirron, request: LoadRequest | None) -> P
     """Factory used by the load dispatcher.
 
     Args:
-        uri_str (str): The raw ``postgres://...`` URI.
-        cirron (Cirron): Active Cirron instance for credential
+        uri_str: The raw ``postgres://...`` URI.
+        cirron: Active Cirron instance for credential
             resolution.
-        request (LoadRequest | None): Per-call request.
+        request: Per-call request.
 
     Returns:
         PostgresDataSource: A source ready to ``load()``.

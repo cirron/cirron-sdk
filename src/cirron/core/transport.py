@@ -2,16 +2,16 @@
 
 Three concrete transports selected automatically by ``select_transport``:
 
-* ``EventStreamTransport`` — writes a JSON-line sentinel record to stdout.
+* ``EventStreamTransport`` writes a JSON-line sentinel record to stdout.
   The kernel/runtime wrapper already reads stdout and forwards events to
   Kafka, so no new contract is needed. Selected when ``CIRRON_RUN_ID`` is
   set (platform-managed run).
-* ``HttpTransport`` — POSTs batches through :class:`IngestClient` to the
+* ``HttpTransport`` POSTs batches through :class:`IngestClient` to the
   platform ingest route. Selected when an API key is configured.
-* ``FileOnlyTransport`` — no-op ``send``. The spool is already on disk
+* ``FileOnlyTransport`` has a no-op ``send``. The spool is already on disk
   (see :mod:`cirron.core.flush`); this is the disconnected-laptop mode.
 
-The flush thread treats ``send`` as "fire and report" — it returns a bool
+The flush thread treats ``send`` as "fire and report": it returns a bool
 and never raises. The spool is the source of truth; a ``False`` return
 just means the batch will be re-sent by a later flush.
 """
@@ -24,10 +24,6 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-# ``Transport`` is defined in flush.py and re-exported here so the historical
-# ``from cirron.core.transport import Transport`` spelling keeps working. The
-# protocol cannot live in this module: flush.py must not import transport.py
-# (this module already depends on flush for SPOOL_SCHEMA_VERSION).
 from cirron.core.flush import SPOOL_SCHEMA_VERSION, Transport
 from cirron.core.ingest import DEFAULT_INGEST_PATH, IngestClient
 from cirron.core.json import dumps
@@ -44,15 +40,15 @@ EVENT_TYPE_BLOB = "trace_blob"
 class FileOnlyTransport:
     """No-op transport. The spool is the only destination.
 
-    For blob uploads the local path *is* the final destination — return
+    For blob uploads the local path *is* the final destination, so return
     a ``file://`` URI so the spool record still has a resolvable pointer.
     """
 
     def send(self, batch: dict[str, Any]) -> bool:
-        """Discard ``batch`` — the spool is the only retention path.
+        """Discard ``batch``; the spool is the only retention path.
 
         Args:
-            batch (dict[str, Any]): Ignored.
+            batch: Ignored.
 
         Returns:
             bool: Always ``True``.
@@ -64,8 +60,8 @@ class FileOnlyTransport:
         """Resolve ``local_path`` to a ``file://`` URI.
 
         Args:
-            local_path (str | Path): The local blob.
-            remote_key (str): Ignored.
+            local_path: The local blob.
+            remote_key: Ignored.
 
         Returns:
             str | None: A ``file://`` URI, or ``None`` if path resolution fails.
@@ -99,7 +95,7 @@ class EventStreamTransport:
         """Write the trace-batch sentinel to the configured stream.
 
         Args:
-            batch (dict[str, Any]): The serialized batch.
+            batch: The serialized batch.
 
         Returns:
             bool: ``True`` if the line was written, ``False`` on stream
@@ -124,8 +120,8 @@ class EventStreamTransport:
         has to scrape the filesystem to find it.
 
         Args:
-            local_path (str | Path): Local blob path.
-            remote_key (str): Object key the kernel forwarder should
+            local_path: Local blob path.
+            remote_key: Object key the kernel forwarder should
                 use when re-uploading.
 
         Returns:
@@ -150,7 +146,7 @@ class EventStreamTransport:
         """Serialize ``envelope`` and write one JSON line to the stream.
 
         Args:
-            envelope (dict[str, Any]): Sentinel-tagged dict to write.
+            envelope: Sentinel-tagged dict to write.
 
         Returns:
             bool: ``True`` on success, ``False`` on broken pipe / closed
@@ -168,7 +164,7 @@ class EventStreamTransport:
         return True
 
     def close(self) -> None:
-        """No-op — stdout is owned by the host process."""
+        """No-op; stdout is owned by the host process."""
         return None
 
 
@@ -182,7 +178,7 @@ class HttpTransport:
         """POST ``batch`` through :class:`IngestClient`.
 
         Args:
-            batch (dict[str, Any]): Serialized batch.
+            batch: Serialized batch.
 
         Returns:
             bool: ``True`` on a 2xx response.
@@ -194,8 +190,8 @@ class HttpTransport:
         """PUT a blob through :class:`IngestClient`.
 
         Args:
-            local_path (str | Path): Local blob path.
-            remote_key (str): Storage-side object key.
+            local_path: Local blob path.
+            remote_key: Storage-side object key.
 
         Returns:
             str | None: Remote URI on success, ``None`` on failure.
@@ -218,7 +214,7 @@ def select_transport(config: Cirron) -> Transport:
     deterministic under test.
 
     Args:
-        config (Cirron): Resolved SDK config.
+        config: Resolved SDK config.
 
     Returns:
         Transport: One of :class:`EventStreamTransport`,
