@@ -664,16 +664,10 @@ def execute_to_pandas(cursor: Any, query: str) -> Any:
     / ``"iter"`` / ``"tensor"`` / ``"hf"``, so SQL sources don't need
     their own conversion path.
 
-    TODO: streaming path for ``as_='iter'`` / ``lazy=True``.
-    Today ``fetchall`` materializes the whole result set into memory
-    before the adapter slices it into batches, effectively negating
-    ``as_='iter'`` for large tables. A proper fix uses per-driver
-    server-side cursors (Postgres named cursor, PyMySQL ``SSCursor``,
-    ``snowflake.cursor.fetch_pandas_batches``, ``databricks.cursor.
-    fetchmany_arrow``) and routes them through a new
-    ``execute_to_iter`` / streaming ``DataSource`` path. The per-driver
-    surface diverges enough to be worth its own ticket. Raised in PR #35
-    review; tracked as a SQL-streaming follow-up.
+    This path does not stream. ``fetchall`` materializes the whole result
+    set before the adapter slices it, so ``as_='iter'`` and ``lazy=True``
+    on a SQL source peak at the size of the full table rather than one
+    batch. Bound large queries with ``LIMIT`` or a ``where=`` clause.
 
     Args:
         cursor (Any): An open DB-API 2.0 cursor.
