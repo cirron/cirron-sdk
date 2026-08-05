@@ -1,3 +1,49 @@
+# v0.2.0 (Wed Aug 05 2026)
+
+#### 🚀 Enhancement
+
+- Make swallowed internal errors observable and the overhead gate meaningful [#80](https://github.com/cirron/cirron-sdk/pull/80) ([@dlynch42](https://github.com/dlynch42))
+- Cut torch hook per-step cost, fix the gpu_ns flush race and the epoch fallback, ratchet the overhead gates [#69](https://github.com/cirron/cirron-sdk/pull/69) ([@dlynch42](https://github.com/dlynch42))
+- Consolidate Transport protocol and unify optional dependency handling [#63](https://github.com/cirron/cirron-sdk/pull/63) ([@dlynch42](https://github.com/dlynch42))
+- Enhance durability tests and handle flush failure paths [#62](https://github.com/cirron/cirron-sdk/pull/62) ([@dlynch42](https://github.com/dlynch42))
+- Sanitize non-JSON-native attrs for serialization and document behavior [#55](https://github.com/cirron/cirron-sdk/pull/55) ([@dlynch42](https://github.com/dlynch42))
+- Bump idna from 3.11 to 3.15 in the uv group across 1 directory [#54](https://github.com/cirron/cirron-sdk/pull/54) ([@dependabot[bot]](https://github.com/dependabot[bot]))
+
+#### 🐛 Bug Fix
+
+- Release 0.2.0 [#95](https://github.com/cirron/cirron-sdk/pull/95) ([@dlynch42](https://github.com/dlynch42) [@dependabot[bot]](https://github.com/dependabot[bot]))
+- Fix spool serialization symmetry and orphaned temp-file accounting [#88](https://github.com/cirron/cirron-sdk/pull/88) ([@dlynch42](https://github.com/dlynch42))
+- Account for and sweep orphaned spool temp files [#86](https://github.com/cirron/cirron-sdk/pull/86) ([@dlynch42](https://github.com/dlynch42))
+- Honor the configured spool dir and cap in flush_now()'s fallback writer [#83](https://github.com/cirron/cirron-sdk/pull/83) ([@dlynch42](https://github.com/dlynch42))
+- Emit strict JSON for non-finite floats [#82](https://github.com/cirron/cirron-sdk/pull/82) ([@dlynch42](https://github.com/dlynch42))
+- Sample the reference loop properly instead of three times [#78](https://github.com/cirron/cirron-sdk/pull/78) ([@dlynch42](https://github.com/dlynch42))
+- Run CI on release and on every pull request [#72](https://github.com/cirron/cirron-sdk/pull/72) ([@dlynch42](https://github.com/dlynch42))
+- Stop the step-count fallback from chopping long epochs [#68](https://github.com/cirron/cirron-sdk/pull/68) ([@dlynch42](https://github.com/dlynch42))
+- Fix for An assert statement has a side-effect [#61](https://github.com/cirron/cirron-sdk/pull/61) ([@dlynch42](https://github.com/dlynch42))
+- Make the flush path O(1) per tick: spool-cap accounting, cached version, bounded closed deque [#58](https://github.com/cirron/cirron-sdk/pull/58) ([@dlynch42](https://github.com/dlynch42))
+
+#### 🏠 Internal
+
+- Release 0.2.0 [#102](https://github.com/cirron/cirron-sdk/pull/102) ([@dlynch42](https://github.com/dlynch42))
+- Run releases as a GitHub App so main's publish gate lets them through [#100](https://github.com/cirron/cirron-sdk/pull/100) ([@dlynch42](https://github.com/dlynch42))
+- Bump the uv group across 1 directory with 8 updates [#84](https://github.com/cirron/cirron-sdk/pull/84) ([@dependabot[bot]](https://github.com/dependabot[bot]) [@dlynch42](https://github.com/dlynch42))
+- Stop dependency bumps from setting the SDK's version [#81](https://github.com/cirron/cirron-sdk/pull/81) ([@dlynch42](https://github.com/dlynch42))
+- Clarify ci.deps behavior and dev note [#52](https://github.com/cirron/cirron-sdk/pull/52) ([@dlynch42](https://github.com/dlynch42))
+- Clarify rules for distributing built artifacts [#51](https://github.com/cirron/cirron-sdk/pull/51) ([@dlynch42](https://github.com/dlynch42))
+- Replace test fixture url with cirron.internal.example.com [#50](https://github.com/cirron/cirron-sdk/pull/50) ([@dlynch42](https://github.com/dlynch42))
+- Clarify platform data source docs [#49](https://github.com/cirron/cirron-sdk/pull/49) ([@dlynch42](https://github.com/dlynch42))
+
+#### 📝 Documentation
+
+- Unify comment and docstring style against Google pyguide 3.8 [#94](https://github.com/cirron/cirron-sdk/pull/94) ([@dlynch42](https://github.com/dlynch42))
+
+#### Authors: 2
+
+- [@dependabot[bot]](https://github.com/dependabot[bot])
+- Devin Lynch ([@dlynch42](https://github.com/dlynch42))
+
+---
+
 # v0.1.0 (Fri May 08 2026)
 
 :tada: This release contains work from a new contributor! :tada:
