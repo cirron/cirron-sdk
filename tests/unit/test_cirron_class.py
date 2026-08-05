@@ -37,7 +37,7 @@ def _clear_cirron_env(monkeypatch) -> None:
         monkeypatch.delenv(env_name, raising=False)
 
 
-# -- acceptance: explicit endpoint --------------------------------------------
+# acceptance: explicit endpoint
 
 
 def test_explicit_endpoint_is_used(monkeypatch):
@@ -70,7 +70,7 @@ def test_all_explicit_kwargs_are_used(monkeypatch):
     assert c.ingest_path == "/v2/traces"
 
 
-# -- acceptance: module-level default instance --------------------------------
+# acceptance: module-level default instance
 
 
 def test_module_level_functions_create_default_instance(monkeypatch):
@@ -97,7 +97,7 @@ def test_module_level_profile_uses_default_instance(monkeypatch, tmp_path):
     assert ci.profile() is prof
 
 
-# -- acceptance: two instances coexist ----------------------------------------
+# acceptance: two instances coexist
 
 
 def test_two_instances_coexist(monkeypatch):
@@ -121,7 +121,7 @@ def test_explicit_cirron_drives_profiler(monkeypatch, tmp_path):
     assert prof.cirron.api_endpoint == "https://cirron.internal.example.com"
 
 
-# -- acceptance: config.toml -------------------------------------------------
+# acceptance: config.toml
 
 
 def test_toml_values_are_read(monkeypatch):
@@ -173,7 +173,7 @@ def test_toml_parse_real_file(monkeypatch, tmp_path):
     assert c.snapshots == "full"
 
 
-# -- acceptance: precedence ---------------------------------------------------
+# acceptance: precedence
 
 
 def test_precedence_explicit_over_env_over_toml_over_default(monkeypatch):
@@ -204,7 +204,7 @@ def test_precedence_explicit_over_env_over_toml_over_default(monkeypatch):
     assert c_default.api_endpoint == "https://api.cirron.com"
 
 
-# -- singleton reset ----------------------------------------------------------
+# singleton reset
 
 
 def test_reset_default_for_tests_clears_singleton(monkeypatch):

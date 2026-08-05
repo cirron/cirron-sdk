@@ -1,12 +1,15 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-04-23T17:44:22Z",
+  "generated_at": "2026-08-04T05:33:06Z",
   "host": "github-actions-ubuntu-latest",
-  "platform": "Linux-6.17.0-1010-azure-x86_64-with-glibc2.39",
-  "python": "3.13.13",
-  "note": "Captured from the GitHub Actions `overhead` job (ubuntu-latest, Python 3.13, CPU-only). Values are the max of two consecutive CI runs on main to absorb runner jitter; +20% regression tolerance is applied at test time. Regenerate procedure: tests/overhead/README.md.",
+  "platform": "Linux-6.17.0-1020-azure-x86_64-with-glibc2.39",
+  "python": "3.13.14",
+  "note": "Captured from the GitHub Actions `overhead` job (ubuntu-latest, Python 3.13, CPU-only). Values are the max of two consecutive CI runs on the release branch to absorb runner jitter; +20% regression tolerance is applied at test time. Only CI-runner numbers belong in this file; a developer machine's numbers would set the gate to the wrong hardware. Mixed provenance: the three per-primitive micro-benchmarks were captured on 2026-08-04 from runs 754302d and 8cb83db, and the top-level generated_at/platform/python describe that capture. The two reference-loop ratios still carry their 2026-04-23 capture on Python 3.13.13 and kernel 6.17.0-1010; they are deliberately not regenerated here because the reference loop's run-to-run variance currently exceeds the tolerance it enforces, so regenerating them would ratify noise. See issue #73, which re-captures them once the sampling is fixed. Regenerate procedure: tests/overhead/README.md.",
   "metrics": {
     "profile_no_hooks_ratio": 0.2949,
-    "profile_torch_hooks_ratio": 0.8440
+    "profile_torch_hooks_ratio": 0.8440,
+    "scope_push_pop_us_per_cycle": 3.8519,
+    "mark_us_per_call": 3.2855,
+    "batches_us_per_iter": 4.1184
   }
 }

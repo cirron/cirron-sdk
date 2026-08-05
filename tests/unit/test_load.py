@@ -32,7 +32,7 @@ from cirron.data.returns import NumpyAdapter
 from cirron.data.sources import DataSource, SourceConfig
 
 # ``cirron.data.__init__`` re-exports the ``load`` function, which shadows
-# the submodule attribute — so ``from cirron.data import load`` binds the
+# the submodule attribute, so ``from cirron.data import load`` binds the
 # function. Grab the submodule through ``importlib`` so ``monkeypatch.setattr``
 # can swap internal helpers.
 load_mod = importlib.import_module("cirron.data.load")
@@ -50,7 +50,7 @@ def _reset_singletons(monkeypatch):
     _profiler_mod._reset_for_tests()
 
 
-# -- test helpers -------------------------------------------------------------
+# test helpers
 
 
 class _FakeSource(DataSource):
@@ -82,7 +82,7 @@ def _write_parquet(tmp_path, rows: list[dict[str, Any]], name: str = "f.parquet"
     return path
 
 
-# -- scheme routing -----------------------------------------------------------
+# scheme routing
 
 
 def test_scheme_routing_picks_s3(monkeypatch):
@@ -147,7 +147,7 @@ def test_postgres_scheme_routes_to_postgres_source(monkeypatch):
     assert list(result["id"]) == [1, 2]
 
 
-# -- source='local' default ---------------------------------------------------
+# source='local' default
 
 
 def test_source_local_reads_parquet_file(tmp_path):
@@ -173,7 +173,7 @@ def test_source_local_file_uri(tmp_path):
     assert df.shape == (1, 1)
 
 
-# -- source='platform' --------------------------------------------------------
+# source='platform'
 
 
 def test_platform_without_api_key_raises(monkeypatch):
@@ -286,7 +286,7 @@ def test_platform_unavailable_is_platform_required(monkeypatch):
         c.load("training-data", source="platform")
 
 
-# -- multi-source concat ------------------------------------------------------
+# multi-source concat
 
 
 def test_multi_source_concatenates(monkeypatch, tmp_path):
@@ -297,7 +297,7 @@ def test_multi_source_concatenates(monkeypatch, tmp_path):
     assert df.shape == (2, 1)
 
 
-# -- as_= conversions ---------------------------------------------------------
+# as_= conversions
 
 
 def test_as_polars(tmp_path):
@@ -335,7 +335,7 @@ def test_as_hf(tmp_path):
     assert ds.num_rows == 2
 
 
-# -- lazy ---------------------------------------------------------------------
+# lazy
 
 
 def test_lazy_defers_until_collect(tmp_path):
@@ -348,7 +348,7 @@ def test_lazy_defers_until_collect(tmp_path):
     assert handle._collected
 
 
-# -- size tiers ---------------------------------------------------------------
+# size tiers
 
 
 def test_size_warn_tier_emits_warning_and_proceeds(monkeypatch, caplog):
@@ -377,7 +377,7 @@ def test_size_error_tier_suppressed_with_confirm(monkeypatch):
     assert df is frame
 
 
-# -- dependency errors --------------------------------------------------------
+# dependency errors
 
 
 def test_missing_polars_raises_dependency_error(monkeypatch):
@@ -401,7 +401,7 @@ def test_missing_polars_raises_dependency_error(monkeypatch):
         ci.load("anything", as_="polars")
 
 
-# -- match=/ext= execution ---------------------------------------------
+# match=/ext= execution
 
 
 def test_local_match_path_glob_filters_files(tmp_path):
@@ -518,6 +518,48 @@ def test_s3_paginator_walks_all_pages(monkeypatch):
     assert all(k.startswith("prefix/a") for k in fetched_keys)
 
 
+@pytest.mark.parametrize(
+    ("module_name", "extra", "factory"),
+    [
+        (
+            "boto3",
+            "s3",
+            lambda: ("cirron.data.sources.s3", "S3DataSource", {"bucket_name": "b", "path": "k"}),
+        ),
+        (
+            "google.cloud.storage",
+            "gcs",
+            lambda: ("cirron.data.sources.gcs", "GCSDataSource", {"bucket_name": "b", "path": "k"}),
+        ),
+        (
+            "azure.storage.blob",
+            "azure",
+            lambda: (
+                "cirron.data.sources.azure",
+                "AzureDataSource",
+                {"account_name": "acct", "container_name": "c", "path": "k"},
+            ),
+        ),
+    ],
+)
+def test_object_store_missing_driver_raises_dependency_error(
+    monkeypatch, module_name, extra, factory
+):
+    """Object-store backends must raise the same structured error the SQL
+    shims do: a bare ImportError can't be caught uniformly and its
+    hand-written pip string drifts away from the EXTRAS registry."""
+    import sys
+
+    module_path, class_name, cfg_kwargs = factory()
+    monkeypatch.setitem(sys.modules, module_name, None)
+
+    source_cls = getattr(importlib.import_module(module_path), class_name)
+    src = source_cls(SourceConfig(source_type=extra, **cfg_kwargs))
+
+    with pytest.raises(CirronDependencyError, match=rf"cirron-sdk\[{extra}\]"):
+        src.load()
+
+
 def test_s3_validate_returns_false_on_error(monkeypatch):
     import sys
     import types
@@ -602,7 +644,7 @@ def test_azure_account_url_raises_without_account_name():
 
 def test_platform_match_and_ext_forwarded_as_query_params(monkeypatch, tmp_path):
     """Platform source must push match/ext to the listing route as query
-    params so filtering runs server-side (platform PR #525)."""
+    params so filtering runs server-side."""
     path = _write_parquet(tmp_path, [{"x": 1}])
     parquet_bytes = path.read_bytes()
 
@@ -660,7 +702,7 @@ def test_platform_match_and_ext_forwarded_as_query_params(monkeypatch, tmp_path)
 
 
 def test_platform_regex_filename_is_post_filtered(monkeypatch, tmp_path):
-    """A regex filename cannot be pushed to the platform route — the
+    """A regex filename cannot be pushed to the platform route, so the
     SDK must re-filter after listing."""
     path = _write_parquet(tmp_path, [{"x": 1}])
     parquet_bytes = path.read_bytes()
@@ -723,7 +765,7 @@ def test_platform_regex_filename_is_post_filtered(monkeypatch, tmp_path):
     assert df.shape == (1, 1)
 
 
-# -- accept-and-raise for deferred params -------------------------------------
+# accept-and-raise for deferred params
 
 
 def test_where_rejected_for_non_sql_sources(tmp_path):
@@ -733,7 +775,7 @@ def test_where_rejected_for_non_sql_sources(tmp_path):
         ci.load(str(path), where="a > 0")
 
 
-# -- map= transform -------------------------------------------------
+# map= transform
 
 
 def test_map_rowwise_transforms_each_row(tmp_path):
@@ -826,12 +868,12 @@ def test_search_raises_platform_feature(tmp_path):
         ci.load(str(path), search="cats")
 
 
-# -- non-tabular sources ------------------------------------------------------
+# non-tabular sources
 
 
 def test_non_tabular_json_default_passes_through(tmp_path):
     """``ci.load('file.json')`` with default as_='pandas' returns the raw
-    parsed JSON (dict/list) rather than raising — non-tabular payloads
+    parsed JSON (dict/list) rather than raising, because non-tabular payloads
     are usable in the permissive default path."""
     path = tmp_path / "cfg.json"
     path.write_text(json.dumps({"threshold": 0.5, "labels": ["a", "b"]}))
@@ -846,7 +888,7 @@ def test_non_tabular_tensor_target_raises(tmp_path):
         ci.load(str(path), as_="tensor")
 
 
-# -- iter batching ------------------------------------------------------------
+# iter batching
 
 
 def test_as_iter_batches_when_batch_size_gt_one(tmp_path):
@@ -864,7 +906,7 @@ def test_as_iter_unbatched_when_batch_size_one(tmp_path):
     assert rows == [{"n": 0}, {"n": 1}]
 
 
-# -- s3://bucket without trailing slash ---------------------------------------
+# s3://bucket without trailing slash
 
 
 def test_s3_bare_bucket_uses_folder_path(monkeypatch):
@@ -893,7 +935,7 @@ def test_s3_bare_bucket_uses_folder_path(monkeypatch):
     assert cfg.path is None
 
 
-# -- NumpyAdapter 1D empty-selection bug fix (review item) --------------
+# NumpyAdapter 1D empty-selection bug fix (review item)
 
 
 def test_numpy_adapter_1d_empty_selection_returns_zero_cols():

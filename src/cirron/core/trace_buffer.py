@@ -2,7 +2,7 @@
 
 The flush thread already drains closed scopes + marks into a
 :class:`Batch` once per tick and ships them off to spool / sinks /
-transport. Once that's done, the data is gone from RAM — the spool is
+transport. Once that's done, the data is gone from RAM and the spool is
 the only persistent home for it.
 
 That's fine for the platform path (the dashboard re-reads the spool /
@@ -29,12 +29,10 @@ if TYPE_CHECKING:
     from cirron.core.flush import Batch
 
 DEFAULT_MAX_SPANS = 100_000
-# Per-``span_id`` cap on retained marks. Long-lived open spans (notably
-# the ``cirron.session`` root, which stays open for the whole process)
-# never appear in ``batch.spans``, so the span-count cap alone can't
-# evict their marks. Bound them per-span instead — keep all summary
-# marks (canonical end-of-span values) plus the most recent
-# ``DEFAULT_MAX_MARKS_PER_SPAN`` point marks.
+# Per-``span_id`` cap on retained marks. Long-lived open spans (notably the
+# ``cirron.session`` root) never appear in ``batch.spans``, so the span-count
+# cap alone can't evict their marks. Bound them per-span instead: keep every
+# summary mark plus the most recent ``DEFAULT_MAX_MARKS_PER_SPAN`` point marks.
 DEFAULT_MAX_MARKS_PER_SPAN = 1024
 
 
@@ -72,14 +70,14 @@ class _TraceBuffer:
     def add_batch(self, batch: Batch) -> None:
         """Copy a batch's spans + marks into the buffer.
 
-        Called from the flush thread after the batch is built. Cheap —
+        Called from the flush thread after the batch is built. It is cheap:
         we hold the dicts the flush path already produced and bump the
         deque under a single lock acquisition. Eviction of the oldest
         spans (and their join-table entries) happens here too, so
         ``trace()`` never has to think about the cap.
 
         Args:
-            batch (Batch): The just-built batch.
+            batch: The just-built batch.
         """
         if not batch.spans and not batch.marks:
             return
@@ -96,16 +94,15 @@ class _TraceBuffer:
             self._evict_locked()
 
     def _cap_marks_locked(self, bucket: list[dict[str, Any]]) -> None:
-        """Bound the per-span mark list. Keeps every ``summary`` mark
-        (the canonical end-of-span value) and the newest
-        ``_max_marks_per_span`` ``point`` marks. Prevents unbounded
-        growth on long-lived open spans whose ``span_id`` never appears
-        in ``self._spans`` and therefore can't be evicted by the
-        span-count cap.
+        """Bound the per-span mark list.
+
+        Keeps every ``summary`` mark (the canonical end-of-span value) and the
+        newest ``_max_marks_per_span`` ``point`` marks. Prevents unbounded
+        growth on long-lived open spans whose ``span_id`` never appears in
+        ``self._spans`` and therefore can't be evicted by the span-count cap.
 
         Args:
-            bucket (list[dict[str, Any]]): The per-span mark list to
-                trim in place.
+            bucket: The per-span mark list to trim in place.
         """
         if len(bucket) <= self._max_marks_per_span:
             return
@@ -137,7 +134,7 @@ class _TraceBuffer:
 
         Returns:
             tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
-                ``(spans, marks_by_span_id)`` — both freshly copied.
+                ``(spans, marks_by_span_id)``, both freshly copied.
         """
         with self._lock:
             spans = list(self._spans)
@@ -176,13 +173,13 @@ def get_default_trace_buffer() -> _TraceBuffer:
 
 
 def set_default_trace_buffer(buffer: _TraceBuffer | None) -> None:
-    """Replace (or clear) the default buffer. Used by ``Profiler`` setup
-    so the buffer's bound matches the user's ``trace_buffer_max_spans``
-    config, and by tests.
+    """Replace (or clear) the default buffer.
+
+    Used by ``Profiler`` setup so the buffer's bound matches the user's
+    ``trace_buffer_max_spans`` config, and by tests.
 
     Args:
-        buffer (_TraceBuffer | None): The new singleton, or ``None`` to
-            clear it.
+        buffer: The new singleton, or ``None`` to clear it.
     """
     global _default_buffer
     with _default_lock:

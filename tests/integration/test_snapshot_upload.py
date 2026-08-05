@@ -49,13 +49,13 @@ class _BlobHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
-    def do_PUT(self) -> None:  # noqa: N802 (stdlib naming)
+    def do_PUT(self) -> None:
         self._record_and_respond(201, f"https://blobs.test{self.path}")
 
-    def do_POST(self) -> None:  # noqa: N802 (stdlib naming)
+    def do_POST(self) -> None:
         self._record_and_respond(202, None)
 
-    def log_message(self, format: str, *args: Any) -> None:
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         return None
 
 
@@ -161,7 +161,7 @@ def test_blob_uploads_to_mock_object_storage(server, tmp_path):
     )
 
     # 3. One tick should drain the blob queue (→ PUT) and then produce a JSON
-    # batch (which the /api/traces POST will record but we ignore — the
+    # batch (which the /api/traces POST will record but we ignore, since the
     # ticket criterion is "blob uploads to mock object storage").
     ft._tick()  # type: ignore[attr-defined]
 

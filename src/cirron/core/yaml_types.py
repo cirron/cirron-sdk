@@ -1,3 +1,10 @@
+"""Pydantic models for the ``cirron.yaml`` schema.
+
+These are the parsed shape of the file, not the resolved config. The layered
+resolver in :mod:`cirron.core.config` merges them with env vars and
+constructor kwargs.
+"""
+
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -13,6 +20,13 @@ class ServingConfig(BaseModel):
 
     Captures runtime selection plus optional schema metadata used by
     platform serving. Unknown keys are preserved (``extra="allow"``).
+
+    Attributes:
+        runtime: Serving runtime the platform should deploy the model on.
+        class_labels: Ordered class names for a classification model.
+        feature_order: Ordered input feature names the model expects.
+        input_schema: JSON-schema-shaped description of the model input.
+        output_schema: JSON-schema-shaped description of the model output.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -29,6 +43,15 @@ class ProfilingConfig(BaseModel):
 
     Holds snapshot policy, sample rate, flush interval, and an optional
     framework allow-list. Unknown keys are preserved (``extra="allow"``).
+
+    Attributes:
+        snapshots: Snapshot mode, one of ``"stats"``, ``"sampled"``, or
+            ``"full"``.
+        sample_rate: Probability, in ``[0, 1]``, of taking a full snapshot
+            at an epoch boundary under ``"sampled"``.
+        flush_interval: Seconds between flush-thread ticks.
+        frameworks: Allow-list of framework hooks to install. ``None``
+            leaves autodetection in charge.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -46,6 +69,18 @@ class CirronYaml(BaseModel):
     (``populate_by_name=True``) and preserves unknown fields
     (``extra="allow"``) so future schema additions don't break older
     SDK versions.
+
+    Attributes:
+        name: Model name.
+        framework: Training framework the model was built with.
+        type: Task the model performs.
+        version: User-assigned model version string.
+        description: Free-text description of the model.
+        serving_config: Optional ``serving_config:`` block.
+        profiling: Optional ``profiling:`` block.
+        env: Environment variables to set for the run.
+        secrets: Names of secrets the run expects to be mounted.
+        data: Named dataset references, mapping alias to source.
     """
 
     model_config = ConfigDict(extra="allow", populate_by_name=True)

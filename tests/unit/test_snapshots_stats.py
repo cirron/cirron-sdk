@@ -78,7 +78,7 @@ def _fake_cirron(snapshots: str | None = "stats") -> Any:
     return c
 
 
-# -------- stats correctness --------------------------------------------------
+# stats correctness
 
 
 def test_tensor_stats_known_values():
@@ -109,7 +109,7 @@ def test_tensor_stats_empty_array_is_safe():
     assert len(stats["histogram"]["counts"]) == HISTOGRAM_BINS
 
 
-# -------- capture_weight_stats ----------------------------------------------
+# capture_weight_stats
 
 
 def test_capture_weight_stats_emits_one_record_per_param():
@@ -135,7 +135,7 @@ def test_capture_weight_stats_emits_one_record_per_param():
     assert by_name["layer1.weight"].dtype == "float32"
 
 
-# -------- capture_gradient_stats --------------------------------------------
+# capture_gradient_stats
 
 
 def test_capture_gradient_stats_skips_none_grads():
@@ -155,7 +155,7 @@ def test_capture_gradient_stats_skips_none_grads():
     assert rec.stats["max"] == pytest.approx(0.5)
 
 
-# -------- capture gate + configuration --------------------------------------
+# capture gate + configuration
 
 
 def test_capture_no_op_when_snapshots_disabled():
@@ -188,7 +188,7 @@ def test_capture_include_grads_false_omits_grads():
     assert {r.tensor_name for r in records} == {"layer.weight"}
 
 
-# -------- end-to-end: SnapshotBuffer → FlushThread.drain_once → Batch -------
+# end-to-end: SnapshotBuffer → FlushThread.drain_once → Batch
 
 
 def test_snapshots_flow_into_batch_json(tmp_path):
@@ -228,3 +228,126 @@ def test_snapshot_buffer_soft_cap_drops_excess():
     buf.extend(capture(cirron, model, span_id="epoch-1", include_grads=False))
     assert len(buf) == 3
     assert buf.drop_count == 2
+
+
+# non-finite tensors
+
+
+def test_nan_tensor_numpy_stats_omit_histogram():
+    # np.histogram raises "supplied range is not finite" on a NaN tensor,
+    # and _make_record's except Exception used to swallow that into a
+    # dropped record. Now the range is resolved up front instead.
+    stats = _tensor_stats(np.array([np.nan, 1.0, 2.0], dtype=np.float64))
+    assert math.isnan(stats["mean"])
+    assert "histogram" not in stats
+
+
+def test_inf_tensor_numpy_stats_omit_histogram():
+    stats = _tensor_stats(np.array([-np.inf, 0.0, np.inf], dtype=np.float64))
+    assert math.isinf(stats["min"]) and stats["min"] < 0
+    assert math.isinf(stats["max"]) and stats["max"] > 0
+    assert "histogram" not in stats
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        [-np.inf, 0.0, np.inf],  # summing both infinities is indeterminate
+        [np.nan, 1.0, 2.0],
+        [np.inf, np.inf],
+    ],
+)
+def test_nonfinite_capture_emits_no_numpy_warnings(values, recwarn):
+    """Capturing a diverged tensor must stay silent.
+
+    Summing a tensor holding both infinities yields nan and numpy warns
+    about it. That nan is the answer we want and is substituted on the way
+    to the wire, so the warning is noise the caller cannot act on. A
+    profiler printing RuntimeWarnings into a training log at the moment a
+    model blows up is worse than useless.
+    """
+    stats = _tensor_stats(np.array(values, dtype=np.float64))
+
+    assert [str(w.message) for w in recwarn.list] == []
+    assert "mean" in stats, "silencing the warning must not skip the reduction"
+
+
+def test_finite_tensor_still_has_full_histogram():
+    stats = _tensor_stats(np.arange(64, dtype=np.float64))
+    assert len(stats["histogram"]["bins"]) == HISTOGRAM_BINS + 1
+    assert len(stats["histogram"]["counts"]) == HISTOGRAM_BINS
+    assert "nonfinite" not in stats
+
+
+def test_constant_tensor_reports_max_equal_to_min():
+    # The histogram range widens by 1.0 so the backend doesn't return an
+    # all-zero histogram, but the reported max must stay equal to min.
+    stats = _tensor_stats(np.full(8, 3.0, dtype=np.float64))
+    assert stats["min"] == 3.0
+    assert stats["max"] == 3.0
+    assert stats["histogram"]["counts"][0] == 8
+
+
+def test_nan_tensor_record_is_not_dropped():
+    # The silent-drop half of the bug: capture_weight_stats returned zero
+    # records for a diverged model, i.e. the run you enabled snapshots for.
+    model = _FakeModel([("layer.weight", _FakeTensor(np.array([np.nan, 1.0], dtype=np.float32)))])
+    records = capture_weight_stats(model, span_id="epoch-1")
+    assert len(records) == 1, "the record for a diverged tensor was dropped"
+    assert records[0].tensor_name == "layer.weight"
+
+
+def test_nonfinite_snapshot_reaches_the_batch_as_null_plus_map(tmp_path):
+    # End-to-end: SnapshotBuffer -> drain_once -> Batch.to_json, then the
+    # strict-parse check the platform performs.
+    buf = SnapshotBuffer()
+    model = _FakeModel([("layer.weight", _FakeTensor(np.array([np.nan, 1.0], dtype=np.float32)))])
+    cirron = _fake_cirron(snapshots="stats")
+    buf.extend(capture(cirron, model, span_id="epoch-9", include_grads=False))
+    assert len(buf) == 1
+
+    ft = FlushThread(
+        ScopeStack(), MarkBuffer(), SpoolWriter(tmp_path / "spool"), snapshot_buffer=buf
+    )
+    batch = ft.drain_once()
+    assert batch is not None
+    snap = batch.to_json()["snapshots"][0]
+
+    assert snap["stats"]["mean"] is None
+    assert snap["stats"]["nonfinite"]["mean"] == "nan"
+    assert "histogram" not in snap["stats"]
+
+    def _reject(token: str) -> None:
+        raise AssertionError(f"non-standard JSON constant: {token}")
+
+    import json
+
+    json.loads(json.dumps(batch.to_json(), allow_nan=False), parse_constant=_reject)
+
+
+def test_torch_and_numpy_agree_on_nonfinite_stats():
+    # The two backends used to disagree: numpy dropped the record, while a
+    # small torch tensor took the arithmetic-bins branch and emitted 17 NaN
+    # edges straight into the batch.
+    torch = pytest.importorskip("torch")
+    from cirron.snapshots.stats import _tensor_stats_numpy, _tensor_stats_torch
+
+    values = [float("nan"), 1.0, 2.0]
+    t_stats = _tensor_stats_torch(torch.tensor(values))
+    n_stats = _tensor_stats_numpy(np.array(values, dtype=np.float64))
+
+    assert set(t_stats) == set(n_stats)
+    assert "histogram" not in t_stats
+    for key in ("mean", "std", "min", "max", "norm"):
+        assert math.isnan(t_stats[key]) == math.isnan(n_stats[key])
+
+
+def test_large_nonfinite_torch_tensor_omits_histogram():
+    # >= 2*bins elements takes the torch.histc branch, which raises on a
+    # non-finite range rather than returning garbage.
+    torch = pytest.importorskip("torch")
+    from cirron.snapshots.stats import _tensor_stats_torch
+
+    stats = _tensor_stats_torch(torch.full((100,), float("nan")))
+    assert "histogram" not in stats
+    assert math.isnan(stats["mean"])

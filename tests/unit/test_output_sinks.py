@@ -1,7 +1,7 @@
 """Tests for the ``output=`` sink plumbing.
 
 The flush thread runs on a 1s default interval, so we drive everything
-through the synchronous ``ci.flush()`` path here — that exercises the
+through the synchronous ``ci.flush()`` path here, which exercises the
 same sink list the live tick uses, without flaky timing waits.
 """
 
@@ -40,7 +40,7 @@ def _reset(monkeypatch, tmp_path):
     profiler_mod._reset_for_tests()
 
 
-# --- normalize_output --------------------------------------------------------
+# normalize_output
 
 
 def test_normalize_default():
@@ -78,7 +78,7 @@ def test_normalize_non_string_raises():
         normalize_output([123])  # type: ignore[list-item]
 
 
-# --- profile() output= integration ------------------------------------------
+# profile() output= integration
 
 
 def test_default_writes_only_to_spool(tmp_path, caplog):
@@ -168,7 +168,7 @@ def test_invalid_output_does_not_install_hooks():
     assert flush_mod._supervisor is None
 
 
-# --- build_sinks -------------------------------------------------------------
+# build_sinks
 
 
 def test_build_sinks_for_each_name(tmp_path):

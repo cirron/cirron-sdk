@@ -7,7 +7,7 @@ caches the result so repeated calls are cheap.
 Kept deliberately minimal: the SDK's job here is to defer the load, not
 to reimplement query planning. When a polars source natively supports
 lazy execution (``pl.scan_parquet`` etc.), the dispatcher skips wrapping
-and returns the ``LazyFrame`` directly — the user can call ``.collect()``
+and returns the ``LazyFrame`` directly. The user can call ``.collect()``
 on that too, so the contract matches from their perspective.
 """
 
@@ -24,8 +24,8 @@ class LazyHandle:
     first call and caches the result so subsequent calls are free.
 
     Args:
-        thunk (Callable[[], Any]): Zero-arg callable that produces the
-            final return-type-converted value.
+        thunk: Zero-arg callable that produces the final
+            return-type-converted value.
     """
 
     __slots__ = ("_thunk", "_collected", "_value")
@@ -39,7 +39,7 @@ class LazyHandle:
         """Run the thunk (once) and return its cached result.
 
         Returns:
-            Any: Whatever the thunk produced — typically a DataFrame or
+            Any: Whatever the thunk produced, typically a DataFrame or
                 iterator.
         """
         if not self._collected:

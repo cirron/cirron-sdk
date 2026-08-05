@@ -25,13 +25,20 @@ Feature requests go in the issue tracker too, via the [feature request template]
 
 ### Pull requests
 
-1. **Fork** the repository and create a branch from `main`.
+1. **Fork** the repository and create a branch from `release`.
 2. **Set up** your local environment (see [Getting set up](#getting-set-up) below).
 3. **Commit** with clear, concise messages. Imperative mood (`Add foo`, not `Added foo`); first line under 72 chars; reference issues with `Closes #N` in the body.
 4. **Test**: `uv run pytest tests/unit -v` and `uv run ruff check src tests && uv run ruff format --check src tests && uv run mypy src` must all pass locally before you push.
-5. **Submit** a PR against `main` using the [PR template](.github/pull_request_template.md). Fill out every section, especially **New dependencies**.
+5. **Submit** a PR against `release` using the [PR template](.github/pull_request_template.md). Fill out every section, especially **New dependencies**.
 
-A maintainer will apply the appropriate release label (`major` / `minor` / `patch` / `internal` / `documentation`) during review — see [Releases](#releases) for what they mean. You don't need to label the PR yourself.
+> **Why `release` and not `main`?** `release` is the integration trunk where work lands.
+> `main` is the published branch: merging to it ships a stable version to PyPI (see
+> [Releases](#releases)). GitHub shows `main` as the default branch, so target `release`
+> deliberately rather than accepting the default. The two branches are gated differently:
+> `release` requires lint, typecheck, the unit matrix and the three framework matrices,
+> while `main` additionally requires the `overhead` job and that your branch be up to date.
+
+A maintainer will apply the appropriate release label (`enhancement` / `bug` / `internal` / `documentation`, or a `release: *` override) during review — see [Releases](#releases) for what they mean. You don't need to label the PR yourself.
 
 For small fixes (typos, doc clarifications, obvious one-line bugs), feel free to skip the issue and go straight to a PR. For non-trivial changes, open an issue first; it saves rework if the design needs iteration.
 
@@ -39,7 +46,7 @@ A maintainer will triage within a week. Review velocity beyond triage depends on
 
 ### PR and issue labels
 
-Most labels (`bug`, `enhancement`, `documentation`, etc.) are self-describing and documented in GitHub's label description field. The labels below have rules around *when* they may be applied, so they're documented here too:
+Most labels are documented in GitHub's label description field. Note that `bug`, `enhancement` and `documentation` are not purely descriptive: they drive the release version, so see [Releases](#releases) before applying one. The labels below have rules around *when* they may be applied, so they're documented here too:
 
 - **`skip-ci`** (PRs only): bypasses the CI workflow. Use it **only** on PRs that touch zero source code: README typos, doc-only changes under `docs/` (excluding formats/specs), or comment-only/docstring fixes that don't change the build. **Not allowed** on anything under `src/` or `tests/`, including renames, refactors, "obviously safe" one-line changes, dependency bumps, or anything that touches `pyproject.toml`.
 
@@ -53,11 +60,22 @@ Releases are driven by [`auto`](https://intuit.github.io/auto/) and triggered on
 
 ### Release-type labels (apply exactly one per PR)
 
-- **`major`**: breaking change. Bumps `X.y.z`.
-- **`minor`**: backwards-compatible feature. Bumps `x.Y.z`.
-- **`patch`**: backwards-compatible fix. Bumps `x.y.Z`.
+The two you'll reach for most are the ordinary triage labels, which carry release meaning directly:
+
+- **`enhancement`**: new or improved behavior. Bumps `x.Y.z`, and groups under "🚀 Enhancement".
+- **`bug`**: fixes broken behavior. Bumps `x.y.Z`, and groups under "🐛 Bug Fix".
+
+The rest are explicit overrides, namespaced so that a label applied by an external tool can never be mistaken for a release instruction:
+
+- **`release: major`**: breaking change. Bumps `X.y.z`.
+- **`release: minor`**: same effect as `enhancement`, for when the triage label doesn't fit.
+- **`release: patch`**: same effect as `bug`, for when the triage label doesn't fit.
 - **`internal`**: tooling / CI / dev-workflow change. No version bump, included in changelog under "Internal".
 - **`documentation`**: docs-only. No version bump.
+
+A PR carrying none of these falls through to a patch bump and is listed under "🐛 Bug Fix", so an unlabelled feature is reported as a bug fix. Label the PR.
+
+Several labelled PRs in one release still produce a single bump: the highest one wins. Ten `enhancement` PRs are one minor bump, not ten.
 
 ### Release-control labels
 
@@ -66,7 +84,7 @@ Releases are driven by [`auto`](https://intuit.github.io/auto/) and triggered on
 
 ### How prereleases work
 
-To cut a release candidate, merge PRs to the `rc` branch. Auto computes the next stable version from the bump label, appends `-rc.N` (auto-incrementing), and ships to TestPyPI. Example: `main` is at `0.1.0`, you open a PR to `rc` labeled `major` — auto produces `v1.0.0-rc.0`. When the RC is solid, merge `rc` → `main` and auto ships the stable `v1.0.0` to PyPI. The `rc` suffix matters for Python: PEP 440 only normalizes a fixed set of prerelease tokens (`a`, `b`, `rc`, `dev`, `post`), so `v0.1.0-rc.0` becomes the standard `0.1.0rc0` on PyPI.
+To cut a release candidate, merge PRs to the `rc` branch. Auto computes the next stable version from the bump label, appends `-rc.N` (auto-incrementing), and ships to TestPyPI. Example: `main` is at `0.1.0`, you open a PR to `rc` labeled `release: major` — auto produces `v1.0.0-rc.0`. When the RC is solid, merge `rc` → `main` and auto ships the stable `v1.0.0` to PyPI. The `rc` suffix matters for Python: PEP 440 only normalizes a fixed set of prerelease tokens (`a`, `b`, `rc`, `dev`, `post`), so `v0.1.0-rc.0` becomes the standard `0.1.0rc0` on PyPI.
 
 ### `skip-ci` vs `skip-release`
 
@@ -148,6 +166,42 @@ We ship a minimal core install (`pip install cirron-sdk` with no extras) and gat
 
 If you're adding a new optional extra, also update the README install table.
 
+### Missing-dependency errors
+
+An optional backend that isn't installed must fail with `CirronDependencyError`, never a bare `ImportError` — callers catch one type across every optional dep, and the install hint comes from the `EXTRAS` registry so it can't drift from `pyproject.toml`.
+
+At a **backend entry point** (the first import of an optional backend on a `load()` path) use `driver()`, taking the import name from `EXTRAS` rather than from memory — it's `google.cloud.storage`, not `google.cloud`:
+
+```python
+from cirron.core.deps import driver
+
+boto3 = driver("boto3", "s3")
+# CirronDependencyError: the 's3' source backend requires the 'boto3' driver.
+# Install with: pip install 'cirron-sdk[s3]'
+```
+
+Where `driver()` doesn't fit (e.g. `ci.load(as_='pandas')`), raise `CirronDependencyError` with `install_hint()` directly.
+
+The rule stops at entry points. Plain imports stay correct downstream of a guard (`NumpyAdapter.to_pandas` runs after `ci.load(as_=...)` already checked), where absence selects a branch rather than failing, and in code that deliberately swallows like the object-store `validate()` methods.
+
+## Adding a SQL source backend
+
+`ci.load()` supports Postgres, MySQL, Snowflake, and Databricks. The shared plumbing lives in `src/cirron/data/sql.py`, so a new backend (BigQuery, Redshift, Trino, …) is roughly 20 lines. Read `sources/mysql.py` first — it's the smallest complete example.
+
+What the shim owns is only what genuinely differs per driver:
+
+1. **Source module**: `src/cirron/data/sources/<backend>.py` with a `<Backend>DataSource(DataSource)` class and a `build_source(uri_str, cirron, request)` factory. `validate()` returns `True` — connection probes belong in `load()`.
+2. **`load()` body**, in this order: `driver("<module>", "<extra>")` → `CredentialResolver(self.cirron, self.uri).resolve()` → `build_query(self.uri, where=..., columns=...)` → assemble `conn_kwargs` → `return run_select(<driver>.connect, conn_kwargs, query)`.
+3. **`conn_kwargs` mapping** — this is the real per-driver work (`dbname` vs `database`, Snowflake's `account`/`warehouse`/`role`, Databricks' `http_path`). Anything that isn't in the URI and isn't a credential (warehouse, HTTP path) reads from `creds.extra` first, then an env var.
+4. **URI parsing**: extend `parse_sql_uri` and add the scheme to `QUOTERS` with the right identifier quoting (double quotes for ANSI, backticks for MySQL).
+5. **Credentials**: add the driver's conventional env var to `CredentialResolver._try_env_secret` and a hint to `_env_hint_for`.
+6. **Dependencies**: add the extra to `[project.optional-dependencies]`, register it in `core/deps.py::EXTRAS` (plus `_DIST_NAMES` if the import name and distribution name differ), add it to the `sql` meta-extra and the README install table.
+7. **Tests**: `tests/unit/test_sql_sources.py`, following the existing per-driver classes. A happy path driving a fake driver module via `monkeypatch.setitem(sys.modules, ...)` that asserts the exact `connect_calls` kwargs and composed SQL, plus a `test_missing_driver`. Assert the kwargs mapping — that's the part with no other coverage.
+
+**Do not re-inline the connect/cursor/cleanup tail.** It belongs in `run_select`, which closes the connection deterministically even when the query raises. If your driver needs an explicit cursor close (Snowflake does), pass `cursor_close=True` rather than hand-rolling a `try`/`finally`. A shim that reimplements that tail will be sent back — the four backends had already drifted into three different cleanup styles once.
+
+Note that `run_select` closes rather than using the driver's context manager, so it does not commit or roll back. `build_query` only composes read-only `SELECT`s. If you introduce a write path, transaction semantics become your problem and this helper is the wrong tool.
+
 ## Adding a framework integration
 
 New ML framework support is one of the highest-leverage contributions you can make. The pattern is established by the existing hooks for PyTorch, TensorFlow / Keras, HuggingFace `transformers`, and scikit-learn. Use them as the reference.
@@ -174,9 +228,9 @@ A minimum viable integration (autodetect + install hook + `epoch`/`step` scopes 
 ## Style guidelines
 
 - **Code style.** We use `ruff` for lint and format, and `mypy` for type checking. Run all three before submitting (commands in [Getting set up](#getting-set-up)). CI will fail otherwise.
-- **Comments.** Write the *why*, not the *what*. If a comment just restates the code, delete it. Keep one-line comments where the code's intent isn't obvious from naming.
+- **Comments and docstrings.** See [docs/style-guide.md](docs/style-guide.md) — Google [§3.8](https://google.github.io/styleguide/pyguide.html#38-comments-and-docstrings), enforced by `ruff`'s `D` rules. The short version: write the *why*, cap comment blocks at four lines, and don't repeat a type the annotation already carries.
 - **Type hints.** All public functions are typed. We run `mypy` with `ignore_missing_imports=true`. The SDK wraps pandas/polars/torch, all `Any` under mypy, so we can't be stricter without ergonomic damage.
-- **Errors.** Use the `CirronError` hierarchy in `cirron/core/errors.py`. Add a new subclass when the failure mode is something a caller might programmatically catch; raise `ValueError` / `TypeError` for caller bugs.
+- **Errors.** Use the `CirronError` hierarchy in `cirron/core/errors.py`. Add a new subclass when the failure mode is something a caller might programmatically catch; raise `ValueError` / `TypeError` for caller bugs. Missing optional dependencies have their own rule — see [Missing-dependency errors](#missing-dependency-errors).
 - **Imports.** PEP 604 unions (`X | Y`), PEP 585 generics (`list[X]`). `ruff` enforces both.
 - **Documentation.** If you change user-facing code (the `ci.*` surface, install extras, observable behavior), update the README in the same PR. Internal architecture changes belong in `docs/`.
 

@@ -10,11 +10,15 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import os
+import time
+from pathlib import Path
 
 import pytest
 
 import cirron
 from cirron.core import profiler as profiler_mod
+from cirron.core.swallow import swallow_counts, swallowed
 
 
 @pytest.fixture(autouse=True)
@@ -162,6 +166,8 @@ def test_health_returns_expected_shape():
         "scope_drop_count",
         "mark_drop_count",
         "spool_drop_count",
+        "swallowed_error_count",
+        "swallowed_errors",
         "spool_dir",
         "spool_bytes",
         "flush_mode",
@@ -176,10 +182,63 @@ def test_health_returns_expected_shape():
     assert h["flush_mode"] in ("normal", "spool_only")
 
 
+def test_health_spool_bytes_includes_orphaned_tmp_files():
+    """``spool_bytes`` used to run its own ``*.json`` glob, so it reported the
+    same under-count the cap did: an orphaned ``.json.tmp`` from a hard-killed
+    writer occupied disk that neither number could see."""
+    p = cirron.profile()
+    spool_dir = Path(p.health()["spool_dir"])
+    spool_dir.mkdir(parents=True, exist_ok=True)
+    before = p.health()["spool_bytes"]
+
+    orphan = spool_dir / "00000000000000000001-dead.json.tmp"
+    orphan.write_bytes(b"x" * 4_096)
+    stamp = time.time() - 7_200
+    os.utime(orphan, (stamp, stamp))
+
+    assert p.health()["spool_bytes"] == before + 4_096
+
+
 def test_health_module_level_without_active_profiler():
     """ci.health() before ci.profile() returns disabled shape, no raise."""
     h = cirron.health()
     assert h["enabled"] is False
+
+
+def test_health_includes_swallow_keys_when_disabled():
+    """The disabled shape carries the swallow keys too, so callers never
+    have to branch on ``enabled`` before reading them."""
+    h = cirron.health()
+    assert h["enabled"] is False
+    assert h["swallowed_error_count"] == 0
+    assert h["swallowed_errors"] == {}
+
+
+def test_health_reports_swallowed_errors():
+    """A swallowed internal error is visible in ci.health() rather than
+    vanishing without a trace."""
+    swallowed("test.ctx", ValueError("x"))
+    swallowed("test.ctx", ValueError("y"))
+    swallowed("other.ctx", TypeError("z"))
+    h = cirron.profile().health()
+    assert h["swallowed_errors"]["test.ctx"] == 2
+    assert h["swallowed_errors"]["other.ctx"] == 1
+    assert h["swallowed_error_count"] == 3
+    # Both fields come from one snapshot, so the total always equals the
+    # sum of the map beside it.
+    assert h["swallowed_error_count"] == sum(h["swallowed_errors"].values())
+
+
+def test_shutdown_resets_swallow_counts():
+    """Counters are per-profiler-lifecycle: a second ci.profile() in the
+    same process starts from zero rather than inheriting the first run's
+    tally."""
+    p = cirron.profile()
+    swallowed("test.ctx", ValueError("x"))
+    assert p.health()["swallowed_error_count"] == 1
+    p.shutdown()
+    assert swallow_counts() == {}
+    assert cirron.profile().health()["swallowed_error_count"] == 0
 
 
 def test_shutdown_closes_root_scope_and_stops_flush():
@@ -248,7 +307,7 @@ def test_mark_fallback_attaches_to_session_then_clears_on_shutdown():
         assert p._root_scope is not None
         assert mark_mod.get_fallback_span_id() == p._root_scope.id
 
-        # Fire a mark from a worker thread — it never pushes a scope,
+        # Fire a mark from a worker thread, which never pushes a scope,
         # so it would otherwise land on the "root" sentinel.
         import threading as _threading
 

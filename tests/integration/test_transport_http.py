@@ -34,7 +34,7 @@ class _RecordingHandler(BaseHTTPRequestHandler):
 
     server: _RecordingServer
 
-    def do_POST(self) -> None:  # noqa: N802 (stdlib naming)
+    def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length) if length else b""
         self.server.received.append(
@@ -52,7 +52,7 @@ class _RecordingHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
-    def log_message(self, format: str, *args: Any) -> None:
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         return None
 
 
@@ -100,7 +100,7 @@ def test_http_transport_end_to_end(server: Any) -> None:
     assert req["headers"][BATCH_ID_HEADER] == "e2e-1"
     assert SDK_VERSION_HEADER in req["headers"]
 
-    # Body is JSON (uncompressed — small payload).
+    # Body is JSON, uncompressed because the payload is small.
     assert json.loads(req["body"].decode("utf-8"))["batch_id"] == "e2e-1"
 
 
@@ -120,7 +120,7 @@ def test_http_transport_retries_on_429(server: Any) -> None:
 
     assert result.ok is True
     assert len(server.received) == 2
-    # Idempotency — same batch id header on both attempts.
+    # Idempotency: the same batch id header on both attempts.
     ids = {r["headers"][BATCH_ID_HEADER] for r in server.received}
     assert ids == {"retry-1"}
 

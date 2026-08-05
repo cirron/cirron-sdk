@@ -1,4 +1,4 @@
-"""TensorFlow / Keras hook — unit tests.
+"""TensorFlow / Keras hook: unit tests.
 
 Skipped in environments without ``tensorflow`` so the core CI path stays
 green. When available, we exercise the callback auto-attach on
@@ -56,7 +56,9 @@ def ctx():
 
 
 def _tiny_model():
-    model = keras.Sequential([keras.layers.Dense(2, input_shape=(4,))])
+    # Keras 3 deprecated passing ``input_shape`` to a layer; declare the shape
+    # with an explicit Input layer instead.
+    model = keras.Sequential([keras.layers.Input(shape=(4,)), keras.layers.Dense(2)])
     model.compile(optimizer="sgd", loss="mse", metrics=["mae"])
     return model
 
@@ -149,7 +151,7 @@ def test_callback_attaches_on_every_fit_without_mutating_caller(stack, ci, ctx):
     closed = stack.drain_closed_all()
     epochs = [s for s in closed if s.name == "epoch"]
     assert len(epochs) == 2
-    # And no stray duplicate-attach — if we were appending twice per call,
+    # And no stray duplicate-attach: if we were appending twice per call,
     # we'd see 2 epoch spans per fit, i.e. 4 total.
     assert not any(isinstance(cb, callback_cls) for cb in cbs)
 

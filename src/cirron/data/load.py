@@ -1,4 +1,4 @@
-"""``ci.load()`` — unified data-access dispatcher.
+"""Unified data-access dispatcher behind ``ci.load()``.
 
 The dispatcher parses a flat keyword signature into a :class:`LoadRequest`,
 resolves each input to a concrete ``DataSource``, enforces the
@@ -56,9 +56,26 @@ _SQL_SCHEMES = frozenset({"postgres", "mysql", "databricks", "snowflake"})
 class LoadRequest:
     """Normalized form of one positional ``name`` + the kwargs.
 
-    The dispatcher builds one request per input (single string → one,
-    list → one per element), then hands each to a ``DataSource``. Sources
-    read from ``request`` to decide how to filter / project.
+    The dispatcher builds one request per input (a single string yields one,
+    a list yields one per element), then hands each to a ``DataSource``.
+    Sources read from ``request`` to decide how to filter / project.
+
+    Attributes:
+        name: The dataset name or URI this request loads.
+        source: Resolver hint, ``local`` or ``platform``. A scheme parsed
+            out of ``name`` overrides it.
+        match: Normalized filename / path filter, or ``None`` for no filter.
+        columns: Column projection, or ``None`` for every column.
+        map: Per-row or per-batch transform callable.
+        where: SQL ``WHERE`` clause pushed down by the SQL backends.
+        search: Vector-search query string.
+        top_k: Number of vector-search results to return.
+        as_: Return-type selector driving the adapter conversion.
+        lazy: Whether to return a ``LazyHandle`` instead of materializing.
+        batch_size: Rows per batch when ``as_="iter"``.
+        confirm_large: Whether the caller opted in to a load at or above
+            ``load_max_bytes``.
+        scheme: Scheme parsed out of ``name``, or ``None`` for a bare name.
     """
 
     name: str
@@ -95,60 +112,18 @@ def load(
 ) -> Any:
     """Load data from local disk, the Cirron platform, or an external URI.
 
-    See module docstring for the parameter matrix and deferred-story map.
+    Implements :func:`cirron.load`; see there for the full parameter
+    reference. Order matters here: every request is validated and rejected
+    before any source is resolved, and the size tier is enforced across all
+    resolved sources before a single byte is fetched.
 
-    Args:
-        name (str | list[str]): Dataset name, scheme URI (``s3://``,
-            ``gs://``, ``postgres://``, ...), bare path, or a list of any
-            of these. Lists fan out to parallel loads and concat.
-        source (Source): Resolver hint when ``name`` carries no scheme.
-            ``"local"`` (default) probes the filesystem; ``"platform"``
-            calls the Cirron bucket-listing endpoint. Ignored when ``name``
-            includes a ``scheme://`` — the scheme always wins.
-        match (str | Mapping[str, Any] | None): Glob shorthand
-            (``"*.parquet"``) or a dict with ``path`` / ``filename`` /
-            ``extension`` / ``columns`` keys. Filesystem and platform
-            backends apply this client- and server-side respectively.
-        ext (list[str] | None): Convenience for filtering by extension —
-            equivalent to ``match={"extension": ext}``.
-        columns (list[str] | None): Project to a subset of columns.
-            Pushed to Parquet/SQL readers when supported, applied as a
-            post-load slice otherwise.
-        map (Callable[..., Any] | None): Per-row callable applied
-            post-concat, pre-adapter. Decorate with :func:`cirron.data.transform.map`
-            to flip to batch-wise.
-        where (str | None): SQL ``WHERE`` clause for SQL-scheme sources.
-            Passed through unescaped (caller is querying their own data).
-        search (str | None): Vector-search query. Accepted for forward
-            compatibility but currently raises ``NotImplementedError``.
-        top_k (int | None): Vector-search top-k. Accepted for forward
-            compatibility but currently raises ``NotImplementedError``.
-        as_ (As): Return type — ``"pandas"`` (default), ``"polars"``,
-            ``"iter"``, ``"tensor"``, or ``"hf"``.
-        lazy (bool): Return a :class:`LazyHandle` whose ``.collect()``
-            performs the load.
-        batch_size (int): Iterator batch size when ``as_="iter"``.
-        confirm_large (bool): Bypass the ``load_max_bytes`` guard for the
-            ``≥10 GB`` size tier.
-        cirron (Cirron | None): Override the default ``Cirron`` instance
-            (multi-workspace / test harness use).
+    The one parameter absent from the public ``ci.load`` signature is
+    ``cirron``, which overrides the default instance. ``Cirron.load`` supplies
+    it so an explicitly-constructed instance governs the size thresholds.
 
     Returns:
-        Any: The materialized dataset shape determined by ``as_=``, or a
+        Any: The materialized dataset, shaped by ``as_=``, or a
             ``LazyHandle`` when ``lazy=True``.
-
-    Raises:
-        ValueError: If ``source`` / ``as_`` is invalid, if ``name`` is
-            empty, or if a URI carries an unknown scheme.
-        NotImplementedError: If ``where=`` is used on a non-SQL source,
-            or if ``search=`` / ``top_k=`` is set (vector index not
-            shipped).
-        CirronDataSizeError: If the resolved source exceeds
-            ``load_max_bytes`` and ``confirm_large=False``.
-        CirronDatasetNotFound: If ``source="platform"`` and the named
-            bucket isn't registered in the workspace.
-        CirronPlatformRequired: If platform resolution is needed but
-            credentials are absent or the API is unreachable.
     """
     if source not in _VALID_SOURCES:
         raise ValueError(f"source must be one of {_VALID_SOURCES}, got {source!r}")
@@ -219,23 +194,24 @@ def _build_request(
     batch_size: int,
     confirm_large: bool,
 ) -> LoadRequest:
-    """Normalize one positional ``name`` plus the call kwargs into a
-    :class:`LoadRequest`.
+    """Normalize one positional ``name`` plus the call kwargs.
+
+    The result is a :class:`LoadRequest`.
 
     Args:
-        name (str): One element from the dispatcher's ``name`` argument.
-        source (Source): Resolver hint forwarded from :func:`load`.
-        match (str | Mapping[str, Any] | None): Raw match config.
-        ext (list[str] | None): Extension filter.
-        columns (list[str] | None): Column projection.
-        map_ (Callable[..., Any] | None): Row/batch transform callable.
-        where (str | None): SQL ``WHERE`` clause.
-        search (str | None): Vector-search query (deferred).
-        top_k (int | None): Vector-search ``k`` (deferred).
-        as_ (As): Return-type selector.
-        lazy (bool): Defer execution flag.
-        batch_size (int): Iterator batch size.
-        confirm_large (bool): Override the size-tier guard.
+        name: One element from the dispatcher's ``name`` argument.
+        source: Resolver hint forwarded from :func:`load`.
+        match: Raw match config.
+        ext: Extension filter.
+        columns: Column projection.
+        map_: Row/batch transform callable.
+        where: SQL ``WHERE`` clause.
+        search: Vector-search query (deferred).
+        top_k: Vector-search ``k`` (deferred).
+        as_: Return-type selector.
+        lazy: Defer execution flag.
+        batch_size: Iterator batch size.
+        confirm_large: Override the size-tier guard.
 
     Returns:
         LoadRequest: Normalized request with the ``MatchConfig``-merged
@@ -243,7 +219,7 @@ def _build_request(
     """
     scheme = _scheme_of(name)
     match_cfg = MatchConfig.from_any(match, ext, columns)
-    # ``MatchConfig`` may subsume ``columns`` — keep the flat field too so
+    # ``MatchConfig`` may subsume ``columns``. Keep the flat field too so
     # sources that don't know about MatchConfig (tabular adapter post-
     # slice) keep working. ``match_cfg.columns`` is the authoritative
     # source once set.
@@ -269,7 +245,7 @@ def _scheme_of(name: str) -> str | None:
     """Extract the canonical scheme from a URI-style ``name``.
 
     Args:
-        name (str): The dataset name or URI.
+        name: The dataset name or URI.
 
     Returns:
         str | None: The canonical scheme (e.g. ``"s3"``, ``"gs"``,
@@ -294,7 +270,7 @@ def _reject_unsupported(req: LoadRequest) -> None:
     contract; no source needs its own ``if request.match: raise`` block.
 
     Args:
-        req (LoadRequest): The normalized request to validate.
+        req: The normalized request to validate.
 
     Raises:
         NotImplementedError: If ``where=`` is set on a non-SQL source, or
@@ -318,9 +294,9 @@ def _resolve_source(req: LoadRequest, cirron: Cirron) -> DataSource:
     """Pick the concrete :class:`DataSource` that handles ``req``.
 
     Args:
-        req (LoadRequest): Normalized request whose ``scheme`` /
+        req: Normalized request whose ``scheme`` /
             ``source`` decide the backend.
-        cirron (Cirron): Active Cirron instance (used for the platform
+        cirron: Active Cirron instance (used for the platform
             and SQL credential paths).
 
     Returns:
@@ -352,10 +328,10 @@ def _split_object_path(path: str) -> tuple[str | None, str | None]:
     source would call ``get_object(Key="")`` which is not a valid key.
 
     Args:
-        path (str): The post-bucket portion of an object-store URI.
+        path: The post-bucket portion of an object-store URI.
 
     Returns:
-        tuple[str | None, str | None]: ``(folder_path, key)`` — exactly
+        tuple[str | None, str | None]: ``(folder_path, key)``, where exactly
             one is non-``None``, except when ``path`` is empty (bare
             bucket) where ``folder_path`` is ``""`` and ``key`` is
             ``None``.
@@ -372,7 +348,7 @@ def _scheme_source(req: LoadRequest, cirron: Cirron) -> DataSource:
 
     For object-store schemes (``s3://``, ``gs://`` / ``gcs://``,
     ``azure://``), credentials come from the user's environment via the
-    provider SDK's default credential chain (boto3, google-cloud, etc.) —
+    provider SDK's default credential chain (boto3, google-cloud, etc.);
     the SDK doesn't hold them.
 
     For SQL and integration-backed schemes (``postgres://``, ``mysql://``,
@@ -382,9 +358,9 @@ def _scheme_source(req: LoadRequest, cirron: Cirron) -> DataSource:
     specific env var (``PGPASSWORD``, ``MYSQL_PWD``, etc.).
 
     Args:
-        req (LoadRequest): Request whose ``scheme`` / ``name`` select the
+        req: Request whose ``scheme`` / ``name`` select the
             backend.
-        cirron (Cirron): Active Cirron instance (forwarded to SQL backends
+        cirron: Active Cirron instance (forwarded to SQL backends
             for credential resolution).
 
     Returns:
@@ -475,11 +451,11 @@ def _enforce_size(
     """Run the size-tier policy across every resolved source.
 
     Args:
-        sources (list[DataSource]): Resolved backends; each contributes
+        sources: Resolved backends; each contributes
             its ``estimate_size()`` to the running total.
-        requests (list[LoadRequest]): Parallel list of normalized
+        requests: Parallel list of normalized
             requests; ``confirm_large`` is read off the first one.
-        cirron (Cirron): Provides ``load_warn_bytes`` /
+        cirron: Provides ``load_warn_bytes`` /
             ``load_max_bytes`` thresholds.
 
     Raises:
@@ -513,8 +489,8 @@ def _run_and_convert(sources: list[DataSource], requests: list[LoadRequest]) -> 
     """Execute the load(s), apply ``map=``, and convert via the adapter layer.
 
     Args:
-        sources (list[DataSource]): Resolved backends.
-        requests (list[LoadRequest]): Parallel requests; only the first
+        sources: Resolved backends.
+        requests: Parallel requests; only the first
             is consulted for ``map`` / ``as_`` / ``batch_size`` since
             multi-source loads share a single call's kwargs.
 
@@ -541,7 +517,7 @@ def _concat(parts: list[Any]) -> Any:
     """Concatenate a homogeneous list of source results.
 
     Args:
-        parts (list[Any]): Per-source results from a multi-name load.
+        parts: Per-source results from a multi-name load.
 
     Returns:
         Any: A single combined result of the same type as ``parts[0]``
@@ -585,7 +561,7 @@ def _convert(raw: Any, req: LoadRequest) -> Any:
     Args:
         raw (Any): Source-produced value (typically a DataFrame, list,
             dict, image, or text blob).
-        req (LoadRequest): Request whose ``as_`` and ``batch_size`` drive
+        req: Request whose ``as_`` and ``batch_size`` drive
             the conversion.
 
     Returns:
@@ -604,15 +580,9 @@ def _convert(raw: Any, req: LoadRequest) -> Any:
     try:
         adapter = create_adapter(raw)
     except ValueError:
-        # Raw isn't a tabular type the adapter layer understands (e.g.,
-        # a JSON document → dict/list, an image → PIL.Image, plain text
-        # → str). pandas is the permissive default: return the raw
-        # payload so ``ci.load('cfg.json')`` or ``ci.load('img.png')``
-        # "just works" on a laptop. The non-pandas targets (polars,
-        # tensor, hf) are explicit opt-ins to a tabular conversion —
-        # if we can't build an adapter, the caller asked for something
-        # we genuinely can't produce, so raise a clear error rather
-        # than silently returning a mis-typed object.
+        # pandas is the permissive default, so a non-tabular payload comes
+        # back untouched and ``ci.load('cfg.json')`` works on a laptop. The
+        # other targets are explicit opt-ins to a tabular conversion.
         if req.as_ == "pandas":
             return raw
         raise CirronDependencyError(
@@ -638,7 +608,7 @@ def _to_iter(raw: Any, batch_size: int) -> Any:
 
     Args:
         raw (Any): Source-produced value.
-        batch_size (int): Forwarded to the adapter's ``to_iter``.
+        batch_size: Forwarded to the adapter's ``to_iter``.
 
     Returns:
         Any: An iterator of dicts or batches of dicts.

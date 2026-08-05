@@ -2,21 +2,21 @@
 
 Best-effort detectors invoked by ``@ci.inference`` (``decorator.py``):
 
-* :func:`maybe_mark_openai_usage` — emit ``prompt_tokens`` /
+* :func:`maybe_mark_openai_usage`: emit ``prompt_tokens`` /
   ``completion_tokens`` / ``total_tokens`` summary marks when the return
   value looks like an OpenAI-style response (``.usage.*`` or
   ``{"usage": {...}}``).
-* :func:`wrap_stream` — wrap sync or async generators so the first yield
+* :func:`wrap_stream`: wrap sync or async generators so the first yield
   records ``time_to_first_token_ms`` and exhaustion records
   ``output_tokens`` + ``tokens_per_second``. Takes ownership of the
   per-request scope pop so marks emitted during streaming still attach
   to the open request span.
-* :func:`install_hf_generate_patch` — idempotent monkey-patch of
+* :func:`install_hf_generate_patch`: idempotent monkey-patch of
   ``transformers.generation.GenerationMixin.generate`` so calls made
   inside *any* open scope emit ``input_tokens`` / ``output_tokens``
   marks. The looser-than-``request`` gate is intentional so nested
   scopes (e.g. ``with ci.scope("beam"): model.generate(...)``) still
-  attribute tokens to the enclosing request via the parent chain — see
+  attribute tokens to the enclosing request via the parent chain. See
   the inline comment in :func:`install_hf_generate_patch` for the
   rationale.
 
@@ -34,27 +34,31 @@ from typing import Any
 from cirron.core.mark import MARK_KIND_SUMMARY
 from cirron.core.mark import mark as _mark
 from cirron.core.scope import _ctx_state, get_current_scope
+from cirron.core.swallow import swallowed
 
 
 def _safe_mark(name: str, value: float | int, **attrs: Any) -> None:
-    """Emit a summary mark; swallow any exception so detection failures
-    never propagate to user code.
+    """Emit a summary mark and swallow any exception it raises.
+
+    Detection failures never propagate to user code.
 
     Args:
-        name (str): Mark name.
-        value (float | int): Mark value.
+        name: Mark name.
+        value: Mark value.
         **attrs (Any): Extra attributes attached to the mark.
     """
     try:
         _mark(name, value, kind=MARK_KIND_SUMMARY, **attrs)
-    except Exception:
-        pass
+    except Exception as exc:
+        swallowed("llm.safe_mark", exc)
 
 
 def _extract_usage(result: Any) -> dict[str, int] | None:
-    """Return ``{prompt_tokens, completion_tokens, total_tokens}`` when
-    ``result`` exposes them OpenAI-style, else ``None``. Tolerant of
-    attr-style objects and dict payloads.
+    """Return OpenAI-style usage token counts from ``result``, or ``None``.
+
+    Recognize ``{prompt_tokens, completion_tokens, total_tokens}`` when
+    ``result`` exposes them OpenAI-style. Tolerant of attr-style objects and
+    dict payloads.
 
     Args:
         result (Any): The provider response (dict or object).
@@ -75,7 +79,7 @@ def _extract_usage(result: Any) -> dict[str, int] | None:
         """Read ``key`` off the usage payload as a non-bool ``int``.
 
         Args:
-            key (str): Field name to read.
+            key: Field name to read.
 
         Returns:
             int | None: The integer value, or ``None`` when missing /
@@ -125,13 +129,14 @@ def maybe_mark_openai_usage(result: Any) -> None:
             total = prompt + completion
         if total is not None:
             _safe_mark("total_tokens", total, source="openai", normalized=True)
-    except Exception:
-        pass
+    except Exception as exc:
+        swallowed("llm.maybe_mark_openai_usage", exc)
 
 
 def _item_token_count(item: Any) -> int | None:
-    """Best-effort token count from a single streamed chunk (OpenAI
-    streaming chunks carry ``.usage`` on the terminal event).
+    """Return a best-effort token count from a single streamed chunk.
+
+    OpenAI streaming chunks carry ``.usage`` on the terminal event.
 
     Args:
         item (Any): One yielded chunk from the stream.
@@ -143,7 +148,8 @@ def _item_token_count(item: Any) -> int | None:
         usage = _extract_usage(item)
         if usage and "completion_tokens" in usage:
             return usage["completion_tokens"]
-    except Exception:
+    except Exception as exc:
+        swallowed("llm.completion_tokens", exc)
         return None
     return None
 
@@ -152,43 +158,40 @@ def _finalize_stream(count: int, start_ns: int, first_ns: int | None) -> None:
     """Emit terminal stream marks: duration, output tokens, throughput.
 
     Args:
-        count (int): Total chunk count (or explicit token count if the
-            terminal chunk reported ``.usage``).
-        start_ns (int): Wall-clock start of the request.
-        first_ns (int | None): First-yield timestamp; ``None`` when the
-            stream produced nothing.
+        count: Total chunk count (or explicit token count if the terminal
+            chunk reported ``.usage``).
+        start_ns: Wall-clock start of the request.
+        first_ns: First-yield timestamp; ``None`` when the stream produced
+            nothing.
     """
     try:
         end_ns = time.time_ns()
-        # ``request_duration_ms`` closes the three-number picture users
-        # think in (total latency, TTFT, throughput). It's derivable from
-        # the span but published as a mark so dashboards don't need to
-        # reach into span-timing to get it. Emitted even for empty
-        # streams so consumers always see a duration.
+        # Emitted before the empty-stream bail-out below so consumers always
+        # see a duration.
         _safe_mark("request_duration_ms", (end_ns - start_ns) / 1e6)
         if first_ns is None:
             return
-        # Throughput is measured over the post-TTFT window — a slow first
-        # token shouldn't drag tokens/sec down.
+        # Throughput is measured over the post-TTFT window so a slow first
+        # token doesn't drag tokens/sec down.
         post_ttft_s = max(1e-9, (end_ns - first_ns) / 1e9)
         _safe_mark("output_tokens", count, normalized=True)
         _safe_mark("tokens_per_second", count / post_ttft_s)
-    except Exception:
-        pass
+    except Exception as exc:
+        swallowed("llm.finalize_stream", exc)
 
 
 def _point_mark(name: str, value: float | int, **attrs: Any) -> None:
     """Emit a ``kind="point"`` mark, swallowing exceptions.
 
     Args:
-        name (str): Mark name.
-        value (float | int): Mark value.
+        name: Mark name.
+        value: Mark value.
         **attrs (Any): Extra attributes attached to the mark.
     """
     try:
         _mark(name, value, kind="point", **attrs)
-    except Exception:
-        pass
+    except Exception as exc:
+        swallowed("llm.point_mark", exc)
 
 
 def wrap_stream(
@@ -198,10 +201,12 @@ def wrap_stream(
     on_close: Callable[[], None] | None = None,
     chunk_timing: bool = False,
 ) -> Any:
-    """If ``result`` is a sync or async generator, return a wrapper that
-    records TTFT + throughput marks and invokes ``on_close`` exactly once
-    when the wrapper is exhausted / closed. Otherwise return ``result``
-    unchanged and do not consume ``on_close``.
+    """Wrap ``result`` in a TTFT / throughput recorder when it is a generator.
+
+    If ``result`` is a sync or async generator, return a wrapper that records
+    TTFT + throughput marks and invokes ``on_close`` exactly once when the
+    wrapper is exhausted / closed. Otherwise return ``result`` unchanged and
+    do not consume ``on_close``.
 
     ``state`` is the per-request ``_ScopeState`` from ``isolated_state``
     (or ``None``). When provided, the wrapper re-binds the ContextVar
@@ -210,13 +215,13 @@ def wrap_stream(
 
     Args:
         result (Any): The wrapped function's return value.
-        start_ns (int): Wall-clock start of the request.
+        start_ns: Wall-clock start of the request.
         state (Any): Per-request ``_ScopeState`` to re-bind around mark
             calls; ``None`` skips re-binding.
-        on_close (Callable[[], None] | None): Closer invoked once when
-            the wrapper is exhausted / closed.
-        chunk_timing (bool): When ``True``, emit a ``chunk_ms`` point
-            mark after every chunk.
+        on_close: Closer invoked once when the wrapper is exhausted /
+            closed.
+        chunk_timing: When ``True``, emit a ``chunk_ms`` point mark after
+            every chunk.
 
     Returns:
         Any: A wrapped iterator / async iterator, or ``result``
@@ -234,9 +239,10 @@ def wrap_stream(
 
 
 def _bind_state(state: Any) -> Any:
-    """Return a reset-token for ``_ctx_state`` pointing at ``state``; the
-    caller must pass the returned token to ``_ctx_state.reset``. Returns
-    ``None`` when ``state`` is ``None`` or binding fails.
+    """Return a reset-token for ``_ctx_state`` pointing at ``state``.
+
+    The caller must pass the returned token to ``_ctx_state.reset``. The
+    result is ``None`` when ``state`` is ``None`` or binding fails.
 
     Args:
         state (Any): Per-request ``_ScopeState`` to bind, or ``None``.
@@ -248,7 +254,8 @@ def _bind_state(state: Any) -> Any:
         return None
     try:
         return _ctx_state.set(state)
-    except Exception:
+    except Exception as exc:
+        swallowed("llm.bind_state", exc)
         return None
 
 
@@ -262,8 +269,8 @@ def _unbind_state(token: Any) -> None:
         return
     try:
         _ctx_state.reset(token)
-    except Exception:
-        pass
+    except Exception as exc:
+        swallowed("llm.unbind_state", exc)
 
 
 def _wrap_sync(
@@ -276,24 +283,21 @@ def _wrap_sync(
     """Wrap a sync iterator with TTFT / throughput marks and scope-rebind.
 
     Args:
-        gen (Iterator[Any]): The underlying generator / iterator.
-        start_ns (int): Wall-clock start of the request.
+        gen: The underlying generator / iterator.
+        start_ns: Wall-clock start of the request.
         state (Any): Per-request ``_ScopeState`` re-bound around each
             ``next()`` and around final-mark emission.
-        on_close (Callable[[], None] | None): Closer invoked exactly
-            once when the wrapper exits.
-        chunk_timing (bool): When ``True``, emit a ``chunk_ms`` point
-            mark per post-first chunk.
+        on_close: Closer invoked exactly once when the wrapper exits.
+        chunk_timing: When ``True``, emit a ``chunk_ms`` point mark per
+            post-first chunk.
 
     Yields:
         Any: Each item from ``gen`` unchanged.
     """
-    # We re-bind ``state`` around every interaction with the underlying
-    # generator: advancing it (so user code inside the gen body still sees
-    # the request scope) and our own mark calls. The decorator has
-    # already exited ``isolated_state`` by this point, so the caller's
-    # Context is *not* polluted between yields — each bind / unbind pair
-    # is fully contained.
+    # ``state`` is re-bound around every interaction with the underlying
+    # generator: advancing it (so user code in the gen body still sees the
+    # request scope) and our own mark calls. Each bind / unbind pair is
+    # fully contained, so the caller's Context is never left polluted.
     iter_gen = iter(gen)
 
     def _runner() -> Iterator[Any]:
@@ -335,13 +339,13 @@ def _wrap_sync(
             # Close the underlying iterator first so its own ``finally``
             # blocks (DB cursors, HTTP sockets, user resources) run
             # before we emit final marks. Consumer early-breaks rely on
-            # this — without it, cleanup is deferred to GC.
+            # this; without it, cleanup is deferred to GC.
             close_inner = getattr(iter_gen, "close", None)
             if callable(close_inner):
                 try:
                     close_inner()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    swallowed("llm.stream_close_inner", exc)
             final_count = explicit_tokens if explicit_tokens is not None else count
             token = _bind_state(state)
             try:
@@ -349,8 +353,8 @@ def _wrap_sync(
                 if on_close is not None:
                     try:
                         on_close()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        swallowed("llm.stream_on_close", exc)
             finally:
                 _unbind_state(token)
 
@@ -367,14 +371,13 @@ def _wrap_async(
     """Wrap an async iterator with TTFT / throughput marks and scope-rebind.
 
     Args:
-        gen (AsyncIterator[Any]): The underlying async generator.
-        start_ns (int): Wall-clock start of the request.
+        gen: The underlying async generator.
+        start_ns: Wall-clock start of the request.
         state (Any): Per-request ``_ScopeState`` re-bound around each
             step and around final-mark emission.
-        on_close (Callable[[], None] | None): Closer invoked exactly
-            once when the wrapper exits.
-        chunk_timing (bool): When ``True``, emit a ``chunk_ms`` point
-            mark per post-first chunk.
+        on_close: Closer invoked exactly once when the wrapper exits.
+        chunk_timing: When ``True``, emit a ``chunk_ms`` point mark per
+            post-first chunk.
 
     Returns:
         AsyncIterator[Any]: An async iterator yielding ``gen``'s items.
@@ -429,8 +432,8 @@ def _wrap_async(
                     close_result = aclose()
                     if inspect.isawaitable(close_result):
                         await close_result
-                except Exception:
-                    pass
+                except Exception as exc:
+                    swallowed("llm.astream_close_inner", exc)
             final_count = explicit_tokens if explicit_tokens is not None else count
             token = _bind_state(state)
             try:
@@ -438,8 +441,8 @@ def _wrap_async(
                 if on_close is not None:
                     try:
                         on_close()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        swallowed("llm.astream_on_close", exc)
             finally:
                 _unbind_state(token)
 
@@ -458,8 +461,8 @@ def _input_length(args: tuple[Any, ...], kwargs: dict[str, Any]) -> int | None:
     """Best-effort: recover input token length from ``generate`` args.
 
     Args:
-        args (tuple[Any, ...]): Positional args passed to ``generate``.
-        kwargs (dict[str, Any]): Keyword args passed to ``generate``.
+        args: Positional args passed to ``generate``.
+        kwargs: Keyword args passed to ``generate``.
 
     Returns:
         int | None: Sequence length, or ``None`` when nothing usable
@@ -470,8 +473,6 @@ def _input_length(args: tuple[Any, ...], kwargs: dict[str, Any]) -> int | None:
         if ids is None:
             ids = kwargs.get("inputs")
         if ids is None and args:
-            # conventional call is ``generate(self, input_ids, ...)`` but
-            # self is already bound so args[0] is input_ids
             ids = args[0]
         if ids is None:
             embeds = kwargs.get("inputs_embeds")
@@ -487,14 +488,17 @@ def _input_length(args: tuple[Any, ...], kwargs: dict[str, Any]) -> int | None:
             return int(shape[-1])
         if hasattr(ids, "__len__"):
             return int(len(ids))
-    except Exception:
+    except Exception as exc:
+        swallowed("llm.input_length", exc)
         return None
     return None
 
 
 def _output_length(result: Any) -> int | None:
-    """Best-effort: recover output sequence length from ``generate``'s
-    return value.
+    """Recover the output sequence length from ``generate``'s return value.
+
+    Best-effort: the recovery tolerates both ``GenerateOutput`` objects and
+    plain sequence containers.
 
     Args:
         result (Any): Whatever ``GenerationMixin.generate`` returned.
@@ -503,7 +507,6 @@ def _output_length(result: Any) -> int | None:
         int | None: Sequence length, or ``None`` when undetectable.
     """
     try:
-        # ``GenerateOutput`` subclasses expose ``.sequences``
         seqs = getattr(result, "sequences", None)
         if seqs is None:
             seqs = result
@@ -517,7 +520,8 @@ def _output_length(result: Any) -> int | None:
             if hasattr(first, "__len__"):
                 return int(len(first))
             return int(len(seqs))
-    except Exception:
+    except Exception as exc:
+        swallowed("llm.output_length", exc)
         return None
     return None
 
@@ -529,7 +533,7 @@ def install_hf_generate_patch() -> bool:
     open on the current thread emits ``input_tokens`` /
     ``output_tokens`` / ``total_tokens`` summary marks. The gate is
     deliberately broader than ``name == "request"`` so nested training
-    or user scopes still see token attribution — marks attach to the
+    or user scopes still see token attribution: marks attach to the
     innermost scope and roll up through the parent chain. See the
     inline comment in ``_wrapped`` for details.
 
@@ -545,6 +549,10 @@ def install_hf_generate_patch() -> bool:
     with _hf_lock:
         if _hf_patched:
             return True
+        # These two are capability probes, not failures: "is transformers
+        # installed, and does it still expose the symbol we patch?" A miss
+        # is the normal answer for most installs, so they deliberately skip
+        # swallowed(), which would count them as an internal error.
         try:
             from transformers.generation import GenerationMixin  # type: ignore[import-not-found]
         except Exception:
@@ -567,13 +575,10 @@ def install_hf_generate_patch() -> bool:
             Returns:
                 Any: Whatever the original ``generate`` returns.
             """
-            # Emit marks whenever *any* scope is open on the current
-            # thread. ``_safe_mark`` attaches to the innermost scope, and
-            # the dashboard groups marks by their enclosing ``request``
-            # span via the parent chain — so user code like
-            # ``with ci.scope("beam"): model.generate(...)`` still gets
-            # token marks attributed to the right request. A stricter
-            # ``scope.name == "request"`` check would miss that case.
+            # Marks are emitted whenever *any* scope is open on the current
+            # thread, because the dashboard groups them by their enclosing
+            # ``request`` span via the parent chain. A stricter
+            # ``scope.name == "request"`` check would drop nested scopes.
             active = False
             input_len: int | None = None
             try:
@@ -582,8 +587,8 @@ def install_hf_generate_patch() -> bool:
                     input_len = _input_length(args, kwargs)
                     if input_len is not None:
                         _safe_mark("input_tokens", input_len, source="hf", normalized=True)
-            except Exception:
-                pass
+            except Exception as exc:
+                swallowed("llm.hf_generate_input", exc)
             result = original(self, *args, **kwargs)
             try:
                 if active:
@@ -607,21 +612,22 @@ def install_hf_generate_patch() -> bool:
                                 source="hf",
                                 normalized=True,
                             )
-            except Exception:
-                pass
+            except Exception as exc:
+                swallowed("llm.hf_generate_output", exc)
             return result
 
         try:
             GenerationMixin.generate = _wrapped  # type: ignore[assignment]
-        except Exception:
+        except Exception as exc:
+            swallowed("llm.hf_generate_patch", exc)
             return False
 
         def _undo() -> None:
             """Restore the original ``GenerationMixin.generate``."""
             try:
                 GenerationMixin.generate = original  # type: ignore[assignment]
-            except Exception:
-                pass
+            except Exception as exc:
+                swallowed("llm.hf_generate_undo", exc)
 
         _hf_undo = _undo
         _hf_patched = True

@@ -128,7 +128,7 @@ def test_from_any_rejects_bare_string_columns():
 
 
 def test_normalize_extensions_drops_whitespace_only():
-    """Whitespace-only extensions must not survive as empty strings —
+    """Whitespace-only extensions must not survive as empty strings;
     otherwise ``_match_extension`` would check ``endswith('.')`` and
     match every filename with a trailing dot."""
     cfg = MatchConfig.from_any(None, ["  ", "\t", "parquet"], None)

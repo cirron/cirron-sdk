@@ -68,7 +68,7 @@ def test_tree_format_jupyter_returns_repr(monkeypatch, capsys):
     result = ci.trace()
     assert isinstance(result, _TraceTreeRepr)
     assert "epoch[0]" in repr(result)
-    # Jupyter path must NOT print to stdout — the cell renders the value.
+    # Jupyter path must NOT print to stdout; the cell renders the value.
     assert capsys.readouterr().out == ""
 
 
@@ -150,7 +150,7 @@ def test_invalid_format_raises():
 
 
 def test_trace_works_without_profile():
-    """No ``ci.profile()`` — buffer still populates from raw scope/mark
+    """No ``ci.profile()``: the buffer still populates from raw scope/mark
     use, and ``ci.trace()`` renders whatever's there."""
     set_default_trace_buffer(_TraceBuffer())
     with ci.scope("standalone"):
@@ -161,8 +161,8 @@ def test_trace_works_without_profile():
 
 
 def test_trace_without_profile_does_not_write_spool(tmp_path):
-    """PR #43 review #5: ``ci.trace()`` in a profile-less process must
-    not write a spool file as a side effect — that breaks read-only
+    """``ci.trace()`` in a profile-less process must
+    not write a spool file as a side effect, which breaks read-only
     filesystems and surprises notebook users."""
     set_default_trace_buffer(_TraceBuffer())
     with ci.scope("standalone"):
@@ -174,14 +174,14 @@ def test_trace_without_profile_does_not_write_spool(tmp_path):
 
 
 def test_trace_buffer_caps_marks_per_span():
-    """PR #43 review #4: marks for an open (never-evicted) span must be
+    """Marks for an open (never-evicted) span must be
     bounded so long-running processes can't grow ``_marks`` unbounded."""
     from cirron.core.flush import Batch
     from cirron.core.trace_buffer import _TraceBuffer
 
     buf = _TraceBuffer(max_spans=10, max_marks_per_span=4)
     open_span_id = "open-session"
-    # No span entry for ``open_span_id`` — it's still open, so it'll
+    # No span entry for ``open_span_id``, which is still open, so it'll
     # never appear in batch.spans. Push 100 point marks at it.
     marks = [
         {"span_id": open_span_id, "name": "loss", "value": i, "kind": "point"} for i in range(100)
@@ -210,3 +210,48 @@ def test_trace_buffer_keeps_summary_marks_when_capping():
     kinds = [m["kind"] for m in bucket]
     assert "summary" in kinds  # canonical end-of-span value preserved
     assert kinds.count("point") <= 2
+
+
+# non-finite marks
+
+
+def _produce_nonfinite_span():
+    ci.profile(output="none")
+    with ci.scope("epoch", index=0):
+        ci.mark("loss", float("nan"))
+        ci.mark("acc", 0.9)
+    ci.flush()
+
+
+def test_tree_format_renders_the_nonfinite_token(capsys):
+    # The local inspect surface must not print ``loss=None`` for a
+    # diverged loss, which hides the thing the trace was opened for.
+    _produce_nonfinite_span()
+    ci.trace()
+    out = capsys.readouterr().out
+    assert "loss=nan" in out
+    assert "loss=None" not in out
+    assert "acc=0.9000" in out
+
+
+def test_dict_format_carries_value_nonfinite():
+    _produce_nonfinite_span()
+    result = ci.trace(format="dict")
+    assert isinstance(result, dict)
+    marks = [m for r in result["roots"] for m in r["marks"] if r["name"] == "epoch"]
+    loss = next(m for m in marks if m["name"] == "loss")
+    acc = next(m for m in marks if m["name"] == "acc")
+    assert loss["value"] is None
+    assert loss["value_nonfinite"] == "nan"
+    assert "value_nonfinite" not in acc, "the key is absent on finite marks"
+
+
+def test_json_format_is_strict_rfc8259():
+    _produce_nonfinite_span()
+    s = ci.trace(format="json")
+    assert isinstance(s, str)
+
+    def _reject(token: str) -> None:
+        raise AssertionError(f"non-standard JSON constant: {token}")
+
+    json.loads(s, parse_constant=_reject)

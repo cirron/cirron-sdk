@@ -1,8 +1,8 @@
 """Sampled tensor-value snapshot mode.
 
 ``snapshots="sampled"`` produces inline per-tensor stats at every epoch
-boundary (same as the default mode) plus — on a ``random() <
-sample_rate`` roll — the raw tensor values serialized to safetensors.
+boundary (same as the default mode) plus, on a ``random() < sample_rate``
+roll, the raw tensor values serialized to safetensors.
 The stats piece is still cheap enough to keep everywhere; the blob piece
 is what the user opts into for "actually let me see the weights when
 loss spiked at epoch 42".
@@ -37,11 +37,9 @@ def should_sample(sample_rate: float, rng: random.Random | None = None) -> bool:
     """Roll ``random() < sample_rate``. Extracted for deterministic tests.
 
     Args:
-        sample_rate (float): Probability in ``[0.0, 1.0]``. Values
-            ``<= 0`` always return ``False``, values ``>= 1`` always
-            return ``True``.
-        rng (random.Random | None): Optional RNG; defaults to the global
-            ``random`` module.
+        sample_rate: Probability in ``[0.0, 1.0]``. Values ``<= 0`` always
+            return ``False``, values ``>= 1`` always return ``True``.
+        rng: Optional RNG; defaults to the global ``random`` module.
 
     Returns:
         bool: Whether this epoch boundary should fire a sampled capture.
@@ -69,11 +67,10 @@ def _upgrade_records(
     we never point ``blob_uri`` at a tensor that isn't in the blob.
 
     Args:
-        records (list[TraceSnapshot]): Stats records to upgrade in
-            place.
-        tensor_names (set[str]): Names actually written to the blob.
-        blob_uri (str): URI to attach to matching records.
-        mode (str): New mode flag (``"sampled"`` or ``"full"``).
+        records: Stats records to upgrade in place.
+        tensor_names: Names actually written to the blob.
+        blob_uri: URI to attach to matching records.
+        mode: New mode flag (``"sampled"`` or ``"full"``).
     """
     for rec in records:
         if rec.tensor_name in tensor_names:
@@ -89,23 +86,22 @@ def serialize_and_enqueue(
     mode: str,
     records: list[TraceSnapshot],
 ) -> None:
-    """Serialize ``named_tensors`` for ``span_id``, enqueue the upload, and
-    upgrade the matching stats records in place.
+    """Serialize ``named_tensors``, enqueue the upload, and upgrade the records.
 
-    No-op when ``named_tensors`` is empty or serialization fails — the
+    The upgrade applies in place to the stats records matching ``span_id``.
+
+    No-op when ``named_tensors`` is empty or serialization fails: the
     records stay as ``mode="stats"`` so the epoch still produces useful
     summary data even if the blob write failed.
 
     Args:
-        span_id (str): Span the blob attaches to.
-        kind (str): ``"weights"`` or ``"gradients"``; selects the
-            output filename.
-        named_tensors (list[tuple[str, Any]]): Tensors to serialize.
-        output_dir (str): Root output directory (typically
-            ``./.cirron/``).
-        mode (str): Snapshot mode flag for upgraded records.
-        records (list[TraceSnapshot]): Stats records to upgrade in
-            place with the resulting ``blob_uri``.
+        span_id: Span the blob attaches to.
+        kind: ``"weights"`` or ``"gradients"``; selects the output filename.
+        named_tensors: Tensors to serialize.
+        output_dir: Root output directory (typically ``./.cirron/``).
+        mode: Snapshot mode flag for upgraded records.
+        records: Stats records to upgrade in place with the resulting
+            ``blob_uri``.
     """
     result = serialize_tensors(span_id, kind, named_tensors, output_dir)
     if result is None:

@@ -12,7 +12,7 @@ a three-tier policy:
   passed ``confirm_large=True``.
 
 Sources that cannot cheaply size a query (SQL, platform embeddings search)
-return ``None`` — the dispatcher skips the tier check for that source.
+return ``None``, and the dispatcher skips the tier check for that source.
 """
 
 from __future__ import annotations
@@ -45,7 +45,21 @@ def enforce_tiers(
 ) -> None:
     """Apply the three-tier size policy.
 
-    ``total_bytes=None`` means the source couldn't pre-compute size — skip.
+    Args:
+        total_bytes: Estimated total size of the query, or ``None`` when the
+            source could not pre-compute one, in which case the check is
+            skipped entirely.
+        object_count: Number of objects the query matched, used only to make
+            the warning and error messages concrete. ``None`` when unknown.
+        warn_bytes: Threshold at or above which a ``logging.WARNING`` with
+            narrowing suggestions is emitted.
+        max_bytes: Threshold at or above which the load is refused.
+        confirm_large: Whether the caller explicitly opted in to a load at or
+            above ``max_bytes``.
+
+    Raises:
+        CirronDataSizeError: If ``total_bytes`` is at or above ``max_bytes``
+            and ``confirm_large`` is false.
     """
     if total_bytes is None:
         return

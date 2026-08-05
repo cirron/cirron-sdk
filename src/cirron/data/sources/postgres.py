@@ -2,7 +2,7 @@
 
 Thin shim over :mod:`cirron.data.sql`: parse the ``postgres://`` URI,
 resolve credentials, connect via ``psycopg`` (v3), run the composed
-``SELECT`` through :func:`execute_to_pandas`, and return the DataFrame
+``SELECT`` through :func:`run_select`, and return the DataFrame
 to the dispatcher.
 """
 
@@ -15,9 +15,9 @@ from cirron.data.sql import (
     CredentialResolver,
     SqlUri,
     build_query,
-    execute_to_pandas,
+    driver,
     parse_sql_uri,
-    require_driver,
+    run_select,
 )
 
 if TYPE_CHECKING:
@@ -34,7 +34,7 @@ class PostgresDataSource(DataSource):
         self.cirron = cirron
 
     def validate(self) -> bool:
-        """Always ``True`` — connection probes are deferred to ``load``.
+        """Always ``True``; connection probes are deferred to ``load``.
 
         Returns:
             bool: ``True``.
@@ -45,13 +45,13 @@ class PostgresDataSource(DataSource):
         """Open a Postgres connection, run the composed ``SELECT``, return a DataFrame.
 
         Returns:
-            Any: A pandas DataFrame produced by :func:`execute_to_pandas`.
+            Any: A pandas DataFrame produced by :func:`run_select`.
 
         Raises:
             CirronDependencyError: If ``psycopg`` is not installed.
             CirronPlatformRequired: If credential resolution fails.
         """
-        psycopg = require_driver("psycopg", "postgres")
+        psycopg = driver("psycopg", "postgres")
         creds = CredentialResolver(self.cirron, self.uri).resolve()
         query = build_query(
             self.uri,
@@ -69,19 +69,17 @@ class PostgresDataSource(DataSource):
         if creds.database:
             conn_kwargs["dbname"] = creds.database
 
-        with psycopg.connect(**conn_kwargs) as conn:
-            with conn.cursor() as cursor:
-                return execute_to_pandas(cursor, query)
+        return run_select(psycopg.connect, conn_kwargs, query)
 
 
 def build_source(uri_str: str, cirron: Cirron, request: LoadRequest | None) -> PostgresDataSource:
     """Factory used by the load dispatcher.
 
     Args:
-        uri_str (str): The raw ``postgres://...`` URI.
-        cirron (Cirron): Active Cirron instance for credential
+        uri_str: The raw ``postgres://...`` URI.
+        cirron: Active Cirron instance for credential
             resolution.
-        request (LoadRequest | None): Per-call request.
+        request: Per-call request.
 
     Returns:
         PostgresDataSource: A source ready to ``load()``.

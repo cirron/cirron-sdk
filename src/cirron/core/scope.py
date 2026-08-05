@@ -29,13 +29,16 @@ log = logging.getLogger("cirron.scope")
 
 MAX_DEPTH = 64
 
-# Module-level knob for CPU-time capture. Calling ``time.process_time_ns()``
-# twice per scope cycle costs ~200–400 ns per call on Linux/x86 — enough
-# to push ``scope_push_pop_us_per_cycle`` past its 5 μs budget on the
-# ubuntu CI runner even with every other optimization applied. The
-# ``cpu_ns`` field isn't surfaced on the platform today, so default
-# ``False`` for the overhead win; callers that want it can opt in via
-# :func:`set_capture_cpu_time` (the overhead test-suite does this).
+# Backstop for the per-thread closed-scope buffer. If the flush thread stalls,
+# an unbounded deque is the one buffer in the pipeline that can OOM a long
+# training run. Reaching this cap means the flush thread is unhealthy, so the
+# fix is flush-thread health rather than a bigger cap.
+CLOSED_BUFFER_CAP = 100_000
+
+# CPU-time capture knob. Two ``time.process_time_ns()`` calls per scope cycle
+# cost ~200 to 400 ns each, enough to push ``scope_push_pop_us_per_cycle`` past
+# its 5 μs budget, and ``cpu_ns`` is not surfaced on the platform today. Opt in
+# via :func:`set_capture_cpu_time`.
 _CAPTURE_CPU_TIME: bool = False
 
 
@@ -43,7 +46,7 @@ def set_capture_cpu_time(enabled: bool) -> None:
     """Toggle whether scope push/pop records ``cpu_ns``. See ``_CAPTURE_CPU_TIME``.
 
     Args:
-        enabled (bool): When ``True``, future ``push`` calls capture
+        enabled: When ``True``, future ``push`` calls capture
             ``time.process_time_ns()`` and ``pop`` derives ``cpu_ns`` from
             the delta. Already-open scopes carry their original decision
             so a mid-scope flip can't produce a bogus value.
@@ -52,27 +55,27 @@ def set_capture_cpu_time(enabled: bool) -> None:
     _CAPTURE_CPU_TIME = bool(enabled)
 
 
-# Cache the module-level time/random callables so the hot path is one
-# attribute read per use. ``os.urandom(16).hex()`` is faster than
-# ``uuid.uuid4().hex`` — uuid4 internally does the same urandom call and
-# wraps it in a ``UUID`` object whose ``.hex`` property formats the bytes.
-# For scope ids a 32-char hex string is just as unique.
+# Cache the module-level time/random callables so the hot path is one attribute
+# read per use. ``os.urandom(16).hex()`` beats ``uuid.uuid4().hex``: uuid4 makes
+# the same urandom call, then wraps it in a ``UUID`` object only to format the
+# bytes back out.
 _urandom = os.urandom
 _time_ns = time.time_ns
 _process_time_ns = time.process_time_ns
 
 
 class Scope:
-    """A single span in the scope tree. Shape mirrors the platform
-    ``TraceSpan`` model; fields the SDK hasn't populated yet
-    (``gpu_ns``, ``memory_peak_bytes``) stay ``None`` until framework hooks
-    fill them in.
+    """A single span in the scope tree.
+
+    Shape mirrors the platform ``TraceSpan`` model; fields the SDK hasn't
+    populated yet (``gpu_ns``, ``memory_peak_bytes``) stay ``None`` until
+    framework hooks fill them in.
 
     Hand-rolled (not a ``@dataclass``) because ``dataclass.__init__``'s
-    kwargs-unpacking + per-field assignment adds ~300–800 ns per push on
-    the ubuntu CI runner, which is a measurable chunk of the 5 μs
-    scope-cycle budget. ``__slots__`` keeps memory low; a positional
-    ``__init__`` gives CPython the smallest possible frame to build.
+    kwargs-unpacking and per-field assignment adds ~300 to 800 ns per push
+    on the ubuntu CI runner, a measurable chunk of the 5 μs scope-cycle
+    budget. ``__slots__`` keeps memory low; a positional ``__init__`` gives
+    CPython the smallest possible frame to build.
 
     Constructor parameters: ``id`` is a 32-char hex string;
     ``name`` is the span label; ``index`` is the optional positional
@@ -82,6 +85,17 @@ class Scope:
     ``cpu_start_ns`` is ``process_time_ns()`` when CPU capture is
     enabled, else ``None``; ``thread_id`` / ``pid`` / ``rank`` identify
     the producer.
+
+    Attributes:
+        end_ns: Wall-clock end from ``time.time_ns``, ``None`` while the
+            scope is still open.
+        cpu_ns: Process CPU time the scope consumed, ``None`` unless CPU
+            capture was enabled at push time.
+        gpu_ns: GPU time for the scope, written by framework hooks that
+            resolve asynchronous timing events.
+        memory_peak_bytes: Peak memory attributed to the scope, ``None``
+            until a hook populates it.
+        marks: Ids of the marks attached to this scope.
     """
 
     __slots__ = (
@@ -104,7 +118,7 @@ class Scope:
 
     def __init__(
         self,
-        id: str,
+        id: str,  # noqa: A002
         name: str,
         index: int | None,
         attrs: dict[str, Any],
@@ -121,13 +135,10 @@ class Scope:
         self.attrs = attrs
         self.parent_id = parent_id
         self.start_ns = start_ns
-        # ``None`` when ``_CAPTURE_CPU_TIME`` was ``False`` at push time.
-        # Stored per-scope (not re-read from the global flag at pop) so
-        # toggling ``set_capture_cpu_time`` while a scope is open can't
-        # produce a ``process_time_ns() - 0`` bogus ``cpu_ns``. Matching
-        # ``None`` check at pop is the sole gate for populating
-        # ``cpu_ns`` — if the flag changes mid-scope, the scope's
-        # original decision stands.
+        # Stored per-scope, not re-read from the global flag at pop, so
+        # toggling ``set_capture_cpu_time`` mid-scope cannot produce a bogus
+        # ``process_time_ns() - 0``. The ``None`` check at pop is the sole
+        # gate for populating ``cpu_ns``.
         self.cpu_start_ns = cpu_start_ns
         self.thread_id = thread_id
         self.pid = pid
@@ -140,15 +151,18 @@ class Scope:
 
 
 class _ScopeState:
-    """Per-thread scope state. Plain object (not ``threading.local``) so it
-    can be registered in a cross-thread weak registry — one distinct
-    instance per thread."""
+    """Per-thread scope state.
+
+    Plain object (not ``threading.local``) so it can be registered in a
+    cross-thread weak registry, with one distinct instance per thread.
+    """
 
     __slots__ = (
         "stack",
         "closed",
         "drop_count",
         "warned_overflow",
+        "warned_closed_overflow",
         "warned_underflow",
         "thread_id",
         "__weakref__",
@@ -157,21 +171,46 @@ class _ScopeState:
     def __init__(self) -> None:
         self.stack: list[Scope] = []
         # ``deque`` so the consumer thread can ``popleft`` concurrently with
-        # the producer's ``append`` — both are atomic under the GIL.
-        self.closed: deque[Scope] = deque()
+        # the producer's ``append``; both are atomic under the GIL.
+        # ``maxlen`` gives lock-free drop-oldest if the consumer stalls; see
+        # ``CLOSED_BUFFER_CAP``.
+        self.closed: deque[Scope] = deque(maxlen=CLOSED_BUFFER_CAP)
         self.drop_count: int = 0
         self.warned_overflow: bool = False
+        self.warned_closed_overflow: bool = False
         self.warned_underflow: bool = False
-        # Cache the owning thread's id once — ``push`` calls ``get_ident``
-        # on every scope otherwise, which isn't free on the hot path.
+        # Cache the owning thread's id once; otherwise ``push`` calls
+        # ``get_ident`` on every scope, which isn't free on the hot path.
         self.thread_id: int = threading.get_ident()
 
 
-# Per-asyncio-task / explicit-context override of the active scope state.
-# Set by ``ScopeStack.isolated_state`` (used by ``@ci.inference``) so
-# concurrent async requests each see their own scope tree instead of sharing
-# one thread-local stack on the event-loop thread. When unset, ``_get_state``
-# falls back to the existing ``threading.local`` path unchanged.
+def _note_closed_overflow(state: _ScopeState) -> None:
+    """Account for one closed scope about to be dropped by ``maxlen``.
+
+    Called from the three sites that append to ``state.closed``, and only
+    on the overflow branch, so the hot path pays one ``len()`` and one
+    integer compare. The deque's ``maxlen`` performs the actual drop; this
+    only does the bookkeeping, mirroring ``MarkBuffer.append`` in
+    ``mark.py``.
+
+    Args:
+        state: The state whose closed buffer is full.
+    """
+    state.drop_count += 1
+    if not state.warned_closed_overflow:
+        warnings.warn(
+            f"cirron closed-scope buffer full (capacity={CLOSED_BUFFER_CAP}); "
+            "the flush thread may be stalled — oldest spans on this thread "
+            "will be dropped silently.",
+            stacklevel=4,
+        )
+        state.warned_closed_overflow = True
+
+
+# Per-asyncio-task / explicit-context override of the active scope state, set
+# by ``ScopeStack.isolated_state`` (used by ``@ci.inference``) so concurrent
+# async requests each see their own scope tree instead of sharing one
+# thread-local stack on the event-loop thread.
 _ctx_state: ContextVar[_ScopeState | None] = ContextVar("cirron_scope_state", default=None)
 
 
@@ -203,11 +242,9 @@ class ScopeStack:
         self._rank = _resolve_rank()
         self._pid = os.getpid()
         # Per-thread state keyed by thread id, with a ``threading.local``
-        # fast-path cache so the hot path is one attribute read. A plain
-        # dict (not ``WeakValueDictionary``) — if a producer thread dies
-        # before the consumer drains, the weak-ref path would evict its
-        # state first and trailing closed scopes would be lost. The dict
-        # holds one small ``_ScopeState`` per thread that ever existed.
+        # fast-path cache. A plain dict, not a ``WeakValueDictionary``: if a
+        # producer thread dies before the consumer drains, the weak-ref path
+        # would evict its state and lose trailing closed scopes.
         self._local = threading.local()
         self._states_lock = threading.Lock()
         # Keys are normally thread ids (``int``); ``isolated_state``
@@ -260,21 +297,20 @@ class ScopeStack:
         single ``UserWarning``.
 
         Args:
-            name (str): Span name (e.g. ``"forward"``, ``"data_load"``).
-            index (int | None): Optional positional index for repeated
-                spans of the same name (epoch / batch number).
+            name: Span name (e.g. ``"forward"``, ``"data_load"``).
+            index: Optional positional index for repeated spans of the
+                same name (epoch / batch number).
             **attrs (Any): Arbitrary metadata adopted directly into the
-                scope's ``attrs`` dict — no defensive copy is made.
+                scope's ``attrs`` dict; no defensive copy is made.
 
         Returns:
             Scope | None: The newly opened scope, or ``None`` when the
                 push was dropped due to depth overflow.
         """
-        # Inline the ``_get_state`` fast path: when no ContextVar override
-        # is set (the common case — ``@ci.inference`` is the only caller
-        # that sets one) and the thread-local attr is populated, this
-        # collapses to a single attribute read. Falling back to
-        # ``_get_state`` keeps the cold path honest.
+        # Inline the ``_get_state`` fast path: with no ContextVar override set
+        # (the common case, since ``@ci.inference`` is the only caller that
+        # sets one) and the thread-local attr populated, this collapses to a
+        # single attribute read.
         ctx = _ctx_state.get()
         if ctx is not None:
             state = ctx
@@ -296,11 +332,10 @@ class ScopeStack:
             return None
 
         parent_id = stack[-1].id if stack else None
-        # ``**attrs`` already materialized a fresh dict; adopting it
+        # ``**attrs`` already materialized a fresh dict, so adopting it
         # directly saves a defensive ``dict(...)`` copy on every push.
-        # ``ci.epochs``/``ci.batches`` call with zero kwargs and land on
-        # this cheap path every iteration. Positional args to match the
-        # hand-rolled ``Scope.__init__`` for the cheapest frame.
+        # Positional args match the hand-rolled ``Scope.__init__`` and give
+        # CPython the cheapest frame.
         scope_obj = Scope(
             _urandom(16).hex(),
             name,
@@ -346,8 +381,8 @@ class ScopeStack:
 
         scope_obj = stack.pop()
         # A consumer thread (e.g. ``Profiler.shutdown()``) may have already
-        # closed this scope via ``close_scope()``. In that case it's already
-        # on the closed deque — don't double-close and double-emit.
+        # closed this scope via ``close_scope()``. In that case it is already
+        # on the closed deque, so don't double-close and double-emit.
         if scope_obj.end_ns is not None:
             return scope_obj
         scope_obj.end_ns = _time_ns()
@@ -356,7 +391,10 @@ class ScopeStack:
         # outcome here.
         if scope_obj.cpu_start_ns is not None:
             scope_obj.cpu_ns = _process_time_ns() - scope_obj.cpu_start_ns
-        state.closed.append(scope_obj)
+        closed = state.closed
+        if len(closed) == CLOSED_BUFFER_CAP:
+            _note_closed_overflow(state)
+        closed.append(scope_obj)
         return scope_obj
 
     def current(self) -> Scope | None:
@@ -378,9 +416,11 @@ class ScopeStack:
         return len(self._state.stack)
 
     def drain_closed(self) -> list[Scope]:
-        """Drain *this thread's* closed scopes. Safe to call from the
-        producer thread only — use :meth:`drain_closed_all` from a
-        consumer thread (e.g., the flush thread).
+        """Drain *this thread's* closed scopes.
+
+        Safe to call from the producer thread only; use
+        :meth:`drain_closed_all` from a consumer thread (e.g., the flush
+        thread).
 
         Returns:
             list[Scope]: Snapshot of the per-thread closed deque; the
@@ -388,14 +428,17 @@ class ScopeStack:
         """
         state = self._state
         closed = state.closed
-        state.closed = deque()
+        # The replacement must carry ``maxlen`` too, or the first drain on
+        # a thread would silently un-bound its buffer. Same reason
+        # ``MarkBuffer.drain`` rebuilds with ``maxlen=self._capacity``.
+        state.closed = deque(maxlen=CLOSED_BUFFER_CAP)
         return list(closed)
 
     def drain_closed_all(self) -> list[Scope]:
         """Drain closed scopes across every producer thread.
 
         Safe from any thread. Uses ``deque.popleft`` on each per-thread
-        state so concurrent producer appends are not lost — an append
+        state so concurrent producer appends are not lost: an append
         racing with this drain lands in the same deque and is picked up
         on the next call.
 
@@ -408,17 +451,10 @@ class ScopeStack:
         out: list[Scope] = []
         with self._states_lock:
             items = list(self._states.items())
-        # Note: dead threads' states are kept so their trailing closed scopes
-        # remain drainable. Memory cost is ~200 bytes per thread that ever
-        # existed — fine for typical SDK workloads (main + a handful of
-        # workers). See ``_states`` in __init__ for the trade rationale.
-        #
-        # Per-request states (``"req-*"`` keys, registered by
-        # ``isolated_state``) are unbounded in count — one per inference
-        # request — so we *do* prune them after draining once their stack
-        # and closed deque are both empty. Without this, a long-running
-        # serving deployment would grow ``_states`` without limit and slow
-        # every subsequent drain.
+        # Dead threads' states are kept so their trailing closed scopes stay
+        # drainable, at ~200 bytes per thread that ever existed. Per-request
+        # states (``"req-*"``) are instead pruned once drained: one per
+        # inference request would grow ``_states`` without limit.
         prunable: list[Any] = []
         for key, s in items:
             buf = s.closed
@@ -441,7 +477,13 @@ class ScopeStack:
         return out
 
     def drop_count(self) -> int:
-        """Number of scopes dropped due to ``MAX_DEPTH`` on the calling thread.
+        """Number of scopes dropped on the calling thread.
+
+        Counts both causes: a ``push`` past ``MAX_DEPTH`` and a closed
+        scope evicted because the buffer was at ``CLOSED_BUFFER_CAP``.
+        The two have opposite remedies (the first means the caller nests
+        too deep, the second means the flush thread is stalled), so use
+        the distinct warning texts to tell them apart.
 
         Returns:
             int: Per-thread drop count.
@@ -451,10 +493,10 @@ class ScopeStack:
     def drop_count_all(self) -> int:
         """Sum drop counts across every producer thread's state.
 
-        ``drop_count()`` is thread-local — it only reflects the caller's
+        ``drop_count()`` is thread-local: it only reflects the caller's
         own thread. ``health()`` needs process-wide visibility, so we
         aggregate here the same way ``drain_closed_all`` enumerates
-        ``_states``.
+        ``_states``. Sums both drop causes; see :meth:`drop_count`.
 
         Returns:
             int: Process-wide cumulative scope drops.
@@ -472,14 +514,14 @@ class ScopeStack:
         Thread safety: we set ``end_ns`` (an atomic attribute assignment under
         the GIL) and append to the owning thread's closed deque
         (``deque.append`` is GIL-atomic). We intentionally do *not* touch
-        ``state.stack`` (a plain list) from this method — ``list.remove``
+        ``state.stack`` (a plain list) from this method: ``list.remove``
         isn't atomic, and a concurrent ``push``/``pop`` on the owning
         thread could race. Instead, ``pop()`` checks ``end_ns`` and skips
         re-emitting a scope that was already closed out of band.
 
         Args:
-            scope_obj (Scope): The scope to finalize. Already-closed
-                scopes (``end_ns is not None``) are no-ops.
+            scope_obj: The scope to finalize. Already-closed scopes
+                (``end_ns is not None``) are no-ops.
         """
         if scope_obj.end_ns is not None:
             return
@@ -493,24 +535,31 @@ class ScopeStack:
             state = self._states.get(scope_obj.thread_id)
         if state is None:
             return
-        state.closed.append(scope_obj)
+        closed = state.closed
+        if len(closed) == CLOSED_BUFFER_CAP:
+            # ``drop_count`` here is a cross-thread read-modify-write that can
+            # lose an update against the owning thread's ``pop()``. Nothing
+            # branches on its exact value, and a lost update can only
+            # under-report, never invent a drop.
+            _note_closed_overflow(state)
+        closed.append(scope_obj)
 
     def close_and_remove(self, scope_obj: Scope) -> None:
-        """Close ``scope_obj`` and surgically remove it from its owning
-        thread's stack, without disturbing scopes above or below it.
+        """Close ``scope_obj`` and remove it from its owning thread's stack.
 
-        Same-thread callers get the full surgical semantics: the scope
-        comes off the stack list so future ``push()``es won't nest under
-        it, and any scope sitting on top of it in the stack stays open.
-        Cross-thread callers fall back to :meth:`close_scope` — we can't
-        safely mutate another thread's stack list.
+        The removal is surgical: scopes above and below it are left
+        undisturbed. Same-thread callers get the full surgical semantics, in
+        that the scope comes off the stack list so future ``push()``es won't
+        nest under it, and any scope sitting on top of it in the stack stays
+        open. Cross-thread callers fall back to :meth:`close_scope`, since we
+        can't safely mutate another thread's stack list.
 
         Framework hooks use this to rotate long-lived internal spans
         (``epoch``, ``step``) without popping user scopes that happen to
         be open above them.
 
         Args:
-            scope_obj (Scope): The scope to close and remove.
+            scope_obj: The scope to close and remove.
         """
         if threading.get_ident() != scope_obj.thread_id:
             self.close_scope(scope_obj)
@@ -520,10 +569,9 @@ class ScopeStack:
         try:
             stack.remove(scope_obj)
         except ValueError:
-            # Not on this thread's stack — either already popped or was
-            # pushed on a different thread than the current one. Fall
-            # back to close-in-place so the span still lands in the
-            # closed deque.
+            # Not on this thread's stack: either already popped, or pushed
+            # on a different thread than the current one. Fall back to
+            # close-in-place so the span still lands in the closed deque.
             self.close_scope(scope_obj)
             return
         if scope_obj.end_ns is not None:
@@ -531,26 +579,93 @@ class ScopeStack:
         if scope_obj.cpu_start_ns is not None:
             scope_obj.cpu_ns = _process_time_ns() - scope_obj.cpu_start_ns
         scope_obj.end_ns = _time_ns()
-        state.closed.append(scope_obj)
+        closed = state.closed
+        if len(closed) == CLOSED_BUFFER_CAP:
+            _note_closed_overflow(state)
+        closed.append(scope_obj)
+
+    # Deferred close (hook-internal). ``finalize_deferred`` + ``emit_closed``
+    # split ``pop`` into stop-the-clock now, drainable later, so a scope
+    # awaiting async CUDA timing is not serialized before ``gpu_ns`` lands.
+    # The caller owes exactly one ``emit_closed`` per path, errors included.
+
+    def finalize_deferred(self, scope_obj: Scope) -> None:
+        """Stop a scope's clock without making it drainable yet.
+
+        Does everything :meth:`pop` / :meth:`close_scope` do (remove from
+        the owning thread's stack, derive ``cpu_ns``, set ``end_ns``)
+        except the append to the drainable deque. The caller must later
+        hand the scope to :meth:`emit_closed`.
+
+        Removing it from the stack here is what stops later ``push``es
+        from nesting under a scope that has conceptually ended. As in
+        :meth:`close_and_remove`, the stack list is only touched from the
+        owning thread; ``list.remove`` is not atomic and a concurrent
+        ``push`` / ``pop`` on that thread would race.
+
+        Args:
+            scope_obj: The scope to finalize. Already-finalized scopes
+                (``end_ns is not None``) are left alone.
+        """
+        if threading.get_ident() == scope_obj.thread_id:
+            try:
+                self._state.stack.remove(scope_obj)
+            except ValueError:
+                # Already off the stack (popped, rotated, or pushed under a
+                # different state). Finalizing in place is still correct.
+                pass
+        if scope_obj.end_ns is not None:
+            return
+        if scope_obj.cpu_start_ns is not None:
+            scope_obj.cpu_ns = _process_time_ns() - scope_obj.cpu_start_ns
+        # Written last so a reader observing ``end_ns`` also sees ``cpu_ns``,
+        # matching the ordering ``close_scope`` documents.
+        scope_obj.end_ns = _time_ns()
+
+    def emit_closed(self, scope_obj: Scope) -> None:
+        """Make an already-finalized scope drainable.
+
+        The append half of :meth:`finalize_deferred`. Appends to the
+        *owning* thread's deque (not the caller's), so a scope resolved on
+        a consumer thread still drains as its producer's work.
+
+        There is no double-emit guard here: ``Scope`` is slotted and
+        carries no "emitted" bit, and ``end_ns`` is already set by
+        ``finalize_deferred`` so it cannot serve as one. Callers get
+        single-emission structurally instead, by removing the scope from
+        their own pending collection at the moment they emit it.
+
+        Args:
+            scope_obj: A scope previously passed to
+                :meth:`finalize_deferred`.
+        """
+        with self._states_lock:
+            state = self._states.get(scope_obj.thread_id)
+        if state is None:
+            return
+        closed = state.closed
+        if len(closed) == CLOSED_BUFFER_CAP:
+            _note_closed_overflow(state)
+        closed.append(scope_obj)
 
     @contextmanager
     def isolated_state(self, key: str) -> Iterator[_ScopeState]:
-        """Enter a fresh per-context ``_ScopeState`` for the duration of the
-        ``with`` block.
+        """Enter a fresh per-context ``_ScopeState`` for the ``with`` block.
 
-        The new state is bound to a ``ContextVar`` so ``asyncio`` tasks (and
-        threads that inherit the context) see it instead of their thread-local
-        default. The state is also registered under a synthetic ``f"req-{key}"``
-        entry in ``self._states`` so the flush thread's ``drain_closed_all``
-        still drains its closed-scope deque.
+        The new state is in force for the duration of the block, and is bound
+        to a ``ContextVar`` so ``asyncio`` tasks (and threads that inherit the
+        context) see it instead of their thread-local default. The state is
+        also registered under a synthetic ``f"req-{key}"`` entry in
+        ``self._states`` so the flush thread's ``drain_closed_all`` still
+        drains its closed-scope deque.
 
         On exit the ContextVar token is reset; if the state left no residual
         open or closed scopes the registry entry is cleaned up to cap memory
         growth across many requests.
 
         Args:
-            key (str): Per-request identifier; registered as
-                ``f"req-{key}"`` in the cross-thread registry.
+            key: Per-request identifier; registered as ``f"req-{key}"``
+                in the cross-thread registry.
 
         Yields:
             _ScopeState: The freshly allocated per-context state, bound
@@ -572,12 +687,10 @@ class ScopeStack:
 
 _default_stack = ScopeStack()
 
-# Hot-path aliases for :func:`get_current_scope`. Binding these at module
-# import time collapses the call chain
-# ``get_current_scope → current() → _state property → _get_state()``
-# into three local reads, which saves ~100–300 ns per ``ci.mark()`` call
-# — enough to close the remaining gap against the 3 μs budget on the
-# ubuntu CI runner.
+# Hot-path aliases for :func:`get_current_scope`. Binding these at import time
+# collapses the ``get_current_scope`` to ``current()`` to ``_state`` to
+# ``_get_state()`` chain into three local reads, saving ~100 to 300 ns per
+# ``ci.mark()`` call against a 3 μs budget.
 _default_stack_local = _default_stack._local
 _ctx_state_get = _ctx_state.get
 
@@ -605,18 +718,19 @@ def get_current_scope() -> Scope | None:
             stack = _default_stack_local.state.stack
         except AttributeError:
             # Cold path: this thread hasn't touched the stack yet.
-            # ``_get_state`` lazily creates the ``_ScopeState`` and
-            # registers it for cross-thread drain. Calling it here
-            # guarantees the first ``ci.mark()`` on a new thread still
+            # ``_get_state`` lazily creates and registers the
+            # ``_ScopeState``, so the first ``ci.mark()`` on a new thread
             # finds a coherent (if empty) state rather than raising.
             stack = _default_stack._get_state().stack
     return stack[-1] if stack else None
 
 
 def get_default_stack() -> ScopeStack:
-    """Accessor for the process-wide default stack. Mostly here so the
-    flush thread has a stable entry point; tests can also import this to
-    drain closed scopes without going through the module-level API.
+    """Accessor for the process-wide default stack.
+
+    Mostly here so the flush thread has a stable entry point; tests can also
+    import this to drain closed scopes without going through the module-level
+    API.
 
     Returns:
         ScopeStack: The module-level ``_default_stack`` instance.
@@ -627,17 +741,17 @@ def get_default_stack() -> ScopeStack:
 class _ScopeCM:
     """Minimal context manager returned by :func:`scope`.
 
-    Hand-rolled instead of ``@contextmanager`` — the generator-based
+    Hand-rolled instead of ``@contextmanager``: the generator-based
     helper wraps every call in a ``_GeneratorContextManager`` instance
-    and an exception-handling shim, which together cost ~1.5–2 μs per
+    and an exception-handling shim, which together cost ~1.5 to 2 μs per
     enter/exit on CPython. That's the single biggest line item against
     the 5 μs scope budget, and ``ci.epochs``/``ci.batches`` pay it on
-    every iteration. ``__slots__`` + two method calls keep the overhead
+    every iteration. ``__slots__`` plus two method calls keep the overhead
     to what ``push``/``pop`` themselves cost.
 
     Constructor parameter ``opened`` is the ``Scope`` returned by the
     immediately preceding ``ScopeStack.push``, or ``None`` when the
-    push was dropped due to depth overflow — in the latter case
+    push was dropped due to depth overflow. In the latter case
     ``__exit__`` skips the ``pop()`` so the stack stays balanced.
     """
 
@@ -658,18 +772,18 @@ class _ScopeCM:
 def scope(name: str, index: int | None = None, **attrs: Any) -> _ScopeCM:
     """Open a named scope on the current thread.
 
-        Returns a context manager that yields the ``Scope`` object, or ``None``
-        if the push was dropped due to ``MAX_DEPTH`` overflow. Advanced callers
-        can read the yielded scope's ``id`` (for correlation) or mutate
-        ``attrs``; typical usage ignores it::
+    Returns a context manager that yields the ``Scope`` object, or ``None``
+    if the push was dropped due to ``MAX_DEPTH`` overflow. Advanced callers
+    can read the yielded scope's ``id`` (for correlation) or mutate
+    ``attrs``; typical usage ignores it::
 
-            with ci.scope("epoch", index=0):
-    ...
+        with ci.scope("epoch", index=0):
+            ...
 
     Args:
-        name (str): Span name (e.g. ``"forward"``, ``"data_load"``).
-        index (int | None): Optional positional index for repeated spans
-            of the same name (epoch / batch number).
+        name: Span name (e.g. ``"forward"``, ``"data_load"``).
+        index: Optional positional index for repeated spans of the same
+            name (epoch / batch number).
         **attrs (Any): Arbitrary metadata attached to the span as
             ``span.attrs[key] = value``.
 

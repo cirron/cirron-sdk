@@ -5,7 +5,7 @@ profiler orchestrator.
 the YAML-section resolution it used to own moved to the private
 ``Cirron._resolve_profile_config`` helper, which the orchestrator calls
 before selecting transport / starting the flush thread. These tests
-cover that helper directly — pure config resolution, no orchestration.
+cover that helper directly: pure config resolution, no orchestration.
 End-to-end orchestration tests (transport selection, hook install,
 flush startup, root scope) live in ``tests/unit/test_profiler.py``.
 """

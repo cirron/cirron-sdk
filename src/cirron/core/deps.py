@@ -6,32 +6,24 @@ optional extras are installed and, when called with required names, raises
 combined pip install command.
 
 Uses ``importlib.util.find_spec`` + ``importlib.metadata.version`` so heavy
-frameworks (torch, tensorflow, transformers) are never actually imported —
-the check is cheap to run at script startup.
+frameworks (torch, tensorflow, transformers) are never actually imported,
+so the check is cheap to run at script startup.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
+from importlib import import_module
 from importlib import metadata as _metadata
 from importlib import util as _util
+from typing import Any
 
 from cirron.core.errors import CirronDependencyError
 
-# Map import name → pyproject extra name. Keyed by import name because
-# that's what callers think in (``deps["torch"]``); the value is what goes
-# in ``pip install 'cirron-sdk[...]'``.
-#
-# The ``overhead`` extra is intentionally omitted — it's a dev/CI-only
-# harness dep (torchvision), not user-facing surface.
-#
-# Python version compatibility: ``tensorflow``, ``databricks``, and
-# ``snowflake`` ship upstream wheels that lag the latest Python release
-# cycle (no Python 3.14 wheels at the time of writing). On a brand-new
-# Python release, ``pip install 'cirron-sdk[<lagging>]'`` will fail with
-# "no matching distribution"; pin the interpreter to Python 3.13 or
-# earlier if any of those extras is required. See the README's
-# "Python version support" section for the current compatibility table.
+# Keyed by import name because that is what callers think in
+# (``deps["torch"]``); the value is the extra that goes in
+# ``pip install 'cirron-sdk[...]'``. The ``overhead`` extra is deliberately
+# omitted: it is a dev/CI-only harness dep, not user-facing surface.
 EXTRAS: dict[str, str] = {
     "pandas": "pandas",
     "polars": "polars",
@@ -72,11 +64,11 @@ def probe(import_name: str) -> str | None:
     """Return the installed version of ``import_name`` or ``None``.
 
     Uses ``find_spec`` rather than ``__import__`` so the module is not
-    actually loaded — important for torch/tensorflow/transformers, which
-    are expensive to import.
+    actually loaded, which matters for torch/tensorflow/transformers, all
+    of which are expensive to import.
 
     Args:
-        import_name (str): Module import name (e.g. ``"torch"``).
+        import_name: Module import name (e.g. ``"torch"``).
 
     Returns:
         str | None: Installed version, ``"unknown"`` if importable but
@@ -102,11 +94,11 @@ def install_hint(extras: Iterable[str]) -> str:
     """Format a ``pip install 'cirron-sdk[a,b,c]'`` command.
 
     ``extras`` may be pyproject extras names (``"hf"``) or import names
-    (``"datasets"``) — both are normalized to the extras names that pip
+    (``"datasets"``); both are normalized to the extras names that pip
     understands. Output is sorted and deduped for stable error messages.
 
     Args:
-        extras (Iterable[str]): Pyproject extras names or import names.
+        extras: Pyproject extras names or import names.
 
     Returns:
         str: ``pip install 'cirron-sdk[a,b,c]'`` (or ``'cirron-sdk'``
@@ -126,11 +118,58 @@ def install_hint(extras: Iterable[str]) -> str:
     return f"pip install 'cirron-sdk[{joined}]'"
 
 
+def driver(module_name: str, extra_name: str) -> Any:
+    """Import an optional backend driver or raise :class:`CirronDependencyError`.
+
+    Backend imports are lazy because none of them are hard dependencies:
+    a user who only hits S3 never pays the cost of ``psycopg``'s C
+    extensions. Uses ``importlib.import_module`` (not ``__import__``) so
+    dotted names like ``"databricks.sql"`` return the leaf module.
+
+    Use this at **backend entry points**, the first import of an optional
+    backend on a ``load()`` path, where absence is a hard stop the caller
+    needs to act on. Those sites must not raise a bare ``ImportError``:
+    callers can't catch it uniformly, and a hand-written install string
+    drifts away from :data:`EXTRAS`.
+
+    Not every optional import belongs here, and the SDK has ~35 that
+    deliberately stay plain:
+
+    * Imports reached only *after* an entry point already checked. For
+      example ``NumpyAdapter.to_pandas`` runs downstream of
+      ``ci.load(as_=...)``'s guard, so a second check would be noise.
+    * Imports used as control flow. ``_concat_parts`` asks "is pandas
+      installed *and* is this a DataFrame?", where absence selects a branch
+      rather than failing.
+    * ``validate()`` on the object-store sources, which wraps everything in
+      ``except Exception: return False``, so the error type is unobservable
+      there by design.
+
+    Args:
+        module_name: Driver module to import (e.g. ``"psycopg"``,
+            ``"databricks.sql"``, ``"google.cloud.storage"``).
+        extra_name: Cirron extra name used in the install hint.
+
+    Returns:
+        Any: The imported driver module (the leaf, for dotted names).
+
+    Raises:
+        CirronDependencyError: If the driver isn't installed.
+    """
+    try:
+        return import_module(module_name)
+    except ImportError as e:
+        raise CirronDependencyError(
+            f"the {extra_name!r} source backend requires the {module_name!r} "
+            f"driver. Install with: {install_hint([extra_name])}"
+        ) from e
+
+
 def _resolve_to_import_name(name: str) -> str:
     """Normalize ``name`` (import-name or extras-name) to the import name.
 
     Args:
-        name (str): Either an import name or a pyproject extras name.
+        name: Either an import name or a pyproject extras name.
 
     Returns:
         str: The canonical import name.
@@ -140,7 +179,7 @@ def _resolve_to_import_name(name: str) -> str:
     """
     if name in EXTRAS:
         return name
-    # Reverse lookup: extras name → import name.
+    # Reverse lookup, from extras name back to import name.
     for import_name, extra_name in EXTRAS.items():
         if extra_name == name:
             return import_name
@@ -156,15 +195,15 @@ def deps(*required: str) -> dict[str, str | None]:
     ``CirronDependencyError`` listing all missing ones if any are missing.
 
     Args:
-        *required (str): Import names (``"torch"``, ``"datasets"``) or
-            extras names (``"hf"``). Unknown names raise ``ValueError``
-            — that's a caller bug, not a missing dep.
+        *required: Import names (``"torch"``, ``"datasets"``) or extras
+            names (``"hf"``). Unknown names raise ``ValueError``, since that
+            is a caller bug rather than a missing dep.
 
     Returns:
         dict[str, str | None]: Dict keyed by import name. In the no-arg
             form, includes every known extra. In the required-args form,
-            includes only the requested ones (all present — missing ones
-            would have raised).
+            includes only the requested ones, which are all present because
+            missing ones would have raised.
 
     Raises:
         CirronDependencyError: When ``required`` is non-empty and any of

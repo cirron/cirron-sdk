@@ -1,7 +1,7 @@
 """HuggingFace transformers hook implementation.
 
 Kept out of ``transformers.py`` so self-registration at package import
-stays cheap — ``install()`` defers ``import transformers`` until called
+stays cheap: ``install()`` defers ``import transformers`` until called
 by ``ci.profile()``.
 
 Auto-attaches a ``TrainerCallback`` to every ``Trainer`` instance via a
@@ -10,8 +10,8 @@ scopes plus ``loss`` / ``learning_rate`` marks with zero user code. The
 ``step`` scope opens in ``on_step_begin`` and closes in ``on_step_end``
 so the underlying torch ``forward`` / ``backward`` / ``optimizer_step``
 spans nest cleanly inside it. Every callback entry point is
-wrapped in :func:`_catch` — a bad ``logs`` payload or a scope push
-failure must never crash training.
+wrapped in :func:`_catch`, because a bad ``logs`` payload or a scope
+push failure must never crash training.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from cirron.core.mark import mark as _mark
+from cirron.core.swallow import swallowed
 
 if TYPE_CHECKING:
     from cirron.core.config import Cirron
@@ -33,7 +34,7 @@ def _catch(label: str, fn: Any, *args: Any, **kwargs: Any) -> Any:
     """Call ``fn(*args, **kwargs)``; log + swallow exceptions.
 
     Args:
-        label (str): Diagnostic label included in the log line.
+        label: Diagnostic label included in the log line.
         fn (Any): Callable to invoke under the guard.
         *args (Any): Positional args forwarded to ``fn``.
         **kwargs (Any): Keyword args forwarded to ``fn``.
@@ -61,7 +62,7 @@ class TransformersHookHandle:
         """Record a labeled undo callback to fire in ``uninstall``.
 
         Args:
-            label (str): Diagnostic label logged on undo failure.
+            label: Diagnostic label logged on undo failure.
             fn (Any): Zero-arg callable that reverses one patch.
         """
         self._undos.append((label, fn))
@@ -80,22 +81,21 @@ class TransformersHookHandle:
 
 
 def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookContext) -> type:
-    """Build ``CirronTrainerCallback`` bound to the given scope stack
-    and shared ``HookContext``.
+    """Build ``CirronTrainerCallback`` bound to the given scope stack.
 
-    Defined as a factory so we don't import ``transformers`` at module
-    top — that happens lazily inside :func:`install`. The callback
-    claims ``epoch`` / ``step`` ownership in ``context.owned_scopes``
-    at ``on_train_begin`` (not install time), so a co-installed torch
-    hook only yields when HF ``Trainer`` is actually running. Vanilla
-    torch loops in a process where transformers happens to be
-    importable still get torch's own epoch/step spans.
+    The class also binds the shared ``HookContext``. It is defined as a
+    factory so we don't import ``transformers`` at module top; that
+    import happens lazily inside :func:`install`. The callback claims
+    ``epoch`` / ``step`` ownership in ``context.owned_scopes`` at
+    ``on_train_begin`` (not install time), so a co-installed torch hook
+    only yields when HF ``Trainer`` is actually running. Vanilla torch
+    loops in a process where transformers happens to be importable
+    still get torch's own epoch/step spans.
 
     Args:
-        scope_stack (ScopeStack): Per-process scope stack.
-        cirron (Cirron): The owning :class:`Cirron` instance.
-        context (HookContext): Shared install context — see
-            ``hooks/_registry.py``.
+        scope_stack: Per-process scope stack.
+        cirron: The owning :class:`Cirron` instance.
+        context: Shared install context; see ``hooks/_registry.py``.
 
     Returns:
         type: The ``CirronTrainerCallback`` subclass.
@@ -106,7 +106,7 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
         """Push a scope, swallowing exceptions.
 
         Args:
-            name (str): Span name.
+            name: Span name.
             **attrs (Any): Attrs attached to the new scope.
 
         Returns:
@@ -127,27 +127,19 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
         we reach our own scope.
 
         Args:
-            scope_obj (Scope | None): The scope to close. ``None`` is a no-op.
+            scope_obj: The scope to close. ``None`` is a no-op.
         """
         if scope_obj is None:
             return
         try:
-            # Fast path: our scope is on top — single pop closes it.
+            # Fast path: our scope is on top, so a single pop closes it.
             if scope_stack.current() is scope_obj:
                 scope_stack.pop()
                 return
-            # Already closed elsewhere (e.g. by a long-running torch
-            # rotation): nothing more to do for the closed deque, but
-            # the scope may still be sitting in the stack list, so fall
-            # through to the unwind below.
-            #
-            # Unwind: HF Trainer fires ``on_epoch_begin`` *before* the
-            # first ``iter(dataloader)``, so the torch hook ends up
-            # pushing its own ``epoch`` scope on top of ours.
-            # When ``on_epoch_end`` fires our scope is buried; pop the
-            # intervening scopes (closing them as siblings) until we
-            # find ours, the same pattern torch's own
-            # ``_unwind_through`` uses for its long-lived epoch scope.
+            # HF Trainer fires ``on_epoch_begin`` *before* the first
+            # ``iter(dataloader)``, so the torch hook pushes its own
+            # ``epoch`` scope on top of ours and by ``on_epoch_end`` ours is
+            # buried. Pop the intervening scopes as siblings until we find it.
             guard = 64
             while guard > 0 and scope_stack.current() is not None:
                 guard -= 1
@@ -155,20 +147,21 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
                 scope_stack.pop()
                 if top is scope_obj:
                     return
-            # Not on the stack at all — mark closed so it still lands in
-            # the drained output.
+            # Not on the stack at all, so mark it closed to keep it in the
+            # drained output.
             scope_stack.close_scope(scope_obj)
         except Exception:
             log.warning("cirron.hooks.transformers: scope close failed", exc_info=True)
 
     def _capture_epoch_snapshots(model: Any, span_id: str) -> None:
-        """HF ``TrainerCallback`` receives the model via ``kwargs["model"]``
-        on every hook. Capture weights + grads against the epoch span id
-        before the epoch closes; no-ops when snapshots are disabled.
+        """Capture weights + grads against ``span_id`` before the epoch closes.
+
+        HF ``TrainerCallback`` receives the model via ``kwargs["model"]``
+        on every hook. This no-ops when snapshots are disabled.
 
         Args:
             model (Any): The HF model being trained.
-            span_id (str): Id of the epoch span the records link to.
+            span_id: Id of the epoch span the records link to.
         """
         from cirron.core.snapshot_buffer import get_default_snapshot_buffer
         from cirron.snapshots.stats import capture
@@ -183,15 +176,17 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
         Args:
             logs (Any): The ``logs`` payload from a Trainer callback. Falsy
                 / non-mapping values are silently ignored.
-            kind (str): ``"point"`` (default) or ``"summary"`` — passed
-                through to ``ci.mark`` so end-of-epoch values aren't
-                re-aggregated downstream.
+            kind: ``"point"`` (default) or ``"summary"``, passed through to
+                ``ci.mark`` so end-of-epoch values aren't re-aggregated
+                downstream.
         """
         if not logs:
             return
         try:
             items = logs.items()
-        except Exception:
+        except Exception as exc:
+            # Terminal: every metric in this log call is dropped, not one.
+            swallowed("transformers.log_items", exc)
             return
         for name, value in items:
             try:
@@ -200,7 +195,8 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
                 continue
             try:
                 _mark(str(name), fv, kind=kind)
-            except Exception:
+            except Exception as exc:
+                swallowed("transformers.mark_logged", exc)
                 continue
 
     def _resolve_lr(args: Any, kwargs: dict[str, Any]) -> float | None:
@@ -208,7 +204,7 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
 
         Args:
             args (Any): The ``TrainingArguments`` instance for this run.
-            kwargs (dict[str, Any]): Trainer callback kwargs (``lr_scheduler``
+            kwargs: Trainer callback kwargs (``lr_scheduler``
                 is the canonical source).
 
         Returns:
@@ -222,10 +218,17 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
                 if last:
                     return float(last[0])
             except Exception:
+                # Probe, not a failure: plenty of schedulers have no
+                # get_last_lr, and this falls through to args below. Not
+                # routed through swallowed(), because a miss here is the
+                # normal answer and counting it would look like a bug.
                 pass
         try:
             return float(args.learning_rate)
-        except Exception:
+        except Exception as exc:
+            # Terminal: the scheduler probe above already missed, so the LR
+            # is now unresolvable and no learning_rate mark is emitted.
+            swallowed("transformers.resolve_lr", exc)
             return None
 
     class CirronTrainerCallback(TrainerCallback):  # type: ignore[misc, valid-type]
@@ -294,16 +297,16 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
                 args (Any): HF ``TrainingArguments``.
                 state (Any): HF ``TrainerState``.
                 control (Any): HF ``TrainerControl``.
-                **kwargs (Any): Trainer-supplied extras — ``metrics`` and
+                **kwargs (Any): Trainer-supplied extras; ``metrics`` and
                     ``model`` are read.
             """
 
             def _do() -> None:
                 """Emit summary metrics, snapshot, and close the epoch scope."""
-                # End-of-epoch logs are the canonical per-epoch values
-                # (loss at epoch close, etc.) — flag them as summary so
-                # the viewer can render them as a single per-span value
-                # rather than a point in the step-level time series.
+                # End-of-epoch logs are the canonical per-epoch values (loss
+                # at epoch close, etc.), so flag them as summary: the viewer
+                # then renders one value per span rather than a point in the
+                # step-level time series.
                 metrics = kwargs.get("metrics")
                 if metrics:
                     _record_logs(metrics, kind="summary")
@@ -338,7 +341,7 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
                 args (Any): HF ``TrainingArguments``.
                 state (Any): HF ``TrainerState``.
                 control (Any): HF ``TrainerControl``.
-                **kwargs (Any): Trainer-supplied extras — ``lr_scheduler``
+                **kwargs (Any): Trainer-supplied extras; ``lr_scheduler``
                     is read for the current LR.
             """
 
@@ -348,8 +351,8 @@ def _make_callback_class(scope_stack: ScopeStack, cirron: Cirron, context: HookC
                 if lr is not None:
                     try:
                         _mark("learning_rate", lr)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        swallowed("transformers.mark_learning_rate", exc)
                 _close(self._step_scope)
                 self._step_scope = None
 
@@ -408,26 +411,24 @@ def install(
     """Install the TrainerCallback auto-attach via ``Trainer.__init__`` monkey-patch.
 
     Claims ``"epoch"`` in ``context.owned_scopes`` so a co-installed
-    torch hook yields its ``DataLoader.__iter__`` epoch rotation —
-    otherwise HF ``Trainer`` would drive both callbacks and produce
+    torch hook yields its ``DataLoader.__iter__`` epoch rotation.
+    Otherwise HF ``Trainer`` would drive both callbacks and produce
     duplicate ``epoch`` spans.
 
     Args:
-        scope_stack (ScopeStack): Per-process scope stack.
-        cirron (Cirron): The owning :class:`Cirron` instance.
-        context (HookContext): Shared install context — see
-            ``hooks/_registry.py``.
+        scope_stack: Per-process scope stack.
+        cirron: The owning :class:`Cirron` instance.
+        context: Shared install context; see ``hooks/_registry.py``.
 
     Returns:
         TransformersHookHandle: Handle whose ``uninstall()`` reverses every patch.
     """
     from transformers import Trainer  # type: ignore[import-not-found]
 
-    # ``epoch`` / ``step`` ownership is claimed at ``on_train_begin``
-    # (not here) — see ``_make_callback_class``. This keeps vanilla
-    # torch loops, in a process where ``transformers`` just happens to
-    # be importable, from losing their own epoch/step spans because
-    # this installer pre-claimed ownership no one ever honored.
+    # ``epoch`` / ``step`` ownership is claimed at ``on_train_begin``, not
+    # here, so a vanilla torch loop in a process where ``transformers``
+    # merely happens to be importable keeps its own epoch/step spans instead
+    # of losing them to a claim no Trainer ever honors.
     callback_cls = _make_callback_class(scope_stack, cirron, context)
 
     handle = TransformersHookHandle()

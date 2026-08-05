@@ -65,7 +65,7 @@ def test_parent_child_linkage():
         assert s.end_ns >= s.start_ns
         # ``cpu_ns`` is opt-in (see ``set_capture_cpu_time``); default-off
         # for the overhead budget. We just want to make sure scopes close
-        # cleanly here — a dedicated opt-in test below exercises cpu_ns.
+        # cleanly here; a dedicated opt-in test below exercises cpu_ns.
         if s.cpu_ns is not None:
             assert s.cpu_ns >= 0
 
@@ -128,7 +128,7 @@ def test_context_manager_skips_pop_when_overflow():
     with pytest.warns(UserWarning):
         opened = stack.push("overflow")
     assert opened is None
-    # depth must remain exactly at MAX_DEPTH — no accidental pop of a real scope.
+    # depth must remain exactly at MAX_DEPTH, with no accidental pop of a real scope.
     assert stack.depth() == MAX_DEPTH
 
 
@@ -184,8 +184,10 @@ def test_get_current_scope_tracks_innermost():
 def test_pop_on_empty_stack_is_safe():
     stack = ScopeStack()
     # must not raise; returns None and logs (once).
-    assert stack.pop() is None
-    assert stack.pop() is None
+    first = stack.pop()
+    assert first is None
+    second = stack.pop()
+    assert second is None
     assert stack.depth() == 0
 
 
@@ -260,7 +262,7 @@ def test_close_and_remove_surgical():
 
 def test_close_and_remove_cross_thread_falls_back_to_close_scope():
     """From a thread that didn't push the scope, ``close_and_remove``
-    must not touch any thread's stack list — it falls back to
+    must not touch any thread's stack list; it falls back to
     ``close_scope``'s mark-end-only behavior."""
     stack = ScopeStack()
     pushed: list[Scope] = []
@@ -292,10 +294,239 @@ def test_drop_count_all_aggregates_across_threads():
             stack.pop()
 
     threads = [threading.Thread(target=worker) for _ in range(3)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    # Overflow is the point here, so the one-shot per-thread warning is expected
+    # output rather than noise; assert it instead of letting it leak into pytest's
+    # warnings summary. Capturing across threads is safe in this bounded case:
+    # every producer is joined inside the context and nothing else emits.
+    with pytest.warns(UserWarning, match="depth exceeded MAX_DEPTH"):
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
 
     # Each thread dropped 3 scopes past MAX_DEPTH → 9 total.
     assert stack.drop_count_all() == 9
+
+
+def test_closed_buffer_bounded_and_counts_drops(monkeypatch):
+    """The closed-scope deque is a bounded ring: it drops oldest, counts
+    every drop, and warns exactly once per state."""
+    from cirron.core import scope as scope_mod
+
+    # The cap is read when ``_ScopeState`` is constructed, so the stack must
+    # be built *after* the patch. Patching once a state already exists would
+    # desync the length check from the deque's real ``maxlen``.
+    monkeypatch.setattr(scope_mod, "CLOSED_BUFFER_CAP", 8)
+    stack = ScopeStack()
+
+    for i in range(8):
+        stack.push("s", index=i)
+        stack.pop()
+    state = stack._state
+    assert len(state.closed) == 8
+    assert state.drop_count == 0
+
+    with pytest.warns(UserWarning, match="closed-scope buffer full"):
+        stack.push("s", index=8)
+        stack.pop()
+
+    import warnings as _w
+
+    with _w.catch_warnings(record=True) as caught:
+        _w.simplefilter("always")
+        for i in range(9, 18):
+            stack.push("s", index=i)
+            stack.pop()
+    assert caught == []  # one warning per state, not one per drop
+
+    assert len(state.closed) == 8
+    assert state.drop_count == 10
+    assert stack.drop_count() == 10
+    # Drop-oldest: the ten newest survive minus the two the cap can't hold.
+    assert [s.index for s in state.closed] == list(range(10, 18))
+
+    # Regression guard: ``drain_closed`` must not swap in an unbounded deque.
+    drained = stack.drain_closed()
+    assert len(drained) == 8
+    assert stack._state.closed.maxlen == 8
+
+
+def test_closed_buffer_bound_applies_to_close_scope(monkeypatch):
+    """The cross-thread ``close_scope`` append is bounded and accounted for
+    too, not just the same-thread ``pop`` path."""
+    from cirron.core import scope as scope_mod
+
+    monkeypatch.setattr(scope_mod, "CLOSED_BUFFER_CAP", 4)
+    stack = ScopeStack()
+    opened: list[Scope] = []
+
+    def producer() -> None:
+        for _ in range(4):
+            stack.push("s")
+            stack.pop()
+        opened.append(stack.push("still-open"))  # type: ignore[arg-type]
+
+    t = threading.Thread(target=producer)
+    t.start()
+    t.join()
+
+    with pytest.warns(UserWarning, match="closed-scope buffer full"):
+        stack.close_scope(opened[0])
+    assert stack.drop_count_all() == 1
+
+
+def test_concurrent_drain_conservation():
+    """Draining while producers are still running must neither lose nor
+    duplicate a closed scope.
+
+    Every other threaded test in this file joins its producers *before*
+    draining, so the flush thread's real interleaving (``drain_closed_all``
+    racing live ``push``/``pop`` on several threads) is never exercised.
+    The invariant asserted here is COUNT CONSERVATION, never timing.
+    """
+    n_producers = 4
+    cycles = 25_000
+    total = n_producers * cycles
+
+    # A fresh stack, so the module's autouse default-stack fixture and any
+    # other test's leftovers are irrelevant.
+    stack = ScopeStack()
+
+    # 25_000 closed scopes per producer thread-state is well under
+    # CLOSED_BUFFER_CAP (100_000), so the drop-oldest cap must never engage;
+    # drop_count_all() == 0 below proves an eviction didn't silently satisfy
+    # the count.
+    from cirron.core import scope as scope_mod
+
+    assert cycles < scope_mod.CLOSED_BUFFER_CAP
+
+    drained: list[Scope] = []
+    producers_done = threading.Event()
+    start = threading.Barrier(n_producers + 1)
+
+    def producer() -> None:
+        push, pop = stack.push, stack.pop  # hot-path idiom used by ci.batches
+        start.wait()
+        for i in range(cycles):
+            push("soak", index=i)
+            pop()
+
+    def drainer() -> None:
+        empties = 0
+        while True:
+            got = stack.drain_closed_all()
+            if got:
+                drained.extend(got)
+                empties = 0
+            elif producers_done.is_set():
+                # Producers have been joined, so nothing more can arrive.
+                # Require two consecutive empty drains before giving up.
+                empties += 1
+                if empties >= 2:
+                    return
+            else:
+                # Idle backpressure, NOT synchronization: correctness rests
+                # entirely on the joins and the count assertions below. A
+                # free-spinning drainer starves the producers under the GIL,
+                # measured ~150x slower, so yield when there is nothing to take.
+                producers_done.wait(timeout=0.001)
+
+    threads = [threading.Thread(target=producer, name=f"producer-{i}") for i in range(n_producers)]
+    drain_thread = threading.Thread(target=drainer, name="drainer")
+    drain_thread.start()
+    for t in threads:
+        t.start()
+    start.wait()  # release all producers together so the drainer truly races them
+    for t in threads:
+        t.join(timeout=60)
+        assert not t.is_alive(), "producer thread did not finish"
+    producers_done.set()
+    drain_thread.join(timeout=60)
+    assert not drain_thread.is_alive(), "drainer thread did not finish"
+
+    # No loss.
+    assert len(drained) == total, f"expected {total} closed scopes, drained {len(drained)}"
+    # No double-emit. ``drained`` holds a strong reference to every scope for
+    # the whole test, so CPython cannot recycle an id() and forge uniqueness.
+    assert len({id(s) for s in drained}) == total, "a scope was emitted more than once"
+    # No cap eviction and no MAX_DEPTH drop (drop_count_all folds both causes).
+    assert stack.drop_count_all() == 0
+    # Every drained scope is genuinely closed.
+    assert all(s.end_ns is not None for s in drained)
+
+
+# deferred close (hook-internal API used by async timing sources)
+
+
+def test_finalize_deferred_stops_the_clock_without_emitting():
+    """A deferred scope is finished but not yet drainable."""
+    stack = ScopeStack()
+    scope_obj = stack.push("gpu_op")
+
+    stack.finalize_deferred(scope_obj)
+
+    assert scope_obj.end_ns is not None, "the clock should have stopped"
+    assert stack.drain_closed_all() == [], "a held scope must not be drainable yet"
+    # It also leaves the stack, so later pushes don't nest under a span
+    # that has conceptually ended.
+    assert stack.current() is None
+    assert stack.depth() == 0
+
+
+def test_emit_closed_makes_a_deferred_scope_drainable():
+    """emit_closed is the second half: the scope drains exactly once."""
+    stack = ScopeStack()
+    scope_obj = stack.push("gpu_op")
+    stack.finalize_deferred(scope_obj)
+
+    stack.emit_closed(scope_obj)
+
+    drained = stack.drain_closed_all()
+    assert drained == [scope_obj]
+    # Drained once and gone; the deque is not holding a second copy.
+    assert stack.drain_closed_all() == []
+
+
+def test_deferred_scope_keeps_attrs_and_parentage():
+    """Deferring must not disturb the span's tree position or payload."""
+    stack = ScopeStack()
+    parent = stack.push("epoch", index=3)
+    child = stack.push("forward", mode="train")
+
+    stack.finalize_deferred(child)
+    stack.emit_closed(child)
+    stack.pop()  # close the parent normally
+
+    drained = {s.name: s for s in stack.drain_closed_all()}
+    assert drained["forward"].parent_id == parent.id
+    assert drained["forward"].attrs.get("mode") == "train"
+    assert drained["epoch"].index == 3
+
+
+def test_finalize_deferred_is_idempotent():
+    """A second finalize must not move the end timestamp."""
+    stack = ScopeStack()
+    scope_obj = stack.push("gpu_op")
+
+    stack.finalize_deferred(scope_obj)
+    first_end = scope_obj.end_ns
+    stack.finalize_deferred(scope_obj)
+
+    assert scope_obj.end_ns == first_end
+
+
+def test_close_scope_does_not_re_emit_a_deferred_scope():
+    """Shutdown paths that sweep open scopes must not double-emit a held one.
+
+    ``close_scope`` guards on ``end_ns``, which ``finalize_deferred`` has
+    already set, so the held scope is emitted only by whoever owns it.
+    """
+    stack = ScopeStack()
+    scope_obj = stack.push("gpu_op")
+    stack.finalize_deferred(scope_obj)
+
+    stack.close_scope(scope_obj)  # e.g. a shutdown sweep
+
+    assert stack.drain_closed_all() == [], "close_scope emitted a scope it did not finalize"
+    stack.emit_closed(scope_obj)
+    assert stack.drain_closed_all() == [scope_obj]

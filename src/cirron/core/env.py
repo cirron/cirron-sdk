@@ -1,4 +1,4 @@
-"""``ci.env(key, default=None)`` — read env vars with JSON auto-parsing.
+"""``ci.env(key, default=None)``: read env vars with JSON auto-parsing.
 
 If the value of an env var starts with ``{`` or ``[``, parse
 it as JSON and return the parsed object. Otherwise return the raw string.
@@ -31,8 +31,8 @@ def _load_dotenv_once() -> None:
     """Load ``./.env`` into ``os.environ`` exactly once per process.
 
     Skips silently when ``python-dotenv`` isn't installed. Container
-    environment variables win — ``override=False`` so a runtime-set
-    variable is never shadowed by a local file.
+    environment variables win, because ``override=False`` means a
+    runtime-set variable is never shadowed by a local file.
     """
     global _dotenv_loaded
     if _dotenv_loaded:
@@ -53,12 +53,10 @@ def _load_dotenv_once() -> None:
         _dotenv_loaded = True
 
 
-# Eager load at import so the ``.env`` file is reflected in
-# ``os.environ`` before any downstream code (including
-# ``Cirron.__init__``) reads an env var. Tests that need to re-trigger
-# the load against a different cwd reset ``_dotenv_loaded`` to False
-# and call ``_load_dotenv_once()`` (or any ``ci.env()`` / ``Cirron()``,
-# since both funnel through this sentinel).
+# Eager load at import so the ``.env`` file is reflected in ``os.environ``
+# before any downstream code (including ``Cirron.__init__``) reads an env
+# var. Tests re-trigger the load against a different cwd by resetting
+# ``_dotenv_loaded`` to False; every entry point funnels through it.
 _load_dotenv_once()
 
 
@@ -70,7 +68,7 @@ def env(key: str, default: Any = None) -> Any:
     JSON; malformed JSON falls back to the raw string.
 
     Args:
-        key (str): The environment variable name.
+        key: The environment variable name.
         default (Any): Returned when ``key`` is unset.
 
     Returns:
