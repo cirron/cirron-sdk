@@ -4,10 +4,10 @@ By default, a callable passed to ``ci.load(..., map=fn)`` runs row-wise:
 ``fn(row: dict) -> dict``. Decorating the callable with :func:`map`
 flips it to batch-wise: ``fn(frame) -> frame``, called once against the
 whole concatenated result. The decorator is the only way to opt into
-batch mode — the absence of a decorator means row-wise.
+batch mode; the absence of a decorator means row-wise.
 
 Applied post-concat, pre-adapter (see ``load._run_and_convert``). Heavy
-transforms belong in the pipeline, not here — this is for lightweight
+transforms belong in the pipeline, not here; this is for lightweight
 column renames, casts, and derivations.
 """
 
@@ -29,7 +29,7 @@ def map(fn: Callable[..., Any]) -> Callable[..., Any]:  # noqa: A001 — public 
     concatenated frame and its return value replaces the frame as-is.
 
     Args:
-        fn (Callable[..., Any]): The user-supplied callable.
+        fn: The user-supplied callable.
 
     Returns:
         Callable[..., Any]: ``fn`` unchanged, with the batch-mode
@@ -44,7 +44,7 @@ def apply_map(raw: Any, fn: Callable[..., Any]) -> Any:
 
     Args:
         raw (Any): The concatenated source result (DataFrame or list).
-        fn (Callable[..., Any]): User callable. Decorated with
+        fn: User callable. Decorated with
             :func:`map` for batch-wise mode.
 
     Returns:
@@ -61,7 +61,7 @@ def _apply_rowwise(raw: Any, fn: Callable[..., Any]) -> Any:
 
     Args:
         raw (Any): A pandas DataFrame, polars DataFrame, or ``list``.
-        fn (Callable[..., Any]): The per-row callable.
+        fn: The per-row callable.
 
     Returns:
         Any: The transformed value (same type as ``raw``).
@@ -97,7 +97,7 @@ def _rowwise_pandas(raw: Any, fn: Callable[..., Any], pd: Any) -> Any:
 
     Args:
         raw (Any): The pandas DataFrame.
-        fn (Callable[..., Any]): The per-row callable.
+        fn: The per-row callable.
         pd (Any): The pandas module (already imported by the caller).
 
     Returns:
@@ -116,7 +116,7 @@ def _rowwise_polars(raw: Any, fn: Callable[..., Any], pl: Any) -> Any:
 
     Args:
         raw (Any): The polars DataFrame.
-        fn (Callable[..., Any]): The per-row callable.
+        fn: The per-row callable.
         pl (Any): The polars module (already imported).
 
     Returns:
@@ -134,8 +134,8 @@ def _rowwise_list(raw: list[Any], fn: Callable[..., Any]) -> list[Any]:
     """Apply ``fn`` to every element of a list.
 
     Args:
-        raw (list[Any]): Input list.
-        fn (Callable[..., Any]): The per-row callable.
+        raw: Input list.
+        fn: The per-row callable.
 
     Returns:
         list[Any]: Transformed list, or ``raw`` unchanged when empty.
@@ -149,8 +149,8 @@ def _map_with_index(rows: list[Any], fn: Callable[..., Any]) -> list[Any]:
     """Apply ``fn`` per element, wrapping any exception with row context.
 
     Args:
-        rows (list[Any]): Rows to transform.
-        fn (Callable[..., Any]): The per-row callable.
+        rows: Rows to transform.
+        fn: The per-row callable.
 
     Returns:
         list[Any]: The transformed rows.

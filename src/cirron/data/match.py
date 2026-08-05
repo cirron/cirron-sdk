@@ -3,7 +3,7 @@
 ``match`` is a dict with ``path`` (glob), ``filename``
 (regex), ``extension`` (shorthand), and ``columns`` (pushdown). The
 landed ``ci.load()`` dispatcher also accepts a flat ``ext=`` kwarg and a
-bare ``match="*.parquet"`` string — both are normalized to
+bare ``match="*.parquet"`` string. Both are normalized to
 :class:`MatchConfig` here so every backend consumes a single shape.
 
 The filter runs client-side for the filesystem backends
@@ -69,12 +69,12 @@ class MatchConfig:
         short-circuit cheaply.
 
         Args:
-            match (str | Mapping[str, Any] | None): Bare glob string, a
+            match: Bare glob string, a
                 dict with ``path`` / ``filename`` / ``extension`` /
                 ``columns`` keys, or ``None``.
-            ext (list[str] | tuple[str, ...] | None): Flat extension
+            ext: Flat extension
                 list. Overrides ``match["extension"]`` when supplied.
-            columns (list[str] | tuple[str, ...] | None): Flat column
+            columns: Flat column
                 projection. Overrides ``match["columns"]``.
 
         Returns:
@@ -112,7 +112,7 @@ class MatchConfig:
         elif match is not None:
             raise TypeError(f"match= must be str, Mapping, or None; got {type(match).__name__}")
 
-        # Flat kwargs override their dict equivalents — no one calls the
+        # Flat kwargs override their dict equivalents; no one calls the
         # dict shape in production yet, and the flat kwargs are the
         # public surface.
         if ext:
@@ -143,10 +143,8 @@ def _normalize_extensions(raw: Any) -> tuple[str, ...]:
         parts: list[str] = [raw]
     else:
         parts = list(raw)
-    # Strip before filtering so whitespace-only values (" ", "\t") don't
-    # slip through as empty extensions — an empty ext would turn the
-    # ``endswith('.<ext>')`` check into ``endswith('.')`` and match any
-    # filename that happens to end in a period.
+    # An empty ext would turn the ``endswith('.<ext>')`` check into
+    # ``endswith('.')``, matching any filename that ends in a period.
     normalized: list[str] = []
     for p in parts:
         stripped = p.strip()
@@ -184,14 +182,14 @@ def _normalize_columns(raw: Any) -> tuple[str, ...]:
 def apply_match(paths: Iterable[str], cfg: MatchConfig) -> list[str]:
     """Filter ``paths`` down to the entries that satisfy ``cfg``.
 
-    Paths are treated as forward-slash strings regardless of OS —
+    Paths are treated as forward-slash strings regardless of OS, so
     callers that hand in ``pathlib.Path`` should convert with
     ``str(p.as_posix())`` so Windows paths don't slip through the glob.
 
     Args:
-        paths (Iterable[str]): Candidate paths (relative or absolute,
+        paths: Candidate paths (relative or absolute,
             forward-slash form).
-        cfg (MatchConfig): Filter spec.
+        cfg: Filter spec.
 
     Returns:
         list[str]: Candidates that satisfy every filter on ``cfg``.
@@ -204,9 +202,9 @@ def _match_one(raw: str, cfg: MatchConfig, filename_re: re.Pattern[str] | None) 
     """Return ``True`` when a single path satisfies every filter on ``cfg``.
 
     Args:
-        raw (str): The candidate path.
-        cfg (MatchConfig): Filter spec.
-        filename_re (re.Pattern[str] | None): Pre-compiled
+        raw: The candidate path.
+        cfg: Filter spec.
+        filename_re: Pre-compiled
             ``filename_regex`` (or ``None``).
 
     Returns:
@@ -231,8 +229,8 @@ def _match_path(parent: str, pattern: str) -> bool:
     """Match the directory portion against a glob, allowing trailing-slash forms.
 
     Args:
-        parent (str): The directory portion of the candidate path.
-        pattern (str): The user-supplied glob.
+        parent: The directory portion of the candidate path.
+        pattern: The user-supplied glob.
 
     Returns:
         bool: ``True`` if either ``pattern`` or ``pattern.rstrip('/')``
@@ -249,8 +247,8 @@ def _match_extension(basename: str, extensions: tuple[str, ...]) -> bool:
     """Return ``True`` when ``basename`` ends with any of ``extensions``.
 
     Args:
-        basename (str): Filename without directory.
-        extensions (tuple[str, ...]): Lowercase extensions without dots.
+        basename: Filename without directory.
+        extensions: Lowercase extensions without dots.
 
     Returns:
         bool: Whether the basename matches any allowed extension.

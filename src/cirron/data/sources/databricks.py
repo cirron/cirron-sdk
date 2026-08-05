@@ -5,7 +5,7 @@ Uses ``databricks-sql-connector`` against a SQL Warehouse. The URI is
 a personal access token resolved via the platform / ``ci.secret()`` /
 ``DATABRICKS_TOKEN`` env (see :class:`cirron.data.sql.CredentialResolver`).
 
-The ``http_path`` for the SQL warehouse is not in the URI — it's
+The ``http_path`` for the SQL warehouse is not in the URI. It is
 workspace-specific routing and must come from either the platform
 integration record (under ``extra.http_path``) or the ``DATABRICKS_HTTP_PATH``
 env var.
@@ -41,7 +41,7 @@ class DatabricksDataSource(DataSource):
         self.cirron = cirron
 
     def validate(self) -> bool:
-        """Always ``True`` — connection probes are deferred to ``load``.
+        """Always ``True``; connection probes are deferred to ``load``.
 
         Returns:
             bool: ``True``.
@@ -95,10 +95,10 @@ def build_source(uri_str: str, cirron: Cirron, request: LoadRequest | None) -> D
     """Factory used by the load dispatcher.
 
     Args:
-        uri_str (str): The raw ``databricks://...`` URI.
-        cirron (Cirron): Active Cirron instance for credential
+        uri_str: The raw ``databricks://...`` URI.
+        cirron: Active Cirron instance for credential
             resolution.
-        request (LoadRequest | None): Per-call request.
+        request: Per-call request.
 
     Returns:
         DatabricksDataSource: A source ready to ``load()``.

@@ -6,7 +6,7 @@ appears as the ``host`` component. Auth is password (resolved via
 :class:`cirron.data.sql.CredentialResolver`) or ``token`` for
 key-pair / OAuth flows registered on the platform.
 
-``warehouse`` and ``role`` are not in the URI — they're workspace
+``warehouse`` and ``role`` are not in the URI. They are workspace
 preferences and must come from the platform integration record
 (``extra.warehouse`` / ``extra.role``) or from ``SNOWFLAKE_WAREHOUSE``
 / ``SNOWFLAKE_ROLE`` env vars.
@@ -41,7 +41,7 @@ class SnowflakeDataSource(DataSource):
         self.cirron = cirron
 
     def validate(self) -> bool:
-        """Always ``True`` — connection probes are deferred to ``load``.
+        """Always ``True``; connection probes are deferred to ``load``.
 
         Returns:
             bool: ``True``.
@@ -94,7 +94,7 @@ class SnowflakeDataSource(DataSource):
         )
 
         # Snowflake's cursors hold server-side result state that
-        # ``conn.close()`` does not reliably release — close explicitly.
+        # ``conn.close()`` does not reliably release, so close explicitly.
         return run_select(snowflake_connector.connect, conn_kwargs, query, cursor_close=True)
 
 
@@ -102,10 +102,10 @@ def build_source(uri_str: str, cirron: Cirron, request: LoadRequest | None) -> S
     """Factory used by the load dispatcher.
 
     Args:
-        uri_str (str): The raw ``snowflake://...`` URI.
-        cirron (Cirron): Active Cirron instance for credential
+        uri_str: The raw ``snowflake://...`` URI.
+        cirron: Active Cirron instance for credential
             resolution.
-        request (LoadRequest | None): Per-call request.
+        request: Per-call request.
 
     Returns:
         SnowflakeDataSource: A source ready to ``load()``.

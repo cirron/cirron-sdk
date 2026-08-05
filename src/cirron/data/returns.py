@@ -1,9 +1,8 @@
 """Return-type adapters for ``ci.load(as_=...)``.
 
-Migrated from the pre-overhaul ``cirron/data/adapters.py``. The adapter classes
-normalize access patterns (columns, shape, dtypes, conversion) across pandas,
-polars, Arrow, and NumPy, so the ``as_=`` parameter in ``ci.load()`` can swap
-return types without rewriting downstream code.
+The adapter classes normalize access patterns (columns, shape, dtypes,
+conversion) across pandas, polars, Arrow, and NumPy, so the ``as_=`` parameter
+in ``ci.load()`` can swap return types without rewriting downstream code.
 
 The adapters expose cross-format conversion methods (``to_polars``,
 ``to_tensor``, ``to_hf``) used by the ``as_=`` dispatch.
@@ -26,7 +25,7 @@ def _require(package: str) -> Any:
     """Import an optional dependency or raise ``CirronDependencyError``.
 
     Args:
-        package (str): The top-level import name.
+        package: The top-level import name.
 
     Returns:
         Any: The imported module.
@@ -61,11 +60,7 @@ class DataAdapter(ABC):
 
     @abstractmethod
     def get_columns(self) -> list[str]:
-        """Return the column names in declaration order.
-
-        Returns:
-            list[str]: Column names.
-        """
+        """Return the column names in declaration order."""
         ...
 
     @abstractmethod
@@ -73,7 +68,7 @@ class DataAdapter(ABC):
         """Return a new adapter restricted to ``columns``.
 
         Args:
-            columns (list[str]): Names to keep; any not present in the
+            columns: Names to keep; any not present in the
                 wrapped frame are silently dropped.
 
         Returns:
@@ -83,20 +78,12 @@ class DataAdapter(ABC):
 
     @abstractmethod
     def get_shape(self) -> tuple[int, int]:
-        """Return ``(rows, columns)``.
-
-        Returns:
-            tuple[int, int]: Frame shape.
-        """
+        """Return ``(rows, columns)``."""
         ...
 
     @abstractmethod
     def to_pandas(self) -> Any:
-        """Convert to a ``pandas.DataFrame``.
-
-        Returns:
-            Any: A pandas DataFrame view of the wrapped data.
-        """
+        """Convert to a ``pandas.DataFrame``."""
         ...
 
     @abstractmethod
@@ -110,36 +97,24 @@ class DataAdapter(ABC):
 
     @abstractmethod
     def get_dtypes(self) -> dict[str, str]:
-        """Return ``{column: dtype_string}`` for every column.
-
-        Returns:
-            dict[str, str]: Column-to-dtype map.
-        """
+        """Return ``{column: dtype_string}`` for every column."""
         ...
 
     @abstractmethod
     def get_numeric_columns(self) -> list[str]:
-        """Return the names of integer / floating-point columns.
-
-        Returns:
-            list[str]: Numeric column names.
-        """
+        """Return the names of integer / floating-point columns."""
         ...
 
     @abstractmethod
     def get_categorical_columns(self) -> list[str]:
-        """Return the names of string / object / categorical columns.
-
-        Returns:
-            list[str]: Categorical column names.
-        """
+        """Return the names of string / object / categorical columns."""
         ...
 
     def to_polars(self) -> Any:
         """Convert to ``polars.DataFrame``.
 
         The base path goes via pandas, so it needs both libraries
-        installed — we surface that as ``CirronDependencyError``
+        installed. We surface that as ``CirronDependencyError``
         instead of leaking a raw ``ImportError`` from deeper in the
         stack. Subclasses that can convert natively (e.g. the
         ``PolarsAdapter`` and ``ArrowAdapter`` overrides) override
@@ -195,7 +170,7 @@ class DataAdapter(ABC):
         signature in ``ci.load()``.
 
         Args:
-            batch_size (int): Rows per emitted batch. ``<= 1`` switches
+            batch_size: Rows per emitted batch. ``<= 1`` switches
                 to per-row dicts.
 
         Yields:
@@ -260,93 +235,50 @@ class DataAdapter(ABC):
         return datasets.Dataset.from_pandas(self._to_pandas_for_conversion())
 
     def get_original_data(self) -> Any:
-        """Return the wrapped value as originally passed in.
-
-        Returns:
-            Any: The unmodified object handed to ``__init__``.
-        """
+        """Return the wrapped value as originally passed in."""
         return self.data
 
     def get_original_type(self) -> type:
-        """Return the type of the originally wrapped value.
-
-        Returns:
-            type: ``type(data)`` captured at construction.
-        """
+        """Return the type of the originally wrapped value."""
         return self._original_type
 
 
 class PandasAdapter(DataAdapter):
-    """Adapter over ``pandas.DataFrame`` — accepts and returns native pandas."""
+    """Adapter over ``pandas.DataFrame``; accepts and returns native pandas."""
 
     def get_columns(self) -> list[str]:
-        """Return the DataFrame's column labels.
-
-        Returns:
-            list[str]: Column names.
-        """
+        """Return the DataFrame's column labels."""
         return list(self.data.columns)
 
     def select_columns(self, columns: list[str]) -> PandasAdapter:
-        """Project the DataFrame to ``columns`` (silently dropping unknowns).
-
-        Args:
-            columns (list[str]): Names to keep.
-
-        Returns:
-            PandasAdapter: Adapter over the projected frame.
-        """
+        """Project the DataFrame to ``columns``, silently dropping unknowns."""
         available = [c for c in columns if c in self.data.columns]
         return PandasAdapter(self.data[available])
 
     def get_shape(self) -> tuple[int, int]:
-        """Return ``(rows, columns)``.
-
-        Returns:
-            tuple[int, int]: DataFrame shape.
-        """
+        """Return ``(rows, columns)``."""
         return self.data.shape
 
     def to_pandas(self) -> Any:
-        """Return the wrapped DataFrame unchanged.
-
-        Returns:
-            Any: ``self.data``.
-        """
+        """Return the wrapped DataFrame unchanged."""
         return self.data
 
     def to_numpy(self) -> Any:
-        """Return ``self.data.values``.
-
-        Returns:
-            Any: A 2D NumPy array over the DataFrame.
-        """
+        """Return a 2D NumPy array over the DataFrame."""
         return self.data.values
 
     def get_dtypes(self) -> dict[str, str]:
-        """Return ``{column: dtype_string}`` for every column.
-
-        Returns:
-            dict[str, str]: Stringified pandas dtypes.
-        """
+        """Return ``{column: dtype_string}`` for every column."""
         return {col: str(dtype) for col, dtype in self.data.dtypes.items()}
 
     def get_numeric_columns(self) -> list[str]:
-        """Return columns whose dtype is a NumPy numeric type.
-
-        Returns:
-            list[str]: Numeric column names.
-        """
+        """Return columns whose dtype is a NumPy numeric type."""
         import numpy as np
 
         return self.data.select_dtypes(include=[np.number]).columns.tolist()
 
     def get_categorical_columns(self) -> list[str]:
-        """Return columns with ``object`` or ``category`` dtype.
-
-        Returns:
-            list[str]: Categorical column names.
-        """
+        """Return columns with ``object`` or ``category`` dtype."""
         return self.data.select_dtypes(include=["object", "category"]).columns.tolist()
 
 
@@ -359,9 +291,12 @@ class NumpyAdapter(DataAdapter):
 
     Args:
         data (Any): A 1D or 2D NumPy array.
-        column_names (list[str] | None): Optional column labels. ``None``
-            triggers the synthesized default; ``[]`` is honoured as an
-            explicit zero-column selection.
+        column_names: Optional column labels. ``None`` triggers the
+            synthesized default; ``[]`` is honoured as an explicit
+            zero-column selection.
+
+    Attributes:
+        column_names: Resolved labels, one per column of the wrapped array.
 
     Raises:
         ValueError: If ``data`` is neither 1D nor 2D.
@@ -380,7 +315,7 @@ class NumpyAdapter(DataAdapter):
         elif data.ndim == 2:
             n_cols = data.shape[1]
             # When the caller asks for zero columns (column_names=[]), a 2D
-            # (n,0) array is the correct empty representation — honour it.
+            # (n,0) array is the correct empty representation, so honour it.
             if column_names is not None and not column_names and n_cols == 0:
                 self.column_names = []
             else:
@@ -389,11 +324,7 @@ class NumpyAdapter(DataAdapter):
             raise ValueError("NumPy adapter only supports 1D or 2D arrays")
 
     def get_columns(self) -> list[str]:
-        """Return the synthesized or supplied column names.
-
-        Returns:
-            list[str]: Column names.
-        """
+        """Return the synthesized or supplied column names."""
         return self.column_names
 
     def select_columns(self, columns: list[str]) -> NumpyAdapter:
@@ -402,13 +333,6 @@ class NumpyAdapter(DataAdapter):
         For 1D inputs an empty selection reshapes to ``(n, 0)`` rather
         than collapsing to a single ``column_0`` default; for 2D inputs
         unknown column names are silently dropped.
-
-        Args:
-            columns (list[str]): Column names to keep.
-
-        Returns:
-            NumpyAdapter: A new adapter whose array shape matches the
-                selection.
         """
         indices = [self.column_names.index(c) for c in columns if c in self.column_names]
         if self.data.ndim == 1:
@@ -430,9 +354,6 @@ class NumpyAdapter(DataAdapter):
 
         1D inputs report ``(n, 1)`` by default and ``(n, 0)`` when an
         empty ``column_names`` was supplied.
-
-        Returns:
-            tuple[int, int]: Array shape rendered as a tabular shape.
         """
         if self.data.ndim == 1:
             if not self.column_names:
@@ -441,12 +362,7 @@ class NumpyAdapter(DataAdapter):
         return self.data.shape
 
     def to_pandas(self) -> Any:
-        """Wrap the array in a pandas DataFrame.
-
-        Returns:
-            Any: A DataFrame with the synthesized / supplied column
-                names.
-        """
+        """Wrap the array in a pandas DataFrame with the adapter's column names."""
         import pandas as pd
 
         if self.data.ndim == 1:
@@ -454,10 +370,7 @@ class NumpyAdapter(DataAdapter):
         return pd.DataFrame(self.data, columns=self.column_names)
 
     def to_polars(self) -> Any:
-        """Native NumPy → polars conversion (skips the pandas hop).
-
-        Returns:
-            Any: A polars DataFrame.
+        """Convert NumPy to polars natively, skipping the pandas hop.
 
         Raises:
             CirronDependencyError: If polars is not installed.
@@ -468,112 +381,60 @@ class NumpyAdapter(DataAdapter):
         return pl.DataFrame({name: self.data[:, i] for i, name in enumerate(self.column_names)})
 
     def to_numpy(self) -> Any:
-        """Return the underlying array unchanged.
-
-        Returns:
-            Any: ``self.data``.
-        """
+        """Return the underlying array unchanged."""
         return self.data
 
     def get_dtypes(self) -> dict[str, str]:
-        """Return ``{column: dtype_string}`` — every column shares the array's dtype.
-
-        Returns:
-            dict[str, str]: Mapping of every column name to the array's
-                stringified dtype.
-        """
+        """Return ``{column: dtype_string}``; all columns share one dtype."""
         return {col: str(self.data.dtype) for col in self.column_names}
 
     def get_numeric_columns(self) -> list[str]:
-        """Return every column when the array dtype is numeric, else ``[]``.
-
-        Returns:
-            list[str]: Column names if numeric, empty otherwise.
-        """
+        """Return every column when the array dtype is numeric, else ``[]``."""
         import numpy as np
 
         return self.column_names if np.issubdtype(self.data.dtype, np.number) else []
 
     def get_categorical_columns(self) -> list[str]:
-        """Return every column when the array dtype is non-numeric, else ``[]``.
-
-        Returns:
-            list[str]: Column names if non-numeric, empty otherwise.
-        """
+        """Return every column when the array dtype is non-numeric, else ``[]``."""
         import numpy as np
 
         return [] if np.issubdtype(self.data.dtype, np.number) else self.column_names
 
 
 class PolarsAdapter(DataAdapter):
-    """Adapter over ``polars.DataFrame`` — native polars, pandas via ``to_pandas``."""
+    """Adapter over ``polars.DataFrame``; native polars, pandas via ``to_pandas``."""
 
     def get_columns(self) -> list[str]:
-        """Return the polars column names.
-
-        Returns:
-            list[str]: Column names.
-        """
+        """Return the polars column names."""
         return self.data.columns
 
     def select_columns(self, columns: list[str]) -> PolarsAdapter:
-        """Project the frame to ``columns`` (silently dropping unknowns).
-
-        Args:
-            columns (list[str]): Names to keep.
-
-        Returns:
-            PolarsAdapter: Adapter over the projected frame.
-        """
+        """Project the frame to ``columns``, silently dropping unknowns."""
         available = [c for c in columns if c in self.data.columns]
         return PolarsAdapter(self.data.select(available))
 
     def get_shape(self) -> tuple[int, int]:
-        """Return ``(rows, columns)``.
-
-        Returns:
-            tuple[int, int]: Frame shape.
-        """
+        """Return ``(rows, columns)``."""
         return self.data.shape
 
     def to_pandas(self) -> Any:
-        """Convert to a pandas DataFrame via polars' built-in bridge.
-
-        Returns:
-            Any: A pandas DataFrame.
-        """
+        """Convert to a pandas DataFrame via polars' built-in bridge."""
         return self.data.to_pandas()
 
     def to_polars(self) -> Any:
-        """Return the wrapped polars frame unchanged.
-
-        Returns:
-            Any: ``self.data``.
-        """
+        """Return the wrapped polars frame unchanged."""
         return self.data
 
     def to_numpy(self) -> Any:
-        """Convert via polars' native ``to_numpy``.
-
-        Returns:
-            Any: A NumPy array.
-        """
+        """Convert via polars' native ``to_numpy``."""
         return self.data.to_numpy()
 
     def get_dtypes(self) -> dict[str, str]:
-        """Return ``{column: dtype_string}``.
-
-        Returns:
-            dict[str, str]: Stringified polars dtypes.
-        """
+        """Return ``{column: dtype_string}`` for every column."""
         return {col: str(dt) for col, dt in zip(self.data.columns, self.data.dtypes, strict=False)}
 
     def get_numeric_columns(self) -> list[str]:
-        """Return columns whose polars dtype is one of the integer / float types.
-
-        Returns:
-            list[str]: Numeric column names.
-        """
+        """Return columns whose polars dtype is an integer or float type."""
         import polars as pl
 
         numeric_types = [
@@ -595,11 +456,7 @@ class PolarsAdapter(DataAdapter):
         ]
 
     def get_categorical_columns(self) -> list[str]:
-        """Return columns whose polars dtype is ``Utf8`` or ``Categorical``.
-
-        Returns:
-            list[str]: Categorical column names.
-        """
+        """Return columns whose polars dtype is ``Utf8`` or ``Categorical``."""
         import polars as pl
 
         categorical = [pl.Utf8, pl.Categorical]
@@ -614,63 +471,32 @@ class ArrowAdapter(DataAdapter):
     """Adapter over ``pyarrow.Table``."""
 
     def get_columns(self) -> list[str]:
-        """Return the Arrow table's column names.
-
-        Returns:
-            list[str]: Column names.
-        """
+        """Return the Arrow table's column names."""
         return self.data.column_names
 
     def select_columns(self, columns: list[str]) -> ArrowAdapter:
-        """Project the table to ``columns`` (silently dropping unknowns).
-
-        Args:
-            columns (list[str]): Names to keep.
-
-        Returns:
-            ArrowAdapter: Adapter over the projected table.
-        """
+        """Project the table to ``columns``, silently dropping unknowns."""
         available = [c for c in columns if c in self.data.column_names]
         return ArrowAdapter(self.data.select(available))
 
     def get_shape(self) -> tuple[int, int]:
-        """Return ``(rows, columns)``.
-
-        Returns:
-            tuple[int, int]: Table shape.
-        """
+        """Return ``(rows, columns)``."""
         return (self.data.num_rows, self.data.num_columns)
 
     def to_pandas(self) -> Any:
-        """Convert via Arrow's built-in pandas bridge.
-
-        Returns:
-            Any: A pandas DataFrame.
-        """
+        """Convert via Arrow's built-in pandas bridge."""
         return self.data.to_pandas()
 
     def to_numpy(self) -> Any:
-        """Convert by way of pandas (Arrow has no direct 2D NumPy export).
-
-        Returns:
-            Any: A 2D NumPy array.
-        """
+        """Convert by way of pandas, since Arrow has no direct 2D NumPy export."""
         return self.data.to_pandas().values
 
     def get_dtypes(self) -> dict[str, str]:
-        """Return ``{column: arrow_type_string}``.
-
-        Returns:
-            dict[str, str]: Stringified Arrow types.
-        """
+        """Return ``{column: arrow_type_string}`` for every column."""
         return {c: str(self.data.column(c).type) for c in self.data.column_names}
 
     def get_numeric_columns(self) -> list[str]:
-        """Return columns whose Arrow type is integer or floating-point.
-
-        Returns:
-            list[str]: Numeric column names.
-        """
+        """Return columns whose Arrow type is integer or floating-point."""
         import pyarrow as pa
 
         return [
@@ -681,11 +507,7 @@ class ArrowAdapter(DataAdapter):
         ]
 
     def get_categorical_columns(self) -> list[str]:
-        """Return columns whose Arrow type is string or dictionary-encoded.
-
-        Returns:
-            list[str]: Categorical column names.
-        """
+        """Return columns whose Arrow type is string or dictionary-encoded."""
         import pyarrow as pa
 
         return [
@@ -699,7 +521,7 @@ class ArrowAdapter(DataAdapter):
 def create_adapter(data: Any) -> DataAdapter:
     """Create the appropriate adapter for *data*.
 
-    Probes pandas, NumPy, polars, and Arrow in order — the first match
+    Probes pandas, NumPy, polars, and Arrow in order; the first match
     wins. Optional dependencies are skipped silently when not installed.
 
     Args:

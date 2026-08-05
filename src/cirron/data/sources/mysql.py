@@ -3,7 +3,7 @@
 Thin shim over :mod:`cirron.data.sql`: parse the ``mysql://`` URI,
 resolve credentials, connect via ``PyMySQL``, run the composed
 ``SELECT`` through :func:`run_select`. PyMySQL is pure-Python
-(no libmysqlclient build) and works against PlanetScale — the platform
+(no libmysqlclient build) and works against PlanetScale. The platform
 runs MySQL here, so first-class MySQL support is consistent with
  "no new infrastructure".
 """
@@ -36,7 +36,7 @@ class MySqlDataSource(DataSource):
         self.cirron = cirron
 
     def validate(self) -> bool:
-        """Always ``True`` — connection probes are deferred to ``load``.
+        """Always ``True``; connection probes are deferred to ``load``.
 
         Returns:
             bool: ``True``.
@@ -78,10 +78,10 @@ def build_source(uri_str: str, cirron: Cirron, request: LoadRequest | None) -> M
     """Factory used by the load dispatcher.
 
     Args:
-        uri_str (str): The raw ``mysql://...`` URI.
-        cirron (Cirron): Active Cirron instance for credential
+        uri_str: The raw ``mysql://...`` URI.
+        cirron: Active Cirron instance for credential
             resolution.
-        request (LoadRequest | None): Per-call request.
+        request: Per-call request.
 
     Returns:
         MySqlDataSource: A source ready to ``load()``.
