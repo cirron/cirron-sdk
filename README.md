@@ -356,33 +356,6 @@ CIRRON_SAMPLE_MODELS_PATH=/path/to/cirron-sample-models/models \
   uv run pytest tests/unit -v
 ```
 
-### Status
-
-Shipped:
-
-- `ci.profile()` with framework autodetect, `ci.scope` / `ci.mark`, `ci.epochs` / `ci.batches`
-- Flush thread + local spool; HTTP and kernel-event-stream transports
-- Framework hooks for PyTorch, TensorFlow / Keras, HuggingFace `transformers`, and opt-in scikit-learn via `ci.wrap()`
-- Snapshots: `snapshots="stats" | "sampled" | "full"` with safetensors blob upload
-- `@ci.inference` — sync and async, per-request ContextVar isolation, OpenAI / HF LLM detectors with TTFT and throughput marks
-- `ci.env` / `ci.secret`, the `Cirron` config class, and YAML loader
-- `ci.trace()` — in-process scope-tree reader (`tree` / `dict` / `json` / `df` formats, `name=` / `last=` filters, Jupyter-aware rendering)
-- `ci.load()` — local-first dispatcher, explicit `source="platform"`, scheme routing for `s3://` / `gs://` / `azure://` / `file://`, multi-source concat, all five `as_=` return types, `lazy=True`
-- Filesystem filtering: `match=` glob + regex and `ext=` shorthand via `MatchConfig`, with column pushdown to Parquet readers
-- SQL sources: `postgres://` / `mysql://` / `databricks://` / `snowflake://` with `where=` pushdown and a 4-tier credential resolver (URI-inline → platform integrations → `ci.secret` → driver env var)
-- `map=` row-wise transforms at load time, plus `@ci.map` for batch-wise
-- Size-tier guardrails: `<1 GB` silent, `<10 GB` logs a warning with narrowing hints, `≥10 GB` raises `CirronDataSizeError` unless `confirm_large=True` (thresholds configurable via `Cirron(load_warn_bytes=, load_max_bytes=)`)
-- Platform bucket resolver (SDK-side client for `GET /v1/datasets/resolve`)
-- `ci.deps()` — in-process extras check; reports installed versions, or raises `CirronDependencyError` listing every missing dep with a combined `pip install` command
-
-Coming:
-
-- Platform-managed embeddings search (`search=` / `top_k=`)
-
-Platform follow-up (not SDK work):
-
-- `GET /v1/datasets/resolve` and `GET /api/integrations/resolve` endpoints — the SDK clients are in place and fail with a clear fallback message until the backend ships
-
 ## Community
 
 - Questions, design discussions, "is this the right approach": [GitHub Discussions](https://github.com/cirron/cirron-sdk/discussions)
