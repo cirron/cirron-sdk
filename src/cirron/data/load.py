@@ -95,58 +95,18 @@ def load(
 ) -> Any:
     """Load data from local disk, the Cirron platform, or an external URI.
 
-    Args:
-        name (str | list[str]): Dataset name, scheme URI (``s3://``,
-            ``gs://``, ``postgres://``, ...), bare path, or a list of any
-            of these. Lists fan out to parallel loads and concat.
-        source (Source): Resolver hint when ``name`` carries no scheme.
-            ``"local"`` (default) probes the filesystem; ``"platform"``
-            calls the Cirron bucket-listing endpoint. Ignored when ``name``
-            includes a ``scheme://`` — the scheme always wins.
-        match (str | Mapping[str, Any] | None): Glob shorthand
-            (``"*.parquet"``) or a dict with ``path`` / ``filename`` /
-            ``extension`` / ``columns`` keys. Filesystem and platform
-            backends apply this client- and server-side respectively.
-        ext (list[str] | None): Convenience for filtering by extension —
-            equivalent to ``match={"extension": ext}``.
-        columns (list[str] | None): Project to a subset of columns.
-            Pushed to Parquet/SQL readers when supported, applied as a
-            post-load slice otherwise.
-        map (Callable[..., Any] | None): Per-row callable applied
-            post-concat, pre-adapter. Decorate with :func:`cirron.data.transform.map`
-            to flip to batch-wise.
-        where (str | None): SQL ``WHERE`` clause for SQL-scheme sources.
-            Passed through unescaped (caller is querying their own data).
-        search (str | None): Vector-search query. Accepted for forward
-            compatibility but currently raises ``NotImplementedError``.
-        top_k (int | None): Vector-search top-k. Accepted for forward
-            compatibility but currently raises ``NotImplementedError``.
-        as_ (As): Return type — ``"pandas"`` (default), ``"polars"``,
-            ``"iter"``, ``"tensor"``, or ``"hf"``.
-        lazy (bool): Return a :class:`LazyHandle` whose ``.collect()``
-            performs the load.
-        batch_size (int): Iterator batch size when ``as_="iter"``.
-        confirm_large (bool): Bypass the ``load_max_bytes`` guard for the
-            ``≥10 GB`` size tier.
-        cirron (Cirron | None): Override the default ``Cirron`` instance
-            (multi-workspace / test harness use).
+    Implements :func:`cirron.load`; see there for the full parameter
+    reference. Order matters here: every request is validated and rejected
+    before any source is resolved, and the size tier is enforced across all
+    resolved sources before a single byte is fetched.
+
+    The one parameter absent from the public ``ci.load`` signature is
+    ``cirron``, which overrides the default instance. ``Cirron.load`` supplies
+    it so an explicitly-constructed instance governs the size thresholds.
 
     Returns:
-        Any: The materialized dataset shape determined by ``as_=``, or a
+        Any: The materialized dataset, shaped by ``as_=``, or a
             ``LazyHandle`` when ``lazy=True``.
-
-    Raises:
-        ValueError: If ``source`` / ``as_`` is invalid, if ``name`` is
-            empty, or if a URI carries an unknown scheme.
-        NotImplementedError: If ``where=`` is used on a non-SQL source,
-            or if ``search=`` / ``top_k=`` is set (vector index not
-            shipped).
-        CirronDataSizeError: If the resolved source exceeds
-            ``load_max_bytes`` and ``confirm_large=False``.
-        CirronDatasetNotFound: If ``source="platform"`` and the named
-            bucket isn't registered in the workspace.
-        CirronPlatformRequired: If platform resolution is needed but
-            credentials are absent or the API is unreachable.
     """
     if source not in _VALID_SOURCES:
         raise ValueError(f"source must be one of {_VALID_SOURCES}, got {source!r}")

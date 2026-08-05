@@ -506,41 +506,37 @@ def profile(
 ) -> Profiler:
     """Attach the profiler to the current process.
 
-    Idempotent — a second call logs a warning and returns the existing
-    ``Profiler``. Effective kwarg defaults are ``snapshots="stats"``,
-    ``sample_rate=0.01``, ``flush_interval=1.0`` (applied inside
-    :meth:`Cirron.profile`). Precedence when resolving: explicit kwargs
-    > ``config`` dict > ``cirron.yaml`` profiling section > hardcoded
-    defaults.
+    Implements :func:`cirron.profile`; see there for the full parameter
+    reference. Idempotent under the module lock: a second call logs a warning
+    and returns the existing singleton without re-resolving config or
+    reinstalling hooks. Order matters here. ``output=`` is normalized before
+    any hook is installed or any transport is selected, so a call naming an
+    unknown sink raises ``ValueError`` having left no side effects behind.
 
-    ``enabled=False`` returns a disabled handle — no transport, no flush
-    thread, no root scope. ``ci.scope()`` and ``ci.mark()`` still work
-    (they operate on the process-wide buffers) but nothing is flushed.
+    Resolution precedence is explicit kwargs > ``config`` dict >
+    ``cirron.yaml`` profiling section > the owning instance's defaults, and it
+    runs through :meth:`Cirron._resolve_profile_config`, which mutates that
+    instance's ``snapshots`` / ``sample_rate`` / ``flush_interval`` so
+    downstream hooks read the effective values. A successful enabled call also
+    installs framework hooks, starts the flush thread, opens the
+    ``cirron.session`` root scope, points the ``ci.mark`` fallback span id at
+    it, and registers an ``atexit`` handler that clears the singleton. A
+    caller already at ``MAX_DEPTH`` gets a warning and a session without a root
+    span rather than a failure.
 
-    Args:
-        config (dict[str, Any] | None): Inline profiling-section dict,
-            same shape as the ``profiling:`` block in ``cirron.yaml``.
-        frameworks (list[str] | None): Subset of frameworks to instrument.
-            ``None`` means autodetect; ``[]`` means install nothing.
-        snapshots (Literal["stats", "sampled", "full"] | None): Snapshot
-            policy for epoch boundaries.
-        sample_rate (float | None): Per-epoch probability for the
-            ``"sampled"`` policy.
-        flush_interval (float | None): Seconds between background spool
-            flushes.
-        enabled (bool): When ``False``, returns a no-op ``Profiler`` and
-            installs no hooks.
-        path (str | None): Override ``cirron.yaml`` discovery path.
-        output (str | list[str] | None): Sink selection (``"spool"``,
-            ``"stream"``, ``"both"``, or a list).
-        cirron (Cirron | None): Owning ``Cirron`` instance. Defaults to
-            the process-wide singleton via ``get_default()``.
+    ``enabled=False`` short-circuits all of that and returns a disabled handle
+    with no transport, no flush thread, and no root scope. ``ci.scope()`` and
+    ``ci.mark()`` still work against the process-wide buffers, but nothing is
+    flushed.
+
+    The one parameter absent from the public ``ci.profile`` signature is
+    ``cirron``, the owning instance. It defaults to the process-wide singleton
+    via ``get_default()``; :meth:`Cirron.profile` supplies it so an
+    explicitly-constructed instance governs transport selection and spool
+    location.
 
     Returns:
         Profiler: The shared profiler singleton.
-
-    Raises:
-        ValueError: When ``output=`` resolves to an unknown sink name.
     """
     global _profiler, _atexit_registered
     with _profiler_lock:

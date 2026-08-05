@@ -536,28 +536,12 @@ class Cirron:
     ) -> Profiler:
         """Attach the profiler using this ``Cirron`` instance's config.
 
-        Delegates to :func:`cirron.core.profiler.profile` with
-        ``cirron=self`` — the instance's ``api_endpoint``, ``api_key``,
-        ``output_dir``, ``spool_max_bytes``, and ``ingest_path`` drive
-        transport selection and spool location. Returns the shared
-        ``Profiler`` singleton ; idempotent on repeat calls.
-
-        Args:
-            config (dict[str, Any] | None): Inline profiling-section dict.
-            frameworks (list[str] | None): Subset of frameworks to
-                instrument; ``None`` autodetects.
-            snapshots (Literal["stats", "sampled", "full"] | None):
-                Snapshot policy override.
-            sample_rate (float | None): Per-epoch probability for the
-                ``"sampled"`` policy.
-            flush_interval (float | None): Seconds between background
-                spool flushes.
-            enabled (bool): When ``False``, returns a no-op profiler.
-            path (str | None): Override ``cirron.yaml`` discovery path.
-            output (str | list[str] | None): Sink selection.
-
-        Returns:
-            Profiler: The shared profiler singleton.
+        The one method here that is not a pure delegator: it passes
+        ``cirron=self`` to :func:`cirron.core.profiler.profile`, so the
+        instance's ``api_endpoint``, ``api_key``, ``output_dir``,
+        ``spool_max_bytes``, and ``ingest_path`` drive transport selection and
+        spool location. Mirrors :func:`cirron.profile`; see there for the full
+        parameter reference.
         """
         from cirron.core.profiler import profile as _profile
 
@@ -668,19 +652,9 @@ class Cirron:
     ) -> Any:
         """Open a span on the calling thread.
 
-        Thin delegator to :func:`cirron.core.scope.scope`. The scope stack
-        is process-wide, so the result is identical to ``ci.scope(...)``.
-
-        Args:
-            name (str): Span name shown in the trace tree.
-            index (int | None): Optional positional index (e.g. epoch /
-                batch number).
-            **attrs (Any): Arbitrary key/value metadata attached to the
-                span as ``span.attrs[key] = value``.
-
-        Returns:
-            Any: A context manager whose ``__enter__`` returns the
-                ``Scope`` instance.
+        The scope stack is process-wide, so an explicitly-constructed
+        ``Cirron`` pushes onto the same stack as ``ci.scope``. Mirrors
+        :func:`cirron.scope`; see there for the full parameter reference.
         """
         from cirron.core.scope import scope as _scope
 
@@ -694,14 +668,9 @@ class Cirron:
     ) -> None:
         """Record a metric mark on the current scope.
 
-        Thin delegator to :func:`cirron.core.mark.mark`.
-
-        Args:
-            name (str): Metric name (e.g. ``"loss"``, ``"lr"``).
-            value (float | int | str | bool): Metric value; numeric values
-                are preferred for downstream aggregation.
-            **attrs (Any): Optional metadata. The reserved ``kind`` key
-                accepts ``"point"`` (default) or ``"summary"``.
+        The mark buffer is process-wide, so an explicitly-constructed
+        ``Cirron`` records exactly what ``ci.mark`` would. Mirrors
+        :func:`cirron.mark`; see there for the full parameter reference.
         """
         from cirron.core.mark import mark as _mark
 
@@ -710,13 +679,8 @@ class Cirron:
     def epochs(self, iterable: Iterable[Any]) -> Iterator[Any]:
         """Wrap a training iterable so each item runs inside an ``epoch`` scope.
 
-        Args:
-            iterable (Iterable[Any]): Source iterable, typically
-                ``range(n_epochs)`` or an enumerable dataset.
-
-        Yields:
-            Any: Each item from ``iterable`` unchanged; the wrapper opens
-                an ``epoch`` scope before yielding and closes it after.
+        Mirrors :func:`cirron.epochs`; see there for the full parameter
+        reference.
         """
         from cirron.core.wrappers import epochs as _epochs
 
@@ -725,12 +689,8 @@ class Cirron:
     def batches(self, iterable: Iterable[Any]) -> Iterator[Any]:
         """Wrap a batch iterable so each item runs inside a ``batch`` scope.
 
-        Args:
-            iterable (Iterable[Any]): Batch-yielding iterable; DataLoader
-                instances also get ``data_load_ns`` stall attribution.
-
-        Yields:
-            Any: Each batch from ``iterable`` unchanged.
+        Mirrors :func:`cirron.batches`; see there for the full parameter
+        reference.
         """
         from cirron.core.wrappers import batches as _batches
 
@@ -739,12 +699,7 @@ class Cirron:
     def env(self, key: str, default: Any = None) -> Any:
         """Read an environment variable through the SDK's ``.env``-aware loader.
 
-        Args:
-            key (str): Environment variable name.
-            default (Any): Returned when ``key`` is absent or empty.
-
-        Returns:
-            Any: The variable's string value if set, otherwise ``default``.
+        Mirrors :func:`cirron.env`; see there for the full parameter reference.
         """
         from cirron.core.env import env as _env
 
@@ -753,37 +708,21 @@ class Cirron:
     def secret(self, name: str) -> str:
         """Resolve a named secret via the platform secrets API or local fallback.
 
-        Args:
-            name (str): Logical secret name (e.g. ``"openai-api-key"``).
-
-        Returns:
-            str: The resolved secret value.
-
-        Raises:
-            CirronSecretNotFound: If neither the platform credential nor a
-                ``CIRRON_SECRET_<NAME>`` env var resolves.
+        Resolution reads process-wide env vars and file mounts, so this
+        instance's ``api_key`` and ``workspace_id`` do not change the result.
+        Mirrors :func:`cirron.secret`; see there for the full parameter
+        reference.
         """
         from cirron.secrets.client import secret as _secret
 
         return _secret(name)
 
     def load(self, *args: Any, **kwargs: Any) -> Any:
-        """Load a dataset by name, URI, or list of URIs.
+        """Load a dataset using this instance's size thresholds.
 
-        Sets ``cirron=self`` on the underlying ``ci.load`` call so the
-        instance's ``load_warn_bytes`` / ``load_max_bytes`` thresholds
-        govern the size-tier guard.
-
-        Args:
-            *args (Any): Positional arguments forwarded to
-                :func:`cirron.data.load.load`.
-            **kwargs (Any): Keyword arguments forwarded to
-                :func:`cirron.data.load.load`. ``cirron`` defaults to
-                ``self`` when not provided.
-
-        Returns:
-            Any: The materialized dataset (DataFrame / iterator / handle),
-                shape determined by ``as_=``.
+        Passes ``cirron=self`` so the instance's ``load_warn_bytes`` and
+        ``load_max_bytes`` govern the size-tier guard. Mirrors
+        :func:`cirron.load`; see there for the full parameter reference.
         """
         from cirron.data.load import load as _load
 
@@ -798,18 +737,8 @@ class Cirron:
     ) -> Callable[..., Any]:
         """Wrap an inference function so each call records a span and metrics.
 
-        Usable bare (``@ci.inference``) or with config
-        (``@ci.inference(config={...})``).
-
-        Args:
-            fn (Callable[..., Any] | None): The inference function;
-                populated automatically by the bare-decorator form.
-            config (dict[str, Any] | None): Per-call configuration map
-                read by the LLM helper for provider / model overrides.
-
-        Returns:
-            Callable[..., Any]: The wrapped function, or a decorator
-                awaiting ``fn`` when called with ``fn=None``.
+        Mirrors :func:`cirron.inference`; see there for the full parameter
+        reference.
         """
         from cirron.inference.decorator import inference as _inference
 
@@ -818,13 +747,8 @@ class Cirron:
     def wrap(self, estimator: Any) -> Any:
         """Instrument an estimator (currently sklearn-only).
 
-        Args:
-            estimator (Any): An sklearn estimator or pipeline; other
-                objects are returned unchanged.
-
-        Returns:
-            Any: A scope-aware proxy around ``estimator``, or the
-                original object when no instrumentation applies.
+        Mirrors :func:`cirron.wrap`; see there for the full parameter
+        reference.
         """
         from cirron.hooks.sklearn import wrap as _wrap
 

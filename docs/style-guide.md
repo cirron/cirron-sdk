@@ -35,6 +35,10 @@ Comments should read as narrative text rather than as fragments.
   what `help()` and IDE hover resolve to. Layers below it get a summary plus
   ``Mirrors :func:`cirron.<name>`.`` and no `Args:`/`Returns:`/`Raises:` block.
   Never copy a parameter table into two files.
+- **No partial `Args:` blocks.** `D417` requires that a docstring with an
+  `Args:` section document *every* parameter, so an implementation layer that
+  wants to note one extra argument describes it in prose rather than opening a
+  block listing only that one.
 - `Examples:` uses a plain indented code block. **No `>>>` prompts**, because we
   do not run doctests and a prompt CI never executes will rot.
 - Prose wraps at 88 columns (`W505`). House markup: ``double backticks`` for
