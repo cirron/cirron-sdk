@@ -221,7 +221,7 @@ handle = ci.load("./events.parquet", lazy=True)          # LazyHandle; call hand
 df = ci.load("embeddings", source="platform", search="billing complaints", top_k=50)
 ```
 
-**Size guardrails.** Before downloading anything, `ci.load()` sums the matched bytes. Over 1 GB logs a warning with narrowing hints; over 10 GB raises `CirronDataSizeError` unless you pass `confirm_large=True`. The thresholds live on the `Cirron` instance:
+**Size guardrails.** Before downloading anything, `ci.load()` sums the matched bytes. Over 1 GB logs a warning with narrowing hints; over 10 GB raises `CirronDataSizeError` unless you pass `confirm_large=True`. SQL sources are the exception: a result set cannot be sized without running the query, so the guard does not apply and you bound the load with `LIMIT` or `where=` instead. The thresholds live on the `Cirron` instance:
 
 ```python
 from cirron import Cirron
@@ -312,6 +312,8 @@ df = c.load("training-data")
 
 The same pattern applies for running against multiple workspaces or control planes from one process.
 
+What varies per instance is configuration: endpoint, credentials, output directory, and the size thresholds. Instrumentation state does not. The scope stack, mark buffer, `ci.trace()` ring, and flush thread are process-wide singletons shared by every instance, so separate instances point at different backends rather than isolating two concurrent trace trees.
+
 ## Framework support
 
 | Framework            | Profiling | Snapshots | Notes                                |
@@ -349,6 +351,8 @@ uv run ruff format --check src tests
 uv run mypy src                  # typecheck
 ```
 
+Comment and docstring conventions live in [`docs/style-guide.md`](docs/style-guide.md). `ruff` enforces the mechanical half through its `D` rules, so `ruff check` will tell you about most violations before review does.
+
 Cross-validate the Pydantic model against a real `cirron-sample-models` checkout:
 
 ```bash
@@ -366,6 +370,8 @@ CIRRON_SAMPLE_MODELS_PATH=/path/to/cirron-sample-models/models \
 ## Further reading
 
 - Platform documentation: [docs.cirron.com](https://docs.cirron.com)
+- [`docs/spool-format.md`](docs/spool-format.md): the local spool format, which is public API
+- [`docs/style-guide.md`](docs/style-guide.md): comment and docstring conventions
 - Pipelines: how `ci.profile()` context is injected
 - Deployments: how `@ci.inference` binds to deployment records
 - Self-hosted and air-gapped installations
