@@ -17,8 +17,8 @@ jobs:
     timeout-minutes: 10
     if: ${{ github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'skip-ci') }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
       - uses: astral-sh/setup-uv@v7
@@ -31,8 +31,8 @@ jobs:
     timeout-minutes: 10
     if: ${{ github.event_name != 'pull_request' || !contains(github.event.pull_request.labels.*.name, 'skip-ci') }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
       - uses: astral-sh/setup-uv@v7
@@ -65,8 +65,8 @@ jobs:
               --extra s3 --extra gcs --extra azure
               --extra postgres --extra mysql
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
       - uses: astral-sh/setup-uv@v7
@@ -99,8 +99,8 @@ jobs:
       TORCH_VERSION: ${{ matrix.torch-version }}
       UV_PYTHON: ${{ matrix.python-version }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
       - uses: astral-sh/setup-uv@v7
@@ -128,8 +128,8 @@ jobs:
       TF_VERSION: ${{ matrix.tf-version }}
       UV_PYTHON: ${{ matrix.python-version }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
       - uses: astral-sh/setup-uv@v7
@@ -155,8 +155,8 @@ jobs:
       TRANSFORMERS_VERSION: ${{ matrix.transformers-version }}
       UV_PYTHON: ${{ matrix.python-version }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
       - uses: astral-sh/setup-uv@v7
@@ -181,8 +181,8 @@ jobs:
       CIRRON_OVERHEAD_RESULTS: tests/overhead/results/ci.json
       GIT_SHA: ${{ github.sha }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
       - uses: astral-sh/setup-uv@v7
@@ -192,7 +192,7 @@ jobs:
       # deps this job doesn't use.
       - run: uv sync --extra torch --extra overhead
       - run: uv run pytest tests/overhead -v --tb=short
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: overhead-${{ env.GIT_SHA }}
