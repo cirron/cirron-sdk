@@ -176,6 +176,56 @@ class TestParseSqlUri:
             parse_sql_uri("host/table")
 
 
+class TestParseErrorRedaction:
+    """Malformed URIs must not echo inline credentials into the message.
+
+    ``ci.load()`` supports ``postgres://user:pw@host/db/table``, and these
+    ValueErrors propagate uncaught to the caller, so an unredacted message
+    writes a plaintext password into stdout, training logs, and any crash
+    reporter that records exception strings.
+    """
+
+    @pytest.mark.parametrize(
+        ("uri", "host"),
+        [
+            ("postgres://alice:s3cret@db:5432", "db"),
+            ("postgres://alice:s3cret@db/a/b/c/d", "db"),
+            ("mysql://alice:s3cret@db/app/.events", "db"),
+            ("snowflake://alice:s3cret@acct", "acct"),
+        ],
+    )
+    def test_parse_error_redacts_password(self, uri, host):
+        with pytest.raises(ValueError) as exc:
+            parse_sql_uri(uri)
+        message = str(exc.value)
+        assert "s3cret" not in message, "password leaked into the error message"
+        assert "alice" not in message, "username leaked into the error message"
+        assert host in message, "message must keep the host to stay actionable"
+
+    def test_redact_uri_passthrough(self):
+        # No userinfo means nothing to strip, and the string is returned
+        # untouched rather than round-tripped through urlunsplit.
+        uri = "postgres://db:5432/app/events"
+        assert sql_mod._redact_uri(uri) is uri
+
+    def test_redact_uri_keeps_host_port_and_path(self):
+        assert (
+            sql_mod._redact_uri("postgres://alice:s3cret@db:5432/app/events")
+            == "postgres://db:5432/app/events"
+        )
+
+    def test_redact_uri_strips_userinfo_without_password(self):
+        assert sql_mod._redact_uri("mysql://alice@db/app/orders") == "mysql://db/app/orders"
+
+    def test_redact_uri_handles_at_sign_inside_password(self):
+        # rsplit on the last '@' is what makes this work: an unescaped '@'
+        # in the password would otherwise leave the tail of it behind.
+        assert (
+            sql_mod._redact_uri("postgres://alice:p@ss@db:5432/app/events")
+            == "postgres://db:5432/app/events"
+        )
+
+
 # query composition
 
 
