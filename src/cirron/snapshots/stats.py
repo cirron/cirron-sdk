@@ -280,13 +280,21 @@ def _tensor_stats_torch(tensor: Any) -> dict[str, Any]:
     if hist_range is None:
         return {"mean": mean, "std": std, "min": lo, "max": hi, "norm": norm}
     hist_lo, hist_hi = hist_range
-    # Tiny tensors (under 2x bins) can't meaningfully fill 16 buckets, so
-    # they skip ``torch.histc`` and take a single-bucket histogram rather
-    # than pay the dispatch. ResNet50's 64/128/256-long BN tensors still
-    # take the full path; only shapes like ``[1]`` and ``[]`` short-circuit.
+    # Only a single-element tensor skips ``torch.histc``, because that is
+    # the one case where the answer is exactly bin 0 without binning: the
+    # lone value sits at ``lo``, and ``_histogram_range`` has already
+    # widened ``lo == hi`` to ``(lo, lo + 1.0)``. ``numel() == 0`` never
+    # reaches here -- empty tensors returned ``_empty_stats()`` above.
+    #
+    # This used to short-circuit everything under ``2 * HISTOGRAM_BINS``,
+    # which put all 2..31-element tensors in bin 0 regardless of their real
+    # distribution. Bias vectors and LayerNorm/BatchNorm scale+shift
+    # tensors are routinely that size, so their histograms rendered as a
+    # spike at the left edge -- and the numpy kernel, which has no such
+    # branch, disagreed with torch on the very same tensor.
     step = (hist_hi - hist_lo) / HISTOGRAM_BINS
     bins = [hist_lo + step * i for i in range(HISTOGRAM_BINS + 1)]
-    if flat.numel() < HISTOGRAM_BINS * 2:
+    if flat.numel() < 2:
         counts = [int(flat.numel())] + [0] * (HISTOGRAM_BINS - 1)
     else:
         counts_t = torch.histc(flat, bins=HISTOGRAM_BINS, min=hist_lo, max=hist_hi)

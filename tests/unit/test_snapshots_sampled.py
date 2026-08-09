@@ -15,13 +15,14 @@ import logging
 import random
 from typing import Any
 
-import numpy as np
 import pytest
 
-from cirron.core import blob_queue
-from cirron.core.errors import CirronDependencyError
-from cirron.snapshots import blob as blob_mod
-from cirron.snapshots.stats import capture
+np = pytest.importorskip("numpy")
+
+from cirron.core import blob_queue  # noqa: E402
+from cirron.core.errors import CirronDependencyError  # noqa: E402
+from cirron.snapshots import blob as blob_mod  # noqa: E402
+from cirron.snapshots.stats import capture  # noqa: E402
 
 
 class _FakeTensor:

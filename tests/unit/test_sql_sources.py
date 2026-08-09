@@ -3,9 +3,15 @@
 Covers the shared :mod:`cirron.data.sql` helpers (URI parsing,
 credential resolution, query composition) and the per-driver source
 shims (postgres, mysql, databricks, snowflake). All driver tests mock
-the underlying driver so the suite runs with zero optional deps
+the underlying driver, so none of the four SQL extras need to be
 installed, and the "missing driver raises CirronDependencyError" path is
-also exercised explicitly.
+exercised explicitly.
+
+``pandas`` is the one optional dependency this module genuinely needs:
+``execute_to_pandas`` returns a DataFrame, so the assertions read one.
+It is guarded with ``importorskip`` below, which skips the whole module
+on a clean ``uv sync`` rather than failing collection for the entire
+unit tier.
 """
 
 from __future__ import annotations
@@ -15,15 +21,16 @@ import types
 import urllib.error
 from typing import Any
 
-import pandas as pd
 import pytest
 
-from cirron import Cirron
-from cirron.core import config as _config_mod
-from cirron.core.errors import CirronDependencyError, CirronPlatformRequired
-from cirron.data import sql as sql_mod
-from cirron.data.load import LoadRequest
-from cirron.data.sql import (
+pd = pytest.importorskip("pandas")
+
+from cirron import Cirron  # noqa: E402
+from cirron.core import config as _config_mod  # noqa: E402
+from cirron.core.errors import CirronDependencyError, CirronPlatformRequired  # noqa: E402
+from cirron.data import sql as sql_mod  # noqa: E402
+from cirron.data.load import LoadRequest  # noqa: E402
+from cirron.data.sql import (  # noqa: E402
     CredentialResolver,
     SqlCredentials,
     SqlUri,
@@ -167,6 +174,93 @@ class TestParseSqlUri:
     def test_missing_scheme_raises(self):
         with pytest.raises(ValueError, match="missing scheme"):
             parse_sql_uri("host/table")
+
+
+class TestParseErrorRedaction:
+    """Malformed URIs must not echo inline credentials into the message.
+
+    ``ci.load()`` supports ``postgres://user:pw@host/db/table``, and these
+    ValueErrors propagate uncaught to the caller, so an unredacted message
+    writes a plaintext password into stdout, training logs, and any crash
+    reporter that records exception strings.
+    """
+
+    @pytest.mark.parametrize(
+        ("uri", "host"),
+        [
+            ("postgres://alice:s3cret@db:5432", "db"),
+            ("postgres://alice:s3cret@db/a/b/c/d", "db"),
+            ("mysql://alice:s3cret@db/app/.events", "db"),
+            ("snowflake://alice:s3cret@acct", "acct"),
+            # Malformed authorities: urlsplit leaves netloc empty and puts
+            # the credentials in path, so a netloc-only redactor misses
+            # them. Both of these reach a raise site.
+            ("postgres:alice:s3cret@db/a/b/c/d", "db"),  # no "//"
+            ("://alice:s3cret@db/x", "db"),  # no scheme either
+        ],
+    )
+    def test_parse_error_redacts_password(self, uri, host):
+        with pytest.raises(ValueError) as exc:
+            parse_sql_uri(uri)
+        message = str(exc.value)
+        assert "s3cret" not in message, "password leaked into the error message"
+        assert "alice" not in message, "username leaked into the error message"
+        assert host in message, "message must keep the host to stay actionable"
+
+    def test_redact_uri_passthrough(self):
+        # No userinfo means nothing to strip, and the string is returned
+        # untouched rather than round-tripped through urlunsplit.
+        uri = "postgres://db:5432/app/events"
+        assert sql_mod._redact_uri(uri) is uri
+
+    def test_redact_uri_keeps_host_port_and_path(self):
+        assert (
+            sql_mod._redact_uri("postgres://alice:s3cret@db:5432/app/events")
+            == "postgres://db:5432/app/events"
+        )
+
+    def test_redact_uri_strips_userinfo_without_password(self):
+        assert sql_mod._redact_uri("mysql://alice@db/app/orders") == "mysql://db/app/orders"
+
+    def test_redact_uri_handles_at_sign_inside_password(self):
+        # rsplit on the last '@' is what makes this work: an unescaped '@'
+        # in the password would otherwise leave the tail of it behind.
+        assert (
+            sql_mod._redact_uri("postgres://alice:p@ss@db:5432/app/events")
+            == "postgres://db:5432/app/events"
+        )
+
+    @pytest.mark.parametrize(
+        ("uri", "expected"),
+        [
+            # Missing "//": the whole authority lands in path, not netloc.
+            ("postgres:alice:s3cret@db/a/b/c/d", "postgres:db/a/b/c/d"),
+            ("mysql:alice:s3cret@db/a/b/c/d", "mysql:db/a/b/c/d"),
+            ("postgres:alice@db/a/b/c/d", "postgres:db/a/b/c/d"),
+            ("postgres:alice:p@ss@db/a/b/c/d", "postgres:db/a/b/c/d"),
+            # Missing scheme as well.
+            ("://alice:s3cret@db/x", "://db/x"),
+            ("//alice:s3cret@db/x", "//db/x"),
+            # Authority with no path after it.
+            ("postgres:alice:s3cret@db", "postgres:db"),
+        ],
+    )
+    def test_redact_uri_handles_malformed_authority(self, uri, expected):
+        assert sql_mod._redact_uri(uri) == expected
+
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            "postgres://db:5432/app/events",
+            "postgres:///a/b/c/d",
+            "host/table",
+            "postgres://db/app/events?sslmode=require",
+        ],
+    )
+    def test_redact_uri_leaves_credential_free_uris_alone(self, uri):
+        # The malformed-authority fallback must not rewrite URIs that
+        # carry no userinfo at all.
+        assert sql_mod._redact_uri(uri) is uri
 
 
 # query composition

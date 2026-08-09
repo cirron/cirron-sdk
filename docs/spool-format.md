@@ -219,6 +219,20 @@ which records the affected `min` / `max`, or a `"histogram"` entry when
 the histogram alone was unusable. When `histogram` is present it always
 has exactly 17 `bins` and 16 `counts`, as before.
 
+**Small-tensor `counts` changed value (no schema change).** Tensors with
+2 to 31 elements previously reported every value in `counts[0]` on the torch
+backend, which short-circuited binning for anything under `2 × 16`
+elements. Those counts were fabricated: bias vectors and LayerNorm /
+BatchNorm scale+shift tensors are routinely that size, and their
+histograms rendered as a spike at the left edge regardless of the real
+distribution. The numpy backend never had that branch, so the two
+disagreed on the same tensor. Every tensor with 2 or more elements is now
+really binned, and the backends agree. Only single-element tensors still
+short-circuit, where `counts[0] == 1` is exact. `bins` is unaffected, and
+the 17/16 lengths are unchanged. Consumers that only read lengths see
+nothing new; consumers that charted small-tensor distributions will see
+correct shapes where they previously saw a left-edge spike.
+
 Sampled and full write **one safetensors file per (span, kind)** — all
 weight tensors into `./.cirron/snapshots/<span_id>/weights.safetensors`
 and all gradient tensors into `./.cirron/snapshots/<span_id>/gradients.safetensors`.
@@ -319,3 +333,10 @@ than behind a bump, because the SDK is pre-stable and the records they
 affect are records whose files did not parse at all beforehand, so no
 working reader could regress. Once the SDK reaches 1.0, changes of this
 shape take a bump.
+
+Separately, `snapshots[].stats.histogram.counts` changed *values*, not its
+type, length, or presence rule, for tensors of 2 to 31 elements, which
+previously received a fabricated all-in-bin-0 histogram on the torch
+backend. See "Small-tensor `counts` changed value" above. No reader needs
+to change; readers that cached or diffed those counts across SDK versions
+will see a one-time correction.

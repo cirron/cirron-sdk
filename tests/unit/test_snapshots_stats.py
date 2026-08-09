@@ -16,14 +16,15 @@ from __future__ import annotations
 import math
 from typing import Any
 
-import numpy as np
 import pytest
 
-from cirron.core.flush import FlushThread, SpoolWriter
-from cirron.core.mark import MarkBuffer
-from cirron.core.scope import ScopeStack
-from cirron.core.snapshot_buffer import SnapshotBuffer
-from cirron.snapshots.stats import (
+np = pytest.importorskip("numpy")
+
+from cirron.core.flush import FlushThread, SpoolWriter  # noqa: E402
+from cirron.core.mark import MarkBuffer  # noqa: E402
+from cirron.core.scope import ScopeStack  # noqa: E402
+from cirron.core.snapshot_buffer import SnapshotBuffer  # noqa: E402
+from cirron.snapshots.stats import (  # noqa: E402
     HISTOGRAM_BINS,
     _tensor_stats,
     capture,
@@ -343,7 +344,7 @@ def test_torch_and_numpy_agree_on_nonfinite_stats():
 
 
 def test_large_nonfinite_torch_tensor_omits_histogram():
-    # >= 2*bins elements takes the torch.histc branch, which raises on a
+    # 2+ elements takes the torch.histc branch, which raises on a
     # non-finite range rather than returning garbage.
     torch = pytest.importorskip("torch")
     from cirron.snapshots.stats import _tensor_stats_torch
@@ -351,3 +352,49 @@ def test_large_nonfinite_torch_tensor_omits_histogram():
     stats = _tensor_stats_torch(torch.full((100,), float("nan")))
     assert "histogram" not in stats
     assert math.isnan(stats["mean"])
+
+
+# small-tensor histograms
+
+
+def test_small_tensor_histogram_is_real():
+    # The torch kernel used to skip torch.histc for anything under
+    # 2 * HISTOGRAM_BINS and report every value in bin 0. Bias vectors and
+    # BatchNorm scale/shift tensors land in that range constantly, so their
+    # histograms were a fabricated spike at the left edge.
+    torch = pytest.importorskip("torch")
+    from cirron.snapshots.stats import _tensor_stats_torch
+
+    values = [i / 9.0 for i in range(10)]  # 10 values evenly spread over [0, 1]
+    counts = _tensor_stats_torch(torch.tensor(values))["histogram"]["counts"]
+
+    assert sum(counts) == 10
+    assert counts != [10] + [0] * (HISTOGRAM_BINS - 1), "values were fabricated into bin 0"
+    assert sum(1 for c in counts if c) > 1, "a spread tensor must occupy multiple bins"
+
+
+def test_torch_and_numpy_small_tensor_parity():
+    # Same 10 values, both kernels: the numpy kernel never had the
+    # short-circuit, so the two backends disagreed structurally on every
+    # 2..31-element tensor.
+    torch = pytest.importorskip("torch")
+    from cirron.snapshots.stats import _tensor_stats_numpy, _tensor_stats_torch
+
+    values = [i / 9.0 for i in range(10)]
+    t_stats = _tensor_stats_torch(torch.tensor(values, dtype=torch.float64))
+    n_stats = _tensor_stats_numpy(np.array(values, dtype=np.float64))
+
+    assert t_stats["histogram"]["counts"] == n_stats["histogram"]["counts"]
+    assert t_stats["histogram"]["bins"] == pytest.approx(n_stats["histogram"]["bins"])
+
+
+def test_single_element_tensor_still_short_circuits():
+    # The one case the shortcut still covers, and the one case where
+    # all-in-bin-0 is exactly right: the lone value sits at ``lo``.
+    torch = pytest.importorskip("torch")
+    from cirron.snapshots.stats import _tensor_stats_torch
+
+    stats = _tensor_stats_torch(torch.tensor([4.0]))
+    assert stats["histogram"]["counts"] == [1] + [0] * (HISTOGRAM_BINS - 1)
+    assert stats["min"] == 4.0
+    assert stats["max"] == 4.0
