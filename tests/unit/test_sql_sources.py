@@ -3,9 +3,15 @@
 Covers the shared :mod:`cirron.data.sql` helpers (URI parsing,
 credential resolution, query composition) and the per-driver source
 shims (postgres, mysql, databricks, snowflake). All driver tests mock
-the underlying driver so the suite runs with zero optional deps
+the underlying driver, so none of the four SQL extras need to be
 installed, and the "missing driver raises CirronDependencyError" path is
-also exercised explicitly.
+exercised explicitly.
+
+``pandas`` is the one optional dependency this module genuinely needs:
+``execute_to_pandas`` returns a DataFrame, so the assertions read one.
+It is guarded with ``importorskip`` below, which skips the whole module
+on a clean ``uv sync`` rather than failing collection for the entire
+unit tier.
 """
 
 from __future__ import annotations
