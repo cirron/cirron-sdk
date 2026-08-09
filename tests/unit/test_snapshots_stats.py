@@ -344,8 +344,8 @@ def test_torch_and_numpy_agree_on_nonfinite_stats():
 
 
 def test_large_nonfinite_torch_tensor_omits_histogram():
-    # 2+ elements takes the torch.histc branch, which raises on a
-    # non-finite range rather than returning garbage.
+    # A tensor with 2 or more elements takes the torch.histc branch,
+    # which raises on a non-finite range rather than returning garbage.
     torch = pytest.importorskip("torch")
     from cirron.snapshots.stats import _tensor_stats_torch
 

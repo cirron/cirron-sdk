@@ -7,11 +7,12 @@ the underlying driver, so none of the four SQL extras need to be
 installed, and the "missing driver raises CirronDependencyError" path is
 exercised explicitly.
 
-``pandas`` is the one optional dependency this module genuinely needs:
-``execute_to_pandas`` returns a DataFrame, so the assertions read one.
-It is guarded with ``importorskip`` below, which skips the whole module
-on a clean ``uv sync`` rather than failing collection for the entire
-unit tier.
+``pandas`` is needed by exactly the 12 tests that materialize a
+DataFrame, out of 70. It is imported lazily inside
+``execute_to_pandas``, so the module itself imports fine without it.
+Those 12 take the ``requires_pandas`` fixture below; everything else,
+including URI parsing, query composition, credential resolution and
+credential redaction, runs on a clean ``uv sync`` with no extras.
 """
 
 from __future__ import annotations
@@ -23,14 +24,12 @@ from typing import Any
 
 import pytest
 
-pd = pytest.importorskip("pandas")
-
-from cirron import Cirron  # noqa: E402
-from cirron.core import config as _config_mod  # noqa: E402
-from cirron.core.errors import CirronDependencyError, CirronPlatformRequired  # noqa: E402
-from cirron.data import sql as sql_mod  # noqa: E402
-from cirron.data.load import LoadRequest  # noqa: E402
-from cirron.data.sql import (  # noqa: E402
+from cirron import Cirron
+from cirron.core import config as _config_mod
+from cirron.core.errors import CirronDependencyError, CirronPlatformRequired
+from cirron.data import sql as sql_mod
+from cirron.data.load import LoadRequest
+from cirron.data.sql import (
     CredentialResolver,
     SqlCredentials,
     SqlUri,
@@ -76,6 +75,18 @@ def _request(**kwargs: Any) -> LoadRequest:
     }
     defaults.update(kwargs)
     return LoadRequest(**defaults)
+
+
+@pytest.fixture
+def requires_pandas():
+    """Skip a test that materializes a DataFrame when pandas is absent.
+
+    ``execute_to_pandas`` imports pandas lazily and raises
+    ``CirronDependencyError`` without it, so the tests that reach it need
+    the real thing. Requested by fixture rather than guarded at module
+    scope so the other 58 tests still run on a minimal install.
+    """
+    return pytest.importorskip("pandas")
 
 
 # URI parsing
@@ -417,6 +428,7 @@ class _FakeCursor:
         self.closed = True
 
 
+@pytest.mark.usefixtures("requires_pandas")
 class TestExecuteToPandas:
     def test_materializes_to_dataframe(self):
         cursor = _FakeCursor(
@@ -441,6 +453,7 @@ class TestExecuteToPandas:
 # driver
 
 
+@pytest.mark.usefixtures("requires_pandas")
 class TestRunSelect:
     """The shared connect/cursor/cleanup tail for all four driver shims."""
 
@@ -516,6 +529,7 @@ class TestDriver:
 
 
 class TestPostgresDataSource:
+    @pytest.mark.usefixtures("requires_pandas")
     def test_happy_path(self, monkeypatch):
         from cirron.data.sources.postgres import PostgresDataSource
 
@@ -570,6 +584,7 @@ class TestPostgresDataSource:
 
 
 class TestMySqlDataSource:
+    @pytest.mark.usefixtures("requires_pandas")
     def test_happy_path(self, monkeypatch):
         from cirron.data.sources.mysql import MySqlDataSource
 
@@ -644,6 +659,7 @@ class TestSnowflakeDataSource:
         monkeypatch.setitem(sys.modules, "snowflake", pkg)
         monkeypatch.setitem(sys.modules, "snowflake.connector", connector)
 
+    @pytest.mark.usefixtures("requires_pandas")
     def test_happy_path(self, monkeypatch):
         from cirron.data.sources.snowflake import SnowflakeDataSource
 
@@ -672,6 +688,7 @@ class TestSnowflakeDataSource:
         assert cursor.closed is True, "snowflake shim must close its cursor"
         assert connect_calls["conn_closed"] is True
 
+    @pytest.mark.usefixtures("requires_pandas")
     def test_token_auth(self, monkeypatch):
         """A token with no password switches the connector to OAuth."""
         from cirron.data.sources.snowflake import SnowflakeDataSource
@@ -737,6 +754,7 @@ class TestDatabricksDataSource:
         monkeypatch.setitem(sys.modules, "databricks", pkg)
         monkeypatch.setitem(sys.modules, "databricks.sql", sql_submodule)
 
+    @pytest.mark.usefixtures("requires_pandas")
     def test_happy_path(self, monkeypatch):
         from cirron.data.sources.databricks import DatabricksDataSource
 
@@ -763,6 +781,7 @@ class TestDatabricksDataSource:
         assert list(df["name"]) == ["acme"]
         assert connect_calls["conn_closed"] is True
 
+    @pytest.mark.usefixtures("requires_pandas")
     def test_http_path_from_platform_integration_beats_env(self, monkeypatch):
         """``extra.http_path`` from the resolver wins over the env var."""
         from cirron.data.sources.databricks import DatabricksDataSource
@@ -806,7 +825,7 @@ class TestDatabricksDataSource:
 
 
 class TestEndToEnd:
-    def test_where_passed_through_to_source(self, monkeypatch):
+    def test_where_passed_through_to_source(self, requires_pandas, monkeypatch):
         """``ci.load('postgres://...', where=...)`` reaches the driver cursor."""
         import cirron as ci
 
@@ -834,7 +853,7 @@ class TestEndToEnd:
             where="created_at > '2025-01-01'",
         )
         assert "created_at > '2025-01-01'" in (cursor.executed or "")
-        assert isinstance(result, pd.DataFrame)
+        assert isinstance(result, requires_pandas.DataFrame)
 
 
 # test helpers
