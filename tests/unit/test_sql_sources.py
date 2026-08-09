@@ -192,6 +192,11 @@ class TestParseErrorRedaction:
             ("postgres://alice:s3cret@db/a/b/c/d", "db"),
             ("mysql://alice:s3cret@db/app/.events", "db"),
             ("snowflake://alice:s3cret@acct", "acct"),
+            # Malformed authorities: urlsplit leaves netloc empty and puts
+            # the credentials in path, so a netloc-only redactor misses
+            # them. Both of these reach a raise site.
+            ("postgres:alice:s3cret@db/a/b/c/d", "db"),  # no "//"
+            ("://alice:s3cret@db/x", "db"),  # no scheme either
         ],
     )
     def test_parse_error_redacts_password(self, uri, host):
@@ -224,6 +229,38 @@ class TestParseErrorRedaction:
             sql_mod._redact_uri("postgres://alice:p@ss@db:5432/app/events")
             == "postgres://db:5432/app/events"
         )
+
+    @pytest.mark.parametrize(
+        ("uri", "expected"),
+        [
+            # Missing "//": the whole authority lands in path, not netloc.
+            ("postgres:alice:s3cret@db/a/b/c/d", "postgres:db/a/b/c/d"),
+            ("mysql:alice:s3cret@db/a/b/c/d", "mysql:db/a/b/c/d"),
+            ("postgres:alice@db/a/b/c/d", "postgres:db/a/b/c/d"),
+            ("postgres:alice:p@ss@db/a/b/c/d", "postgres:db/a/b/c/d"),
+            # Missing scheme as well.
+            ("://alice:s3cret@db/x", "://db/x"),
+            ("//alice:s3cret@db/x", "//db/x"),
+            # Authority with no path after it.
+            ("postgres:alice:s3cret@db", "postgres:db"),
+        ],
+    )
+    def test_redact_uri_handles_malformed_authority(self, uri, expected):
+        assert sql_mod._redact_uri(uri) == expected
+
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            "postgres://db:5432/app/events",
+            "postgres:///a/b/c/d",
+            "host/table",
+            "postgres://db/app/events?sslmode=require",
+        ],
+    )
+    def test_redact_uri_leaves_credential_free_uris_alone(self, uri):
+        # The malformed-authority fallback must not rewrite URIs that
+        # carry no userinfo at all.
+        assert sql_mod._redact_uri(uri) is uri
 
 
 # query composition

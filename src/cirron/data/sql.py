@@ -105,18 +105,48 @@ def _redact_uri(uri: str) -> str:
     sensitive too. Host, port and path stay, because those are what the
     user needs in order to fix the URI.
 
+    Every input reaching this function is malformed by definition, which
+    is why ``urlsplit`` alone is not enough. It only populates ``netloc``
+    for a well-formed ``scheme://host`` URI. Drop the ``//``
+    (``postgres:alice:pw@db/a/b``, an easy typo, and one that lands on
+    the "too many path segments" error) or drop the scheme
+    (``://alice:pw@db/x``, which lands on "missing scheme") and
+    ``netloc`` comes back empty with the whole authority sitting in
+    ``path``, so keying on ``netloc`` alone passes the password straight
+    through. The fallback below locates the authority by hand instead.
+
+    Splitting on the *last* ``@`` matters in both branches: an unescaped
+    ``@`` inside a password would otherwise leave the tail of it behind.
+    Where the authority is ambiguous this errs toward over-redacting, on
+    the grounds that a slightly less informative message about an
+    already-invalid URI is much the cheaper mistake.
+
     Args:
-        uri: A SQL-scheme URI, possibly carrying inline credentials.
+        uri: A SQL-scheme URI, possibly carrying inline credentials, and
+            possibly malformed.
 
     Returns:
         str: ``uri`` without userinfo, or ``uri`` unchanged when it
             carried none.
     """
     parsed = urllib.parse.urlsplit(uri)
-    if "@" not in parsed.netloc:
+    if "@" in parsed.netloc:
+        host_port = parsed.netloc.rsplit("@", 1)[1]
+        return urllib.parse.urlunsplit(parsed._replace(netloc=host_port))
+    if "@" not in uri:
         return uri
-    host_port = parsed.netloc.rsplit("@", 1)[1]
-    return urllib.parse.urlunsplit(parsed._replace(netloc=host_port))
+    # urlsplit found no authority, so the URI is malformed. The authority
+    # is whatever sits between the scheme separator and the first path
+    # separator; keep the text before it verbatim so the message still
+    # shows the user the shape they typed.
+    _, _, rest = uri.partition(":")
+    if rest.startswith("//"):
+        rest = rest[2:]
+    prefix = uri[: len(uri) - len(rest)]
+    authority, slash, path = rest.partition("/")
+    if "@" not in authority:
+        return uri
+    return prefix + authority.rsplit("@", 1)[1] + slash + path
 
 
 def parse_sql_uri(uri: str) -> SqlUri:
