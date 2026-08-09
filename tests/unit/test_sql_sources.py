@@ -3,9 +3,16 @@
 Covers the shared :mod:`cirron.data.sql` helpers (URI parsing,
 credential resolution, query composition) and the per-driver source
 shims (postgres, mysql, databricks, snowflake). All driver tests mock
-the underlying driver so the suite runs with zero optional deps
+the underlying driver, so none of the four SQL extras need to be
 installed, and the "missing driver raises CirronDependencyError" path is
-also exercised explicitly.
+exercised explicitly.
+
+``pandas`` is needed by exactly the 12 tests that materialize a
+DataFrame, out of 70. It is imported lazily inside
+``execute_to_pandas``, so the module itself imports fine without it.
+Those 12 take the ``requires_pandas`` fixture below; everything else,
+including URI parsing, query composition, credential resolution and
+credential redaction, runs on a clean ``uv sync`` with no extras.
 """
 
 from __future__ import annotations
@@ -15,7 +22,6 @@ import types
 import urllib.error
 from typing import Any
 
-import pandas as pd
 import pytest
 
 from cirron import Cirron
@@ -69,6 +75,18 @@ def _request(**kwargs: Any) -> LoadRequest:
     }
     defaults.update(kwargs)
     return LoadRequest(**defaults)
+
+
+@pytest.fixture
+def requires_pandas():
+    """Skip a test that materializes a DataFrame when pandas is absent.
+
+    ``execute_to_pandas`` imports pandas lazily and raises
+    ``CirronDependencyError`` without it, so the tests that reach it need
+    the real thing. Requested by fixture rather than guarded at module
+    scope so the other 58 tests still run on a minimal install.
+    """
+    return pytest.importorskip("pandas")
 
 
 # URI parsing
@@ -167,6 +185,93 @@ class TestParseSqlUri:
     def test_missing_scheme_raises(self):
         with pytest.raises(ValueError, match="missing scheme"):
             parse_sql_uri("host/table")
+
+
+class TestParseErrorRedaction:
+    """Malformed URIs must not echo inline credentials into the message.
+
+    ``ci.load()`` supports ``postgres://user:pw@host/db/table``, and these
+    ValueErrors propagate uncaught to the caller, so an unredacted message
+    writes a plaintext password into stdout, training logs, and any crash
+    reporter that records exception strings.
+    """
+
+    @pytest.mark.parametrize(
+        ("uri", "host"),
+        [
+            ("postgres://alice:s3cret@db:5432", "db"),
+            ("postgres://alice:s3cret@db/a/b/c/d", "db"),
+            ("mysql://alice:s3cret@db/app/.events", "db"),
+            ("snowflake://alice:s3cret@acct", "acct"),
+            # Malformed authorities: urlsplit leaves netloc empty and puts
+            # the credentials in path, so a netloc-only redactor misses
+            # them. Both of these reach a raise site.
+            ("postgres:alice:s3cret@db/a/b/c/d", "db"),  # no "//"
+            ("://alice:s3cret@db/x", "db"),  # no scheme either
+        ],
+    )
+    def test_parse_error_redacts_password(self, uri, host):
+        with pytest.raises(ValueError) as exc:
+            parse_sql_uri(uri)
+        message = str(exc.value)
+        assert "s3cret" not in message, "password leaked into the error message"
+        assert "alice" not in message, "username leaked into the error message"
+        assert host in message, "message must keep the host to stay actionable"
+
+    def test_redact_uri_passthrough(self):
+        # No userinfo means nothing to strip, and the string is returned
+        # untouched rather than round-tripped through urlunsplit.
+        uri = "postgres://db:5432/app/events"
+        assert sql_mod._redact_uri(uri) is uri
+
+    def test_redact_uri_keeps_host_port_and_path(self):
+        assert (
+            sql_mod._redact_uri("postgres://alice:s3cret@db:5432/app/events")
+            == "postgres://db:5432/app/events"
+        )
+
+    def test_redact_uri_strips_userinfo_without_password(self):
+        assert sql_mod._redact_uri("mysql://alice@db/app/orders") == "mysql://db/app/orders"
+
+    def test_redact_uri_handles_at_sign_inside_password(self):
+        # rsplit on the last '@' is what makes this work: an unescaped '@'
+        # in the password would otherwise leave the tail of it behind.
+        assert (
+            sql_mod._redact_uri("postgres://alice:p@ss@db:5432/app/events")
+            == "postgres://db:5432/app/events"
+        )
+
+    @pytest.mark.parametrize(
+        ("uri", "expected"),
+        [
+            # Missing "//": the whole authority lands in path, not netloc.
+            ("postgres:alice:s3cret@db/a/b/c/d", "postgres:db/a/b/c/d"),
+            ("mysql:alice:s3cret@db/a/b/c/d", "mysql:db/a/b/c/d"),
+            ("postgres:alice@db/a/b/c/d", "postgres:db/a/b/c/d"),
+            ("postgres:alice:p@ss@db/a/b/c/d", "postgres:db/a/b/c/d"),
+            # Missing scheme as well.
+            ("://alice:s3cret@db/x", "://db/x"),
+            ("//alice:s3cret@db/x", "//db/x"),
+            # Authority with no path after it.
+            ("postgres:alice:s3cret@db", "postgres:db"),
+        ],
+    )
+    def test_redact_uri_handles_malformed_authority(self, uri, expected):
+        assert sql_mod._redact_uri(uri) == expected
+
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            "postgres://db:5432/app/events",
+            "postgres:///a/b/c/d",
+            "host/table",
+            "postgres://db/app/events?sslmode=require",
+        ],
+    )
+    def test_redact_uri_leaves_credential_free_uris_alone(self, uri):
+        # The malformed-authority fallback must not rewrite URIs that
+        # carry no userinfo at all.
+        assert sql_mod._redact_uri(uri) is uri
 
 
 # query composition
@@ -323,6 +428,7 @@ class _FakeCursor:
         self.closed = True
 
 
+@pytest.mark.usefixtures("requires_pandas")
 class TestExecuteToPandas:
     def test_materializes_to_dataframe(self):
         cursor = _FakeCursor(
@@ -347,6 +453,7 @@ class TestExecuteToPandas:
 # driver
 
 
+@pytest.mark.usefixtures("requires_pandas")
 class TestRunSelect:
     """The shared connect/cursor/cleanup tail for all four driver shims."""
 
@@ -422,6 +529,7 @@ class TestDriver:
 
 
 class TestPostgresDataSource:
+    @pytest.mark.usefixtures("requires_pandas")
     def test_happy_path(self, monkeypatch):
         from cirron.data.sources.postgres import PostgresDataSource
 
@@ -476,6 +584,7 @@ class TestPostgresDataSource:
 
 
 class TestMySqlDataSource:
+    @pytest.mark.usefixtures("requires_pandas")
     def test_happy_path(self, monkeypatch):
         from cirron.data.sources.mysql import MySqlDataSource
 
@@ -550,6 +659,7 @@ class TestSnowflakeDataSource:
         monkeypatch.setitem(sys.modules, "snowflake", pkg)
         monkeypatch.setitem(sys.modules, "snowflake.connector", connector)
 
+    @pytest.mark.usefixtures("requires_pandas")
     def test_happy_path(self, monkeypatch):
         from cirron.data.sources.snowflake import SnowflakeDataSource
 
@@ -578,6 +688,7 @@ class TestSnowflakeDataSource:
         assert cursor.closed is True, "snowflake shim must close its cursor"
         assert connect_calls["conn_closed"] is True
 
+    @pytest.mark.usefixtures("requires_pandas")
     def test_token_auth(self, monkeypatch):
         """A token with no password switches the connector to OAuth."""
         from cirron.data.sources.snowflake import SnowflakeDataSource
@@ -643,6 +754,7 @@ class TestDatabricksDataSource:
         monkeypatch.setitem(sys.modules, "databricks", pkg)
         monkeypatch.setitem(sys.modules, "databricks.sql", sql_submodule)
 
+    @pytest.mark.usefixtures("requires_pandas")
     def test_happy_path(self, monkeypatch):
         from cirron.data.sources.databricks import DatabricksDataSource
 
@@ -669,6 +781,7 @@ class TestDatabricksDataSource:
         assert list(df["name"]) == ["acme"]
         assert connect_calls["conn_closed"] is True
 
+    @pytest.mark.usefixtures("requires_pandas")
     def test_http_path_from_platform_integration_beats_env(self, monkeypatch):
         """``extra.http_path`` from the resolver wins over the env var."""
         from cirron.data.sources.databricks import DatabricksDataSource
@@ -712,7 +825,7 @@ class TestDatabricksDataSource:
 
 
 class TestEndToEnd:
-    def test_where_passed_through_to_source(self, monkeypatch):
+    def test_where_passed_through_to_source(self, requires_pandas, monkeypatch):
         """``ci.load('postgres://...', where=...)`` reaches the driver cursor."""
         import cirron as ci
 
@@ -740,7 +853,7 @@ class TestEndToEnd:
             where="created_at > '2025-01-01'",
         )
         assert "created_at > '2025-01-01'" in (cursor.executed or "")
-        assert isinstance(result, pd.DataFrame)
+        assert isinstance(result, requires_pandas.DataFrame)
 
 
 # test helpers

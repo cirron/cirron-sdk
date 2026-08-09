@@ -91,6 +91,64 @@ class SqlUri:
     raw: str
 
 
+def _redact_uri(uri: str) -> str:
+    """Strip any ``user:password@`` userinfo from ``uri``.
+
+    Every URI that reaches an error message goes through here first.
+    ``ci.load()`` accepts inline credentials, and the parse errors below
+    are raised on exactly the malformed input a user is most likely to
+    typo, so interpolating the raw URI writes a plaintext database
+    password into stdout, training logs, and any crash reporter that
+    records exception strings.
+
+    The whole userinfo goes, username included, since usernames are
+    sensitive too. Host, port and path stay, because those are what the
+    user needs in order to fix the URI.
+
+    Every input reaching this function is malformed by definition, which
+    is why ``urlsplit`` alone is not enough. It only populates ``netloc``
+    for a well-formed ``scheme://host`` URI. Drop the ``//``
+    (``postgres:alice:pw@db/a/b``, an easy typo, and one that lands on
+    the "too many path segments" error) or drop the scheme
+    (``://alice:pw@db/x``, which lands on "missing scheme") and
+    ``netloc`` comes back empty with the whole authority sitting in
+    ``path``, so keying on ``netloc`` alone passes the password straight
+    through. The fallback below locates the authority by hand instead.
+
+    Splitting on the *last* ``@`` matters in both branches: an unescaped
+    ``@`` inside a password would otherwise leave the tail of it behind.
+    Where the authority is ambiguous this errs toward over-redacting, on
+    the grounds that a slightly less informative message about an
+    already-invalid URI is much the cheaper mistake.
+
+    Args:
+        uri: A SQL-scheme URI, possibly carrying inline credentials, and
+            possibly malformed.
+
+    Returns:
+        str: ``uri`` without userinfo, or ``uri`` unchanged when it
+            carried none.
+    """
+    parsed = urllib.parse.urlsplit(uri)
+    if "@" in parsed.netloc:
+        host_port = parsed.netloc.rsplit("@", 1)[1]
+        return urllib.parse.urlunsplit(parsed._replace(netloc=host_port))
+    if "@" not in uri:
+        return uri
+    # urlsplit found no authority, so the URI is malformed. The authority
+    # is whatever sits between the scheme separator and the first path
+    # separator; keep the text before it verbatim so the message still
+    # shows the user the shape they typed.
+    _, _, rest = uri.partition(":")
+    if rest.startswith("//"):
+        rest = rest[2:]
+    prefix = uri[: len(uri) - len(rest)]
+    authority, slash, path = rest.partition("/")
+    if "@" not in authority:
+        return uri
+    return prefix + authority.rsplit("@", 1)[1] + slash + path
+
+
 def parse_sql_uri(uri: str) -> SqlUri:
     """Parse a ``scheme://...`` SQL URI.
 
@@ -118,7 +176,7 @@ def parse_sql_uri(uri: str) -> SqlUri:
     parsed = urllib.parse.urlparse(uri)
     scheme = parsed.scheme.lower()
     if not scheme:
-        raise ValueError(f"SQL URI missing scheme: {uri}")
+        raise ValueError(f"SQL URI missing scheme: {_redact_uri(uri)}")
 
     path_parts = [p for p in (parsed.path or "").split("/") if p]
 
@@ -147,7 +205,7 @@ def parse_sql_uri(uri: str) -> SqlUri:
         if len(pieces) == 1:
             return None, None, pieces[0]
         raise ValueError(
-            f"{scheme}:// URI must include a table: {uri} "
+            f"{scheme}:// URI must include a table: {_redact_uri(uri)} "
             "(expected scheme://host/database[.schema].table)"
         )
 
@@ -205,8 +263,8 @@ def _parse_pg_mysql_path(
         scheme: ``"postgres"`` or ``"mysql"``, used in error
             messages.
         path_parts: Non-empty path segments split on ``/``.
-        uri: The original URI, included verbatim in error
-            messages.
+        uri: The original URI, included in error messages with its
+            userinfo stripped by :func:`_redact_uri`.
 
     Returns:
         tuple[str | None, str | None, str]: ``(database, schema, table)``.
@@ -217,7 +275,7 @@ def _parse_pg_mysql_path(
     """
     if not path_parts:
         raise ValueError(
-            f"{scheme}:// URI must include a table: {uri} "
+            f"{scheme}:// URI must include a table: {_redact_uri(uri)} "
             f"(expected {scheme}://host/database[/schema]/table)"
         )
     if len(path_parts) == 1:
@@ -225,7 +283,7 @@ def _parse_pg_mysql_path(
         if "." in path_parts[0]:
             schema_part, _, table = path_parts[0].partition(".")
             if not schema_part or not table:
-                raise ValueError(f"{scheme}:// URI has empty schema or table: {uri}")
+                raise ValueError(f"{scheme}:// URI has empty schema or table: {_redact_uri(uri)}")
             return None, schema_part, table
         return None, None, path_parts[0]
     if len(path_parts) == 2:
@@ -234,13 +292,13 @@ def _parse_pg_mysql_path(
         if "." in path_parts[1]:
             schema_part, _, table = path_parts[1].partition(".")
             if not schema_part or not table:
-                raise ValueError(f"{scheme}:// URI has empty schema or table: {uri}")
+                raise ValueError(f"{scheme}:// URI has empty schema or table: {_redact_uri(uri)}")
             return database, schema_part, table
         return database, None, path_parts[1]
     if len(path_parts) == 3:
         return path_parts[0], path_parts[1], path_parts[2]
     raise ValueError(
-        f"{scheme}:// URI has too many path segments: {uri} "
+        f"{scheme}:// URI has too many path segments: {_redact_uri(uri)} "
         f"(expected at most database/schema/table)"
     )
 
