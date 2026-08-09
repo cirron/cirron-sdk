@@ -13,23 +13,24 @@ import importlib
 import json
 from typing import Any
 
-import numpy as np
-import pandas as pd
 import pytest
 
-import cirron as ci
-from cirron import Cirron
-from cirron.core import config as _config_mod
-from cirron.core import profiler as _profiler_mod
-from cirron.core.errors import (
+np = pytest.importorskip("numpy")
+pd = pytest.importorskip("pandas")
+
+import cirron as ci  # noqa: E402
+from cirron import Cirron  # noqa: E402
+from cirron.core import config as _config_mod  # noqa: E402
+from cirron.core import profiler as _profiler_mod  # noqa: E402
+from cirron.core.errors import (  # noqa: E402
     CirronDatasetNotFound,
     CirronDataSizeError,
     CirronDependencyError,
     CirronPlatformRequired,
 )
-from cirron.data.lazy import LazyHandle
-from cirron.data.returns import NumpyAdapter
-from cirron.data.sources import DataSource, SourceConfig
+from cirron.data.lazy import LazyHandle  # noqa: E402
+from cirron.data.returns import NumpyAdapter  # noqa: E402
+from cirron.data.sources import DataSource, SourceConfig  # noqa: E402
 
 # ``cirron.data.__init__`` re-exports the ``load`` function, which shadows
 # the submodule attribute, so ``from cirron.data import load`` binds the

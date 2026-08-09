@@ -16,14 +16,15 @@ from __future__ import annotations
 import math
 from typing import Any
 
-import numpy as np
 import pytest
 
-from cirron.core.flush import FlushThread, SpoolWriter
-from cirron.core.mark import MarkBuffer
-from cirron.core.scope import ScopeStack
-from cirron.core.snapshot_buffer import SnapshotBuffer
-from cirron.snapshots.stats import (
+np = pytest.importorskip("numpy")
+
+from cirron.core.flush import FlushThread, SpoolWriter  # noqa: E402
+from cirron.core.mark import MarkBuffer  # noqa: E402
+from cirron.core.scope import ScopeStack  # noqa: E402
+from cirron.core.snapshot_buffer import SnapshotBuffer  # noqa: E402
+from cirron.snapshots.stats import (  # noqa: E402
     HISTOGRAM_BINS,
     _tensor_stats,
     capture,

@@ -15,15 +15,16 @@ import types
 import urllib.error
 from typing import Any
 
-import pandas as pd
 import pytest
 
-from cirron import Cirron
-from cirron.core import config as _config_mod
-from cirron.core.errors import CirronDependencyError, CirronPlatformRequired
-from cirron.data import sql as sql_mod
-from cirron.data.load import LoadRequest
-from cirron.data.sql import (
+pd = pytest.importorskip("pandas")
+
+from cirron import Cirron  # noqa: E402
+from cirron.core import config as _config_mod  # noqa: E402
+from cirron.core.errors import CirronDependencyError, CirronPlatformRequired  # noqa: E402
+from cirron.data import sql as sql_mod  # noqa: E402
+from cirron.data.load import LoadRequest  # noqa: E402
+from cirron.data.sql import (  # noqa: E402
     CredentialResolver,
     SqlCredentials,
     SqlUri,
