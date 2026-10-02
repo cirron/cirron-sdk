@@ -76,7 +76,9 @@ def map_batches(batches: Iterator[list[Any]], fn: Callable[..., Any]) -> Iterato
     """Apply a row-wise ``fn`` to each batch of a streaming load.
 
     Row indices in error messages count across the whole stream, matching
-    what the same failure reports on a materialized load.
+    what the same failure reports on a materialized load. Closing the
+    returned generator closes ``batches``, so the connection behind a
+    streaming source is released rather than left to garbage collection.
 
     Args:
         batches: Row-dict batches from a streaming source.
@@ -87,9 +89,14 @@ def map_batches(batches: Iterator[list[Any]], fn: Callable[..., Any]) -> Iterato
         list[Any]: Each batch with ``fn`` applied to every row.
     """
     offset = 0
-    for batch in batches:
-        yield _map_with_index(batch, fn, start=offset)
-        offset += len(batch)
+    try:
+        for batch in batches:
+            yield _map_with_index(batch, fn, start=offset)
+            offset += len(batch)
+    finally:
+        close = getattr(batches, "close", None)
+        if close is not None:
+            close()
 
 
 def _apply_rowwise(raw: Any, fn: Callable[..., Any]) -> Any:

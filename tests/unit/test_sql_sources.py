@@ -939,6 +939,16 @@ class TestStreamSelect:
         it.close()
         assert events[-1] == "conn"
 
+    def test_closes_the_connection_when_closed_before_iterating(self):
+        # The first batch is fetched before stream_select returns, so the
+        # connection is already open. close() must release it even though
+        # the caller never called next().
+        events: list[str] = []
+        connect, _ = self._fake(events)
+        it = stream_select(connect, {}, "SELECT 1", 2)
+        it.close()
+        assert events[-1] == "conn", "released by close(), not by garbage collection"
+
     def test_closes_the_connection_on_an_empty_result(self):
         events: list[str] = []
         connect, _ = self._fake(events, rows=[])
@@ -1161,6 +1171,49 @@ class TestStreamingLoad:
         )
         # One batch per source: batches never span a source boundary.
         assert [len(b) for b in batches] == [5, 5]
+
+    @pytest.mark.parametrize("iterate_first", [True, False], ids=["mid-stream", "unstarted"])
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"batch_size": 2},
+            {"batch_size": 2, "map": lambda row: row},
+            {"batch_size": 1},
+            {"batch_size": 2, "multi": True},
+            {"batch_size": 1, "multi": True},
+            {"batch_size": 2, "multi": True, "map": lambda row: row},
+        ],
+        ids=["single", "map", "rows", "multi", "multi-rows", "multi-map"],
+    )
+    def test_close_releases_every_open_connection(self, pg, kwargs, iterate_first):
+        # Every shape the streaming path can return honours close(), whether
+        # or not the caller started iterating. The first connection opens
+        # inside ci.load(), so "unstarted" still has one to release.
+        import cirron as ci
+
+        _, opened = pg
+        kwargs = dict(kwargs)
+        uri = "postgres://u:pw@h/db/t"
+        names = [uri, uri] if kwargs.pop("multi", False) else uri
+        it = ci.load(names, as_="iter", **kwargs)
+        if iterate_first:
+            next(it)
+        it.close()
+
+        cursors = [o for o in opened if o != "closed"]
+        assert len(cursors) == 1, "a later source must not connect before it is reached"
+        assert opened.count("closed") == 1
+
+    def test_closing_mid_second_source_releases_it(self, pg):
+        import cirron as ci
+
+        _, opened = pg
+        it = ci.load(["postgres://u:pw@h/db/a", "postgres://u:pw@h/db/b"], as_="iter", batch_size=3)
+        for _ in range(3):  # 3 + 2 rows from the first source, then into the second
+            next(it)
+        it.close()
+        assert len([o for o in opened if o != "closed"]) == 2
+        assert opened.count("closed") == 2
 
     def test_pandas_path_still_materializes(self, requires_pandas, pg):
         import cirron as ci

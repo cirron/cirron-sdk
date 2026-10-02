@@ -15,9 +15,8 @@ downstream code be written against the final shape.
 from __future__ import annotations
 
 import functools
-import itertools
 import logging
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
@@ -571,6 +570,10 @@ def _stream_and_convert(sources: list[DataSource], req: LoadRequest) -> Iterator
     load connect in turn once the one before them is exhausted, so only
     one connection is open at a time; batches never span two sources.
 
+    Every layer closes the one beneath it, and the returned
+    :class:`_StreamHandle` also closes the first source directly, so
+    ``close()`` releases whichever connection is open in every state.
+
     Args:
         sources: Resolved backends, all exposing ``stream``.
         req: The first request, which carries ``map`` and ``batch_size``.
@@ -580,17 +583,89 @@ def _stream_and_convert(sources: list[DataSource], req: LoadRequest) -> Iterator
             ``batch_size <= 1``, matching the materializing iter path.
     """
     batch_size = req.batch_size
-    batches: Iterator[list[Any]] = sources[0].stream(batch_size)  # type: ignore[attr-defined]
+    first: Iterator[list[Any]] = sources[0].stream(batch_size)  # type: ignore[attr-defined]
+    batches = first
     if len(sources) > 1:
-        rest = (b for s in sources[1:] for b in s.stream(batch_size))  # type: ignore[attr-defined]
-        batches = itertools.chain(batches, rest)
+        batches = _chain_streams(first, sources[1:], batch_size)
     if req.map is not None:
         from cirron.data.transform import map_batches
 
         batches = map_batches(batches, req.map)
-    if batch_size <= 1:
-        return (row for batch in batches for row in batch)
-    return batches
+    out: Iterator[Any] = _flatten(batches) if batch_size <= 1 else batches
+    return _StreamHandle(out, first)
+
+
+def _close(it: object) -> None:
+    close = getattr(it, "close", None)
+    if close is not None:
+        close()
+
+
+def _chain_streams(
+    first: Iterator[list[Any]], rest: list[DataSource], batch_size: int
+) -> Iterator[list[Any]]:
+    """Yield every source's batches in order, opening each in turn.
+
+    Args:
+        first: The already-open first stream.
+        rest: Remaining sources, opened only once reached.
+        batch_size: Forwarded to each source's ``stream``.
+
+    Yields:
+        list[Any]: Row-dict batches.
+    """
+    current = first
+    try:
+        yield from current
+        for source in rest:
+            current = source.stream(batch_size)  # type: ignore[attr-defined]
+            yield from current
+    finally:
+        _close(current)
+
+
+def _flatten(batches: Iterator[Iterable[Any]]) -> Iterator[Any]:
+    """Yield single rows out of row batches, closing ``batches`` on exit.
+
+    Args:
+        batches: Row-dict batches.
+
+    Yields:
+        Any: One row dict at a time.
+    """
+    try:
+        for batch in batches:
+            yield from batch
+    finally:
+        _close(batches)
+
+
+class _StreamHandle:
+    """The iterator ``ci.load()`` returns for a streaming load.
+
+    The wrapping layers are generators, and a generator that has not
+    started ignores ``close()``. The first source's connection opens
+    inside ``ci.load()``, before any iteration, so this handle closes the
+    first source itself as well as the outermost layer. Closing an
+    exhausted or already-closed stream is a no-op.
+    """
+
+    __slots__ = ("_it", "_first")
+
+    def __init__(self, it: Iterator[Any], first: Iterator[Any]) -> None:
+        self._it = it
+        self._first = first
+
+    def __iter__(self) -> _StreamHandle:
+        return self
+
+    def __next__(self) -> Any:
+        return next(self._it)
+
+    def close(self) -> None:
+        """Release whichever source connection is still open."""
+        _close(self._it)
+        _close(self._first)
 
 
 def _concat(parts: list[Any]) -> Any:

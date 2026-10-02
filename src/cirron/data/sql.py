@@ -867,7 +867,8 @@ def stream_select(
             cursor to the connection.
 
     Returns:
-        Iterator[list[dict[str, Any]]]: Row-dict batches.
+        Iterator[list[dict[str, Any]]]: Row-dict batches. Its ``close()``
+            releases the connection whether or not iteration has started.
     """
 
     def _batches() -> Generator[list[dict[str, Any]]]:
@@ -886,12 +887,33 @@ def stream_select(
     first = next(batches, _DONE)
     if first is _DONE:
         return iter(())
-    return _resume(first, batches)
+    return _PrimedStream(first, batches)
 
 
-def _resume(first: Any, rest: Generator[Any]) -> Iterator[Any]:
-    try:
-        yield first
-        yield from rest
-    finally:
-        rest.close()
+class _PrimedStream:
+    """A started batch generator with its first batch already fetched.
+
+    A class rather than a wrapping generator because a generator that has
+    not started ignores ``close()``: its ``finally`` never runs. The
+    connection here is already open, so ``close()`` has to reach it in
+    every state, including before the caller's first ``next()``.
+    """
+
+    __slots__ = ("_first", "_rest")
+
+    def __init__(self, first: Any, rest: Generator[Any]) -> None:
+        self._first = first
+        self._rest = rest
+
+    def __iter__(self) -> _PrimedStream:
+        return self
+
+    def __next__(self) -> Any:
+        if self._first is not _DONE:
+            first, self._first = self._first, _DONE
+            return first
+        return next(self._rest)
+
+    def close(self) -> None:
+        self._first = _DONE
+        self._rest.close()
