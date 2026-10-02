@@ -80,6 +80,24 @@ class _WrappedEstimator:
         est = object.__getattribute__(self, "_estimator")
         setattr(est, name, value)
 
+    def __delattr__(self, name: str) -> None:
+        """Forward attribute deletes, mirroring :meth:`__setattr__`.
+
+        Without this, ``del proxy.x`` targets the proxy's own slots and
+        raises even though ``proxy.x = v`` landed on the estimator.
+        sklearn >= 1.9 hits exactly that: its callback context sets
+        ``_parent_callback_ctx`` on each Pipeline step and deletes it
+        once the step finishes.
+
+        Args:
+            name: Attribute name being deleted.
+        """
+        if name in type(self).__slots__:
+            object.__delattr__(self, name)
+            return
+        est = object.__getattribute__(self, "_estimator")
+        delattr(est, name)
+
     def __repr__(self) -> str:
         est = object.__getattribute__(self, "_estimator")
         return f"WrappedEstimator({est!r})"
