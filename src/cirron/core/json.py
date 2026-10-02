@@ -269,6 +269,14 @@ def stats_to_wire(stats: dict[str, Any] | None) -> dict[str, Any] | None:
     overflow to ``inf`` on a large but entirely finite tensor, where the
     histogram is still meaningful.
 
+    A tensor holding a NaN or an infinity also carries a ``finite`` block:
+    the same statistics over its finite elements, plus a ``count``. Its
+    values are finite by construction except that its ``norm`` can still
+    overflow, so it goes through this same substitution and gets its own
+    ``nonfinite`` map rather than sharing the outer one. Only records that
+    already take the substitution path can carry the block, so a clean
+    record stays zero-copy.
+
     Args:
         stats: Stats dict from
             :mod:`cirron.snapshots.stats`, or ``None``.
@@ -297,6 +305,9 @@ def stats_to_wire(stats: dict[str, Any] | None) -> dict[str, Any] | None:
         out.pop("histogram", None)
         nonfinite["histogram"] = hist_token
     out["nonfinite"] = nonfinite
+    finite = out.get("finite")
+    if isinstance(finite, dict):
+        out["finite"] = stats_to_wire(finite)
     return out
 
 

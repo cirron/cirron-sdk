@@ -217,6 +217,41 @@ def test_stats_to_wire_passes_through_none_and_empty():
     assert stats_to_wire({}) == {}
 
 
+def _finite_block(**overrides) -> dict[str, Any]:
+    block = {"count": 3, **_stats()}
+    block.update(overrides)
+    return block
+
+
+def test_stats_to_wire_passes_a_clean_finite_block_through():
+    stats = _stats(mean=NAN, finite=_finite_block())
+    out = stats_to_wire(stats)
+    assert out is not None
+    assert out["finite"] is stats["finite"]
+    assert out["nonfinite"] == {"mean": "nan"}
+
+
+def test_stats_to_wire_applies_the_same_contract_inside_the_finite_block():
+    # The finite subset holds only finite elements, but its algebraic norm
+    # can still overflow. It follows the top-level rule: null plus its own
+    # nonfinite map, without leaking entries into the outer one.
+    stats = _stats(mean=NAN, finite=_finite_block(norm=INF))
+    out = stats_to_wire(stats)
+    assert out is not None
+    assert out["finite"]["norm"] is None
+    assert out["finite"]["nonfinite"] == {"norm": "inf"}
+    assert out["finite"]["mean"] == 0.0
+    assert out["nonfinite"] == {"mean": "nan"}
+    assert math.isinf(stats["finite"]["norm"]), "the record must not be mutated"
+    assert strict_loads(dumps(out))["finite"]["nonfinite"] == {"norm": "inf"}
+
+
+def test_stats_to_wire_keeps_an_empty_finite_block():
+    out = stats_to_wire(_stats(mean=NAN, finite={"count": 0}))
+    assert out is not None
+    assert out["finite"] == {"count": 0}
+
+
 def test_stats_to_wire_output_is_strict_json():
     out = stats_to_wire(_stats(mean=NAN, min=-INF, max=INF))
     assert strict_loads(dumps(out))["nonfinite"] == {

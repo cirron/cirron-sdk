@@ -13,6 +13,7 @@ env var.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
 from cirron.core.env import env as _env
@@ -25,6 +26,7 @@ from cirron.data.sql import (
     driver,
     parse_sql_uri,
     run_select,
+    stream_select,
 )
 
 if TYPE_CHECKING:
@@ -63,6 +65,31 @@ class DatabricksDataSource(DataSource):
                 from the platform integration or ``DATABRICKS_HTTP_PATH``,
                 or if credential resolution fails.
         """
+        databricks_sql, conn_kwargs, query = self._prepare()
+        return run_select(databricks_sql.connect, conn_kwargs, query)
+
+    def stream(self, batch_size: int) -> Iterator[list[dict[str, Any]]]:
+        """Stream the composed ``SELECT`` in row-dict batches.
+
+        The default cursor already pages: ``fetchmany`` pulls result
+        batches from the warehouse as they are consumed.
+
+        Args:
+            batch_size: Rows per batch.
+
+        Returns:
+            Iterator[list[dict[str, Any]]]: From :func:`stream_select`.
+
+        Raises:
+            CirronDependencyError: If ``databricks-sql-connector`` is not
+                installed.
+            CirronPlatformRequired: If the HTTP path can't be resolved,
+                or if credential resolution fails.
+        """
+        databricks_sql, conn_kwargs, query = self._prepare()
+        return stream_select(databricks_sql.connect, conn_kwargs, query, batch_size)
+
+    def _prepare(self) -> tuple[Any, dict[str, Any], str]:
         databricks_sql = driver("databricks.sql", "databricks")
         creds = CredentialResolver(self.cirron, self.uri).resolve()
 
@@ -87,8 +114,7 @@ class DatabricksDataSource(DataSource):
             "http_path": http_path,
             "access_token": creds.token,
         }
-
-        return run_select(databricks_sql.connect, conn_kwargs, query)
+        return databricks_sql, conn_kwargs, query
 
 
 def build_source(uri_str: str, cirron: Cirron, request: LoadRequest | None) -> DatabricksDataSource:

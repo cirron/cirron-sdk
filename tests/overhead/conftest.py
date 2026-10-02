@@ -31,14 +31,17 @@ _DEFAULT_RESULTS = Path(__file__).parent / "results" / "local.json"
 _BASELINE_PATH = Path(__file__).parent / "baseline.json"
 
 #: Headroom allowed above a committed baseline before a metric counts as a
-#: regression. Applies to every ratcheted metric: end-to-end ratios and
-#: per-primitive micro-benchmarks alike.
-REGRESSION_TOLERANCE = 1.20
+#: regression. Shared by every ratcheted metric. Derived from the run-to-run
+#: spread recorded in ``baseline.json``: the widest gated metric reaches
+#: 1.34x its median (mean plus three standard deviations), and this adds
+#: about 5% for the sample size. ``test_baseline_ratchet.py`` fails if any
+#: gated metric's recorded spread outgrows it.
+REGRESSION_TOLERANCE = 1.40
 
 #: Timed iterations per configuration in the reference loop. Three was not
 #: enough: at ~10 ms a cycle the whole sampled workload was ~30 ms of an
 #: 18-second job, and the run-to-run spread on unchanged code exceeded the
-#: +20% the suite enforces. A hundred cycles costs a few seconds per job.
+#: tolerance the suite enforces. A hundred cycles costs a few seconds per job.
 DEFAULT_REPEATS = 100
 
 _results: list[dict[str, Any]] = []
@@ -46,6 +49,11 @@ _results: list[dict[str, Any]] = []
 
 def _overhead_enabled() -> bool:
     return os.environ.get(_OVERHEAD_ENV, "").lower() in {"1", "true", "yes", "on"}
+
+
+def _load_baseline() -> dict[str, Any]:
+    with _BASELINE_PATH.open() as f:
+        return json.load(f)
 
 
 def _load_baseline_metrics() -> dict[str, float]:
@@ -56,9 +64,7 @@ def _load_baseline_metrics() -> dict[str, float]:
             from the file leave their ratchet dormant (see
             :func:`_assert_no_regression`).
     """
-    with _BASELINE_PATH.open() as f:
-        doc = json.load(f)
-    return doc["metrics"]
+    return _load_baseline()["metrics"]
 
 
 def _assert_no_regression(
@@ -99,6 +105,16 @@ def _assert_no_regression(
 def baseline_metrics() -> dict[str, float]:
     """Return the committed baseline metrics mapping."""
     return _load_baseline_metrics()
+
+
+@pytest.fixture
+def baseline_spread() -> dict[str, dict[str, float]]:
+    """Return the committed baseline's ``spread`` mapping.
+
+    The run-to-run variation each metric showed across the CI artifacts
+    its baseline was taken from, as multiples of the median.
+    """
+    return _load_baseline().get("spread", {})
 
 
 @pytest.fixture

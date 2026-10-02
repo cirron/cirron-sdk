@@ -14,6 +14,7 @@ preferences and must come from the platform integration record
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
 from cirron.core.env import env as _env
@@ -25,6 +26,7 @@ from cirron.data.sql import (
     driver,
     parse_sql_uri,
     run_select,
+    stream_select,
 )
 
 if TYPE_CHECKING:
@@ -63,6 +65,38 @@ class SnowflakeDataSource(DataSource):
                 not installed.
             CirronPlatformRequired: If credential resolution fails.
         """
+        snowflake_connector, conn_kwargs, query = self._prepare()
+        # Snowflake's cursors hold server-side result state that
+        # ``conn.close()`` does not reliably release, so close explicitly.
+        return run_select(snowflake_connector.connect, conn_kwargs, query, cursor_close=True)
+
+    def stream(self, batch_size: int) -> Iterator[list[dict[str, Any]]]:
+        """Stream the composed ``SELECT`` in row-dict batches.
+
+        The default cursor already pages: the connector downloads result
+        chunks on demand as ``fetchmany`` consumes them.
+
+        Args:
+            batch_size: Rows per batch.
+
+        Returns:
+            Iterator[list[dict[str, Any]]]: From :func:`stream_select`.
+
+        Raises:
+            CirronDependencyError: If ``snowflake-connector-python`` is
+                not installed.
+            CirronPlatformRequired: If credential resolution fails.
+        """
+        snowflake_connector, conn_kwargs, query = self._prepare()
+        return stream_select(
+            snowflake_connector.connect,
+            conn_kwargs,
+            query,
+            batch_size,
+            release_cursor=lambda cursor: cursor.close(),
+        )
+
+    def _prepare(self) -> tuple[Any, dict[str, Any], str]:
         snowflake_connector = driver("snowflake.connector", "snowflake")
         creds = CredentialResolver(self.cirron, self.uri).resolve()
 
@@ -92,10 +126,7 @@ class SnowflakeDataSource(DataSource):
             where=self.request.where if self.request else None,
             columns=self.request.columns if self.request else None,
         )
-
-        # Snowflake's cursors hold server-side result state that
-        # ``conn.close()`` does not reliably release, so close explicitly.
-        return run_select(snowflake_connector.connect, conn_kwargs, query, cursor_close=True)
+        return snowflake_connector, conn_kwargs, query
 
 
 def build_source(uri_str: str, cirron: Cirron, request: LoadRequest | None) -> SnowflakeDataSource:

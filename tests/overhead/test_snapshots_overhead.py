@@ -15,15 +15,14 @@ even with fully fused reductions. This test applies the strict 50 ms
 budget only when CUDA is available, and a relaxed CPU budget otherwise
 that is still tight enough to catch real regressions (the original naïve
 path spent ~221 ms on the same runner; the current fused path runs in
-~175 ms) but not so tight that the test blocks release on hardware it
-was never calibrated against. Record both the measured value and which
-budget was applied so we can tell them apart in the artifact.
+~144 ms at the median and ~173 ms at worst) but not so tight that the
+test blocks release on hardware it was never calibrated against. Record
+both the measured value and which budget was applied so we can tell
+them apart in the artifact.
 
-The CPU budget (250 ms) is ~30 % above our best-case CI measurement,
-which is the same relative headroom CI baselines elsewhere use
-(``baseline.json`` applies a +20 % regression tolerance on top of the
-recorded value). A real regression pushing per-epoch snapshot past
-225 to 250 ms will still trip this assertion.
+The CPU budget (250 ms) is about 1.74x the median CI measurement and
+1.45x the slowest of 50 runs. A real regression pushing per-epoch
+snapshot past 250 ms will still trip this assertion.
 """
 
 from __future__ import annotations
@@ -35,7 +34,7 @@ import pytest
 from cirron.snapshots.stats import capture_weight_stats
 
 _GPU_BUDGET_NS = 50_000_000  # 50 ms, GPU reference
-_CPU_BUDGET_NS = 250_000_000  # 250 ms, CI CPU (~30% headroom over 175 ms)
+_CPU_BUDGET_NS = 250_000_000  # 250 ms, CI CPU (1.45x the slowest of 50 runs)
 
 
 def test_resnet50_stats_under_budget(record_result) -> None:

@@ -212,6 +212,10 @@ df = ci.load("./raw/", map=to_features)
 # Return type and loading mode
 df = ci.load("./events.parquet", as_="polars")           # "pandas" | "polars" | "iter" | "tensor" | "hf"
 handle = ci.load("./events.parquet", lazy=True)          # LazyHandle; call handle.collect()
+
+# SQL sources stream as_="iter" through a server-side cursor: one batch in memory at a time
+for batch in ci.load("postgres://db.internal/analytics/events", as_="iter", batch_size=10_000):
+    ...
 ```
 
 **Planned** (parameter accepted today, execution raises a clear "not yet implemented" error so call sites stay stable):
@@ -221,7 +225,7 @@ handle = ci.load("./events.parquet", lazy=True)          # LazyHandle; call hand
 df = ci.load("embeddings", source="platform", search="billing complaints", top_k=50)
 ```
 
-**Size guardrails.** Before downloading anything, `ci.load()` sums the matched bytes. Over 1 GB logs a warning with narrowing hints; over 10 GB raises `CirronDataSizeError` unless you pass `confirm_large=True`. SQL sources are the exception: a result set cannot be sized without running the query, so the guard does not apply and you bound the load with `LIMIT` or `where=` instead. The thresholds live on the `Cirron` instance:
+**Size guardrails.** Before downloading anything, `ci.load()` sums the matched bytes. Over 1 GB logs a warning with narrowing hints; over 10 GB raises `CirronDataSizeError` unless you pass `confirm_large=True`. SQL sources are the exception: a result set cannot be sized without running the query, so the guard does not apply. Use `as_="iter"` to stream a large result in bounded memory, or bound it with `LIMIT` or `where=` when you need it as a single DataFrame. The thresholds live on the `Cirron` instance:
 
 ```python
 from cirron import Cirron

@@ -222,6 +222,37 @@ def _histogram_range(lo: float, hi: float) -> tuple[float, float] | None:
     return (lo, hi)
 
 
+def _with_finite_subset(
+    stats: dict[str, Any], numel: int, finite: Any, count: int, kernel: Any
+) -> dict[str, Any]:
+    """Add ``nonfinite_count`` and the finite-subset ``finite`` block.
+
+    Only reached for a tensor whose ``min`` or ``max`` is non-finite, which
+    is exactly the set of tensors holding a NaN or an infinity: both
+    backends propagate NaN through ``min`` / ``max``, and an infinity *is*
+    the min or max. Healthy tensors never get here, so they pay nothing
+    beyond the ``isfinite`` checks :func:`_histogram_range` already makes.
+
+    The subset statistics live under their own key rather than replacing
+    ``mean`` / ``min`` / ``max``, which stay reductions over every element.
+
+    Args:
+        stats: The all-element stats record, without a histogram.
+        numel: Element count of the whole tensor.
+        finite: The tensor's finite elements, as a flat tensor or array.
+        count: Number of elements in ``finite``.
+        kernel: The stats kernel to rerun over ``finite``. Its extremes
+            are finite by construction, so this never recurses further.
+
+    Returns:
+        dict[str, Any]: ``stats`` with ``nonfinite_count`` and ``finite``
+            set. ``finite`` is ``{"count": 0}`` when nothing survived.
+    """
+    stats["nonfinite_count"] = numel - count
+    stats["finite"] = {"count": count, **kernel(finite)} if count else {"count": 0}
+    return stats
+
+
 def _tensor_stats_torch(tensor: Any) -> dict[str, Any]:
     """Compute tensor statistics with native reductions and ``torch.histc``.
 
@@ -247,6 +278,9 @@ def _tensor_stats_torch(tensor: Any) -> dict[str, Any]:
     Returns:
         dict[str, Any]: ``{mean, std, min, max, norm, histogram}`` with
             ``histogram = {bins: list[float] (17), counts: list[int] (16)}``.
+            A tensor holding a NaN or an infinity has no ``histogram`` and
+            carries ``nonfinite_count`` and ``finite`` instead (see
+            :func:`_with_finite_subset`).
     """
     import torch
 
@@ -278,7 +312,14 @@ def _tensor_stats_torch(tensor: Any) -> dict[str, Any]:
     # computed.
     hist_range = _histogram_range(lo, hi)
     if hist_range is None:
-        return {"mean": mean, "std": std, "min": lo, "max": hi, "norm": norm}
+        finite = flat[torch.isfinite(flat)]
+        return _with_finite_subset(
+            {"mean": mean, "std": std, "min": lo, "max": hi, "norm": norm},
+            numel,
+            finite,
+            finite.numel(),
+            _tensor_stats_torch,
+        )
     hist_lo, hist_hi = hist_range
     # Only a single-element tensor skips ``torch.histc``, because that is
     # the one case where the answer is exactly bin 0 without binning: the
@@ -322,7 +363,9 @@ def _tensor_stats_numpy(arr: Any) -> dict[str, Any]:
 
     Returns:
         dict[str, Any]: Same shape as :func:`_tensor_stats_torch`,
-            ``{mean, std, min, max, norm, histogram}``.
+            ``{mean, std, min, max, norm, histogram}``, with the same
+            ``nonfinite_count`` / ``finite`` substitution for a tensor
+            holding a NaN or an infinity.
     """
     import numpy as np
 
@@ -346,7 +389,14 @@ def _tensor_stats_numpy(arr: Any) -> dict[str, Any]:
         norm = float(np.linalg.norm(flat))
     hist_range = _histogram_range(lo, hi)
     if hist_range is None:
-        return {"mean": mean, "std": std, "min": lo, "max": hi, "norm": norm}
+        finite = flat[np.isfinite(flat)]
+        return _with_finite_subset(
+            {"mean": mean, "std": std, "min": lo, "max": hi, "norm": norm},
+            int(flat.size),
+            finite,
+            int(finite.size),
+            _tensor_stats_numpy,
+        )
     # Pass range explicitly so numpy skips its internal min/max scan.
     counts, edges = np.histogram(flat, bins=HISTOGRAM_BINS, range=hist_range)
     return {

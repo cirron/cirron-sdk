@@ -945,3 +945,25 @@ def test_numpy_adapter_1d_empty_selection_returns_zero_cols():
     selected = adapter.select_columns(["nonexistent"])
     assert selected.get_columns() == []
     assert selected.get_shape() == (10, 0)
+
+
+def test_map_batches_forwards_close_to_its_input():
+    # Closing a mapped stream must release the stream underneath it even
+    # while something else still references that stream, rather than
+    # relying on the wrapper holding the last reference.
+    from cirron.data.transform import map_batches
+
+    released: list[bool] = []
+
+    def _inner():
+        try:
+            yield [{"id": 1}]
+            yield [{"id": 2}]
+        finally:
+            released.append(True)
+
+    inner = _inner()
+    mapped = map_batches(inner, lambda row: row)
+    next(mapped)
+    mapped.close()
+    assert released == [True]

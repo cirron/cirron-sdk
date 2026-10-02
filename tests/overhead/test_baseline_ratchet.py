@@ -13,21 +13,27 @@ from __future__ import annotations
 import pytest
 
 
-def test_ratchet_fails_when_measured_exceeds_ceiling(assert_no_regression) -> None:
+def test_ratchet_fails_when_measured_exceeds_ceiling(
+    assert_no_regression, regression_tolerance
+) -> None:
     with pytest.raises(AssertionError, match="regressed"):
         assert_no_regression(
             {"fake_metric": 1.0},
             "fake_metric",
-            1.21,  # ceiling is 1.20
+            regression_tolerance + 0.01,
             unit="μs",
             label="fake metric",
         )
 
 
-def test_ratchet_passes_at_the_tolerance_ceiling(assert_no_regression) -> None:
-    # Exactly at baseline x 1.20 is still acceptable: the tolerance
+def test_ratchet_passes_at_the_tolerance_ceiling(
+    assert_no_regression, regression_tolerance
+) -> None:
+    # Exactly at baseline x tolerance is still acceptable: the tolerance
     # absorbs runner jitter, so the boundary must not be exclusive.
-    assert_no_regression({"fake_metric": 1.0}, "fake_metric", 1.20, unit="μs", label="fake metric")
+    assert_no_regression(
+        {"fake_metric": 1.0}, "fake_metric", regression_tolerance, unit="μs", label="fake metric"
+    )
 
 
 def test_ratchet_is_dormant_for_metrics_absent_from_baseline(assert_no_regression) -> None:
@@ -49,3 +55,20 @@ def test_committed_baseline_is_loadable(baseline_metrics) -> None:
     assert isinstance(baseline_metrics, dict)
     for name, value in baseline_metrics.items():
         assert isinstance(value, (int, float)), f"{name} is not numeric: {value!r}"
+
+
+def test_no_gated_metric_is_tighter_than_its_recorded_spread(
+    baseline_metrics, baseline_spread, regression_tolerance
+) -> None:
+    # A gate narrower than the metric's own run-to-run noise fails on
+    # unchanged code. Every gated metric must carry the spread its baseline
+    # came from, and the tolerance must cover both its worst observed run
+    # and mean plus three standard deviations.
+    for name in baseline_metrics:
+        assert name in baseline_spread, f"{name} is gated but has no recorded spread"
+        spread = baseline_spread[name]
+        widest = max(spread["max_over_median"], spread["mean_3sd_over_median"])
+        assert regression_tolerance >= widest, (
+            f"{name} varies up to {widest:.3f}x its median across CI runs, "
+            f"wider than the {regression_tolerance:.2f}x tolerance gating it"
+        )
