@@ -219,6 +219,31 @@ which records the affected `min` / `max`, or a `"histogram"` entry when
 the histogram alone was unusable. When `histogram` is present it always
 has exactly 17 `bins` and 16 `counts`, as before.
 
+**Finite-subset statistics.** Every reduction propagates a NaN, so the fields above cannot tell one poisoned element from a fully destroyed tensor, and they hide what the surviving values looked like. A tensor holding at least one NaN or infinity therefore also carries `nonfinite_count`, the number of non-finite elements, and a `finite` object with the same statistics computed over its finite elements only:
+
+```json
+"stats": {
+  "mean": null,
+  "std": null,
+  "min": null,
+  "max": null,
+  "norm": null,
+  "nonfinite": { "mean": "nan", "std": "nan", "min": "nan", "max": "nan", "norm": "nan" },
+  "nonfinite_count": 1,
+  "finite": {
+    "count": 999999,
+    "mean": 0.0015,
+    "std": 0.9999,
+    "min": -5.00,
+    "max": 4.72,
+    "norm": 999.9,
+    "histogram": { "bins": [ ... 17 floats ... ], "counts": [ ... 16 ints ... ] }
+  }
+}
+```
+
+The top-level `mean` / `std` / `min` / `max` / `norm` keep their meaning as reductions over every element and are never filled in from the finite subset; the subset values are a different quantity and live only under `finite`. `finite.count + nonfinite_count` is the tensor's element count. When no element is finite, `finite` is `{ "count": 0 }` with no other keys. Both fields are **absent** on a tensor whose elements are all finite, so `nonfinite_count` being present (it is then always at least 1) is the only test a reader needs. A finite tensor whose `norm` overflowed on its own does not carry them, because none of its elements is non-finite. `finite.histogram` follows the same 17/16 shape as the top-level one. `finite.norm` is derived the same way as the top-level `norm` and can overflow on its own; it then follows the top-level rule inside the block, as `null` plus a `nonfinite` map nested in `finite`.
+
 **Small-tensor `counts` changed value (no schema change).** Tensors with
 2 to 31 elements previously reported every value in `counts[0]` on the torch
 backend, which short-circuited binning for anything under `2 × 16`
@@ -318,8 +343,7 @@ anyway, and those files are sealed or sweepable within the hour.
 
 ## Forward compatibility
 
-Readers MUST tolerate unknown top-level keys and unknown per-span / per-mark
-fields so that minor SDK bumps can add optional metadata. Removing or
+Readers MUST tolerate unknown top-level keys and unknown per-span, per-mark, per-snapshot and per-`stats` fields so that minor SDK bumps can add optional metadata. Removing or
 renaming existing fields, or changing their types, requires a
 `schema_version` bump and follows the SDK's SemVer contract. Every batch
 file also carries the producing SDK version in `sdk_version`.
@@ -333,6 +357,8 @@ than behind a bump, because the SDK is pre-stable and the records they
 affect are records whose files did not parse at all beforehand, so no
 working reader could regress. Once the SDK reaches 1.0, changes of this
 shape take a bump.
+
+`snapshots[].stats.nonfinite_count` and `snapshots[].stats.finite` are purely additive optional fields under the rule above, present only on records for tensors holding a non-finite element. No existing field changed meaning, type or presence, so they arrived within `schema_version` 1.
 
 Separately, `snapshots[].stats.histogram.counts` changed *values*, not its
 type, length, or presence rule, for tensors of 2 to 31 elements, which
