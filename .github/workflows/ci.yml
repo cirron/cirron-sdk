@@ -64,6 +64,8 @@ jobs:
               --extra hf --extra image --extra safetensors --extra dotenv
               --extra s3 --extra gcs --extra azure
               --extra postgres --extra mysql
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -71,6 +73,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - uses: astral-sh/setup-uv@v7
       - run: uv sync ${{ matrix.extras_args }}
+      - name: Check the venv runs the matrix Python
+        run: uv run python -c "import sys; v = '.'.join(map(str, sys.version_info[:2])); assert v == '${{ matrix.python-version }}', sys.version"
       - run: uv run pytest tests/unit tests/integration -v
 
   framework-torch:
