@@ -5,14 +5,16 @@ Measures wall-clock overhead of three configurations:
   - ``profile_no_hooks``: ``ci.profile(frameworks=[], snapshots=None)``
   - ``profile_torch_hooks``: ``ci.profile(frameworks=["torch"])``
 
-Asserts each measured overhead ratio stays within a regression
-tolerance of the committed baseline (``baseline.json``). The
-targets (<1% scaffold, <2% torch hooks) are not asserted, because the
-current CPU torch-hook path exceeds those goals in this reference
-loop, so this suite's job is to catch *regressions* from today's
-committed behavior rather than fail on the known gap. The recorded
-JSON artifact carries the raw ratios so a reader can compare against
-the SDK targets without re-running the loop.
+Each ratio is gated against ``baseline.json`` only when that file
+carries a value for it, and today neither does. The ratios swing about
+1.45x across CI runner hardware on identical code, because a faster
+runner shrinks the torch workload more than the SDK's Python overhead,
+and no tolerance that absorbs that swing still catches a meaningful
+regression. They are recorded in every artifact with their full spread
+so a trend stays visible. The targets (<1% scaffold, <2% torch hooks)
+are not asserted either: the current CPU torch-hook path exceeds them in
+this reference loop, and the job here is to catch regressions from
+today's committed behavior, not fail on the known gap.
 
 The model is a two-layer MLP; we're exercising the hook surface
 (forward / backward / optimizer_step / data_load), not training
@@ -75,7 +77,7 @@ def _run_training(loader) -> None:
             opt.step()
 
 
-#: The two ratcheted reference-loop metrics: (config key, metric name, label).
+#: The two reference-loop metrics: (config key, metric name, label).
 _RATIO_METRICS = (
     ("no_hooks", "profile_no_hooks_ratio", "profile() scaffold overhead"),
     ("torch_hooks", "profile_torch_hooks_ratio", "torch hook overhead"),

@@ -66,7 +66,7 @@ Authentication is optional — skip this for standalone use. To connect to the p
 export CIRRON_API_KEY=...
 ```
 
-When running inside a Cirron pipeline or deployment, the pipeline/deployment/run context is injected automatically. When running locally with credentials, the SDK writes to `./.cirron/` and syncs on next platform contact. When running locally *without* credentials, the SDK writes the same artifacts to `./.cirron/` — they stay there, fully usable, and you can read them back in-process with `ci.trace()` or hand the JSON / safetensors files to any tool that consumes those formats.
+When running inside a Cirron pipeline or deployment, the pipeline/deployment/run context is injected automatically. When running locally with credentials, the SDK writes to `./.cirron/` and syncs on next platform contact. When running locally *without* credentials, the SDK writes the same artifacts to `./.cirron/`, where they stay, fully usable. `ci.trace()` renders the *live* session's scope tree in-process; spool files from finished runs are read back with the `cirron` CLI (`cirron spool inspect`, `cirron traces view`, `cirron traces export`) or by handing the JSON / safetensors files to any tool that consumes those formats.
 
 ## `profile()` 
 
@@ -212,6 +212,10 @@ df = ci.load("./raw/", map=to_features)
 # Return type and loading mode
 df = ci.load("./events.parquet", as_="polars")           # "pandas" | "polars" | "iter" | "tensor" | "hf"
 handle = ci.load("./events.parquet", lazy=True)          # LazyHandle; call handle.collect()
+
+# SQL sources stream as_="iter" through a server-side cursor: one batch in memory at a time
+for batch in ci.load("postgres://db.internal/analytics/events", as_="iter", batch_size=10_000):
+    ...
 ```
 
 **Planned** (parameter accepted today, execution raises a clear "not yet implemented" error so call sites stay stable):
@@ -221,7 +225,7 @@ handle = ci.load("./events.parquet", lazy=True)          # LazyHandle; call hand
 df = ci.load("embeddings", source="platform", search="billing complaints", top_k=50)
 ```
 
-**Size guardrails.** Before downloading anything, `ci.load()` sums the matched bytes. Over 1 GB logs a warning with narrowing hints; over 10 GB raises `CirronDataSizeError` unless you pass `confirm_large=True`. SQL sources are the exception: a result set cannot be sized without running the query, so the guard does not apply and you bound the load with `LIMIT` or `where=` instead. The thresholds live on the `Cirron` instance:
+**Size guardrails.** Before downloading anything, `ci.load()` sums the matched bytes. Over 1 GB logs a warning with narrowing hints; over 10 GB raises `CirronDataSizeError` unless you pass `confirm_large=True`. SQL sources are the exception: a result set cannot be sized without running the query, so the guard does not apply. Use `as_="iter"` to stream a large result in bounded memory, or bound it with `LIMIT` or `where=` when you need it as a single DataFrame. The thresholds live on the `Cirron` instance:
 
 ```python
 from cirron import Cirron
@@ -345,7 +349,8 @@ The SDK uses `uv` for dependency management.
 uv sync                          # core + dev deps
 uv sync --all-extras             # + pandas, polars, torch, tensorflow, transformers, hf
 
-uv run pytest tests/unit -v      # run unit tests
+uv run pytest tests/unit tests/integration -v   # what CI's test job runs
+uv run pytest tests/unit -v      # quick local subset
 uv run ruff check src tests      # lint
 uv run ruff format --check src tests
 uv run mypy src                  # typecheck

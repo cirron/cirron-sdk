@@ -16,14 +16,15 @@ from __future__ import annotations
 import math
 from typing import Any
 
-import numpy as np
 import pytest
 
-from cirron.core.flush import FlushThread, SpoolWriter
-from cirron.core.mark import MarkBuffer
-from cirron.core.scope import ScopeStack
-from cirron.core.snapshot_buffer import SnapshotBuffer
-from cirron.snapshots.stats import (
+np = pytest.importorskip("numpy")
+
+from cirron.core.flush import FlushThread, SpoolWriter  # noqa: E402
+from cirron.core.mark import MarkBuffer  # noqa: E402
+from cirron.core.scope import ScopeStack  # noqa: E402
+from cirron.core.snapshot_buffer import SnapshotBuffer  # noqa: E402
+from cirron.snapshots.stats import (  # noqa: E402
     HISTOGRAM_BINS,
     _tensor_stats,
     capture,
@@ -343,11 +344,165 @@ def test_torch_and_numpy_agree_on_nonfinite_stats():
 
 
 def test_large_nonfinite_torch_tensor_omits_histogram():
-    # >= 2*bins elements takes the torch.histc branch, which raises on a
-    # non-finite range rather than returning garbage.
+    # A tensor with 2 or more elements takes the torch.histc branch,
+    # which raises on a non-finite range rather than returning garbage.
     torch = pytest.importorskip("torch")
     from cirron.snapshots.stats import _tensor_stats_torch
 
     stats = _tensor_stats_torch(torch.full((100,), float("nan")))
     assert "histogram" not in stats
     assert math.isnan(stats["mean"])
+
+
+# finite-subset statistics on non-finite tensors
+
+
+def test_one_bad_element_is_distinguishable_from_a_destroyed_tensor():
+    # Both used to produce byte-identical records: every reduction
+    # propagates the NaN and the histogram is dropped, so a single poisoned
+    # gradient and a fully exploded layer looked the same.
+    rng = np.random.default_rng(0)
+    one_bad = rng.standard_normal(1_000_000)
+    one_bad[12345] = np.nan
+    all_bad = np.full(1_000_000, np.nan)
+
+    one = _tensor_stats(one_bad)
+    destroyed = _tensor_stats(all_bad)
+
+    assert one["nonfinite_count"] == 1
+    assert one["finite"]["count"] == 999_999
+    healthy = one_bad[np.isfinite(one_bad)]
+    assert one["finite"]["mean"] == pytest.approx(float(healthy.mean()))
+    assert one["finite"]["std"] == pytest.approx(float(healthy.std()))
+    assert one["finite"]["min"] == float(healthy.min())
+    assert one["finite"]["max"] == float(healthy.max())
+    assert sum(one["finite"]["histogram"]["counts"]) == 999_999
+
+    assert destroyed["nonfinite_count"] == 1_000_000
+    assert destroyed["finite"] == {"count": 0}
+
+
+def test_finite_subset_excludes_both_infinities():
+    stats = _tensor_stats(np.array([-np.inf, 1.0, 2.0, 3.0, np.inf], dtype=np.float64))
+
+    assert stats["nonfinite_count"] == 2
+    finite = stats["finite"]
+    assert finite["count"] == 3
+    assert (finite["min"], finite["max"], finite["mean"]) == (1.0, 3.0, 2.0)
+    assert len(finite["histogram"]["bins"]) == HISTOGRAM_BINS + 1
+    assert sum(finite["histogram"]["counts"]) == 3
+
+
+def test_finite_subset_leaves_the_all_element_contract_alone():
+    # mean / min / max are reductions over every element. The finite-subset
+    # values live under their own key so the documented fields keep meaning
+    # the same thing across SDK versions.
+    stats = _tensor_stats(np.array([np.nan, 1.0, 2.0], dtype=np.float64))
+    assert math.isnan(stats["mean"])
+    assert math.isnan(stats["min"])
+    assert "histogram" not in stats
+    assert stats["finite"]["mean"] == 1.5
+
+
+def test_healthy_tensor_carries_no_finite_subset():
+    stats = _tensor_stats(np.arange(64, dtype=np.float64))
+    assert "nonfinite_count" not in stats
+    assert "finite" not in stats
+
+
+def test_torch_and_numpy_agree_on_finite_subset():
+    torch = pytest.importorskip("torch")
+    from cirron.snapshots.stats import _tensor_stats_numpy, _tensor_stats_torch
+
+    values = [float("nan"), 1.0, -3.0, float("inf"), 0.5, 2.0, float("-inf"), 4.0]
+    t_stats = _tensor_stats_torch(torch.tensor(values, dtype=torch.float64))
+    n_stats = _tensor_stats_numpy(np.array(values, dtype=np.float64))
+
+    assert set(t_stats) == set(n_stats)
+    assert t_stats["nonfinite_count"] == n_stats["nonfinite_count"] == 3
+    t_fin, n_fin = t_stats["finite"], n_stats["finite"]
+    assert set(t_fin) == set(n_fin)
+    assert t_fin["count"] == n_fin["count"] == 5
+    for key in ("mean", "std", "min", "max", "norm"):
+        # norm is algebraic on torch and a direct pass on numpy.
+        assert t_fin[key] == pytest.approx(n_fin[key], rel=1e-9), key
+    assert t_fin["histogram"]["counts"] == n_fin["histogram"]["counts"]
+    assert t_fin["histogram"]["bins"] == pytest.approx(n_fin["histogram"]["bins"])
+
+
+def test_torch_all_nonfinite_tensor_reports_an_empty_finite_subset():
+    torch = pytest.importorskip("torch")
+    from cirron.snapshots.stats import _tensor_stats_torch
+
+    stats = _tensor_stats_torch(torch.full((100,), float("inf")))
+    assert stats["nonfinite_count"] == 100
+    assert stats["finite"] == {"count": 0}
+
+
+def test_finite_subset_reaches_the_batch(tmp_path):
+    buf = SnapshotBuffer()
+    weights = np.array([np.nan, 1.0, 3.0], dtype=np.float32)
+    model = _FakeModel([("layer.weight", _FakeTensor(weights))])
+    buf.extend(capture(_fake_cirron(snapshots="stats"), model, "epoch-9", include_grads=False))
+
+    ft = FlushThread(
+        ScopeStack(), MarkBuffer(), SpoolWriter(tmp_path / "spool"), snapshot_buffer=buf
+    )
+    batch = ft.drain_once()
+    assert batch is not None
+
+    import json
+
+    stats = json.loads(json.dumps(batch.to_json(), allow_nan=False))["snapshots"][0]["stats"]
+    assert stats["mean"] is None
+    assert stats["nonfinite"]["mean"] == "nan"
+    assert stats["nonfinite_count"] == 1
+    assert stats["finite"]["count"] == 2
+    assert stats["finite"]["mean"] == 2.0
+    assert "nonfinite" not in stats["finite"]
+
+
+# small-tensor histograms
+
+
+def test_small_tensor_histogram_is_real():
+    # The torch kernel used to skip torch.histc for anything under
+    # 2 * HISTOGRAM_BINS and report every value in bin 0. Bias vectors and
+    # BatchNorm scale/shift tensors land in that range constantly, so their
+    # histograms were a fabricated spike at the left edge.
+    torch = pytest.importorskip("torch")
+    from cirron.snapshots.stats import _tensor_stats_torch
+
+    values = [i / 9.0 for i in range(10)]  # 10 values evenly spread over [0, 1]
+    counts = _tensor_stats_torch(torch.tensor(values))["histogram"]["counts"]
+
+    assert sum(counts) == 10
+    assert counts != [10] + [0] * (HISTOGRAM_BINS - 1), "values were fabricated into bin 0"
+    assert sum(1 for c in counts if c) > 1, "a spread tensor must occupy multiple bins"
+
+
+def test_torch_and_numpy_small_tensor_parity():
+    # Same 10 values, both kernels: the numpy kernel never had the
+    # short-circuit, so the two backends disagreed structurally on every
+    # 2..31-element tensor.
+    torch = pytest.importorskip("torch")
+    from cirron.snapshots.stats import _tensor_stats_numpy, _tensor_stats_torch
+
+    values = [i / 9.0 for i in range(10)]
+    t_stats = _tensor_stats_torch(torch.tensor(values, dtype=torch.float64))
+    n_stats = _tensor_stats_numpy(np.array(values, dtype=np.float64))
+
+    assert t_stats["histogram"]["counts"] == n_stats["histogram"]["counts"]
+    assert t_stats["histogram"]["bins"] == pytest.approx(n_stats["histogram"]["bins"])
+
+
+def test_single_element_tensor_still_short_circuits():
+    # The one case the shortcut still covers, and the one case where
+    # all-in-bin-0 is exactly right: the lone value sits at ``lo``.
+    torch = pytest.importorskip("torch")
+    from cirron.snapshots.stats import _tensor_stats_torch
+
+    stats = _tensor_stats_torch(torch.tensor([4.0]))
+    assert stats["histogram"]["counts"] == [1] + [0] * (HISTOGRAM_BINS - 1)
+    assert stats["min"] == 4.0
+    assert stats["max"] == 4.0

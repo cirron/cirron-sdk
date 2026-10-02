@@ -28,7 +28,7 @@ Feature requests go in the issue tracker too, via the [feature request template]
 1. **Fork** the repository and create a branch from `release`.
 2. **Set up** your local environment (see [Getting set up](#getting-set-up) below).
 3. **Commit** with clear, concise messages. Imperative mood (`Add foo`, not `Added foo`); first line under 72 chars; reference issues with `Closes #N` in the body.
-4. **Test**: `uv run pytest tests/unit -v` and `uv run ruff check src tests && uv run ruff format --check src tests && uv run mypy src` must all pass locally before you push.
+4. **Test**: `uv run pytest tests/unit tests/integration -v` (what CI's test job runs) and `uv run ruff check src tests && uv run ruff format --check src tests && uv run mypy src` must all pass locally before you push.
 5. **Submit** a PR against `release` using the [PR template](.github/pull_request_template.md). Fill out every section, especially **New dependencies**.
 
 > **Why `release` and not `main`?** `release` is the integration trunk where work lands.
@@ -105,7 +105,8 @@ uv sync --all-extras             # + every optional extra (torch, tf, transforme
 Before you push:
 
 ```bash
-uv run pytest tests/unit -v      # unit tests
+uv run pytest tests/unit tests/integration -v   # what CI's test job runs
+uv run pytest tests/unit -v      # quick local subset
 uv run ruff check src tests      # lint
 uv run ruff format --check src tests
 uv run mypy src                  # typecheck

@@ -3,9 +3,17 @@
 Covers the shared :mod:`cirron.data.sql` helpers (URI parsing,
 credential resolution, query composition) and the per-driver source
 shims (postgres, mysql, databricks, snowflake). All driver tests mock
-the underlying driver so the suite runs with zero optional deps
+the underlying driver, so none of the four SQL extras need to be
 installed, and the "missing driver raises CirronDependencyError" path is
-also exercised explicitly.
+exercised explicitly.
+
+``pandas`` is needed only by the tests that materialize a DataFrame.
+It is imported lazily inside ``execute_to_pandas``, so the module
+itself imports fine without it. Those tests take the
+``requires_pandas`` fixture below; everything else, including URI
+parsing, query composition, credential resolution, credential
+redaction and the streaming path, runs on a clean ``uv sync`` with no
+extras.
 """
 
 from __future__ import annotations
@@ -15,10 +23,9 @@ import types
 import urllib.error
 from typing import Any
 
-import pandas as pd
 import pytest
 
-from cirron import Cirron
+import cirron as ci
 from cirron.core import config as _config_mod
 from cirron.core.errors import CirronDependencyError, CirronPlatformRequired
 from cirron.data import sql as sql_mod
@@ -29,15 +36,17 @@ from cirron.data.sql import (
     SqlUri,
     build_query,
     driver,
+    execute_to_iter,
     execute_to_pandas,
     parse_sql_uri,
     run_select,
+    stream_select,
 )
 
 
 @pytest.fixture(autouse=True)
 def _clean_singletons(monkeypatch):
-    """Match test_load.py's fixture so ``Cirron()`` starts from defaults."""
+    """Match test_load.py's fixture so ``ci.Cirron()`` starts from defaults."""
     monkeypatch.setattr(_config_mod, "_read_home_config_toml", lambda path=None: {})
     for env_name in _config_mod._ENV_MAP.values():
         monkeypatch.delenv(env_name, raising=False)
@@ -56,9 +65,9 @@ def _clean_singletons(monkeypatch):
     _config_mod._reset_default_for_tests()
 
 
-def _cirron() -> Cirron:
+def _cirron() -> ci.Cirron:
     """Unauthenticated Cirron, which forces the env-fallback credential path."""
-    return Cirron(api_key=None, api_endpoint="https://api.example.com")
+    return ci.Cirron(api_key=None, api_endpoint="https://api.example.com")
 
 
 def _request(**kwargs: Any) -> LoadRequest:
@@ -69,6 +78,18 @@ def _request(**kwargs: Any) -> LoadRequest:
     }
     defaults.update(kwargs)
     return LoadRequest(**defaults)
+
+
+@pytest.fixture
+def requires_pandas():
+    """Skip a test that materializes a DataFrame when pandas is absent.
+
+    ``execute_to_pandas`` imports pandas lazily and raises
+    ``CirronDependencyError`` without it, so the tests that reach it need
+    the real thing. Requested by fixture rather than guarded at module
+    scope so every other test still runs on a minimal install.
+    """
+    return pytest.importorskip("pandas")
 
 
 # URI parsing
@@ -169,6 +190,100 @@ class TestParseSqlUri:
             parse_sql_uri("host/table")
 
 
+class TestParseErrorRedaction:
+    """Malformed URIs must not echo inline credentials into the message.
+
+    ``ci.load()`` supports ``postgres://user:pw@host/db/table``, and these
+    ValueErrors propagate uncaught to the caller, so an unredacted message
+    writes a plaintext password into stdout, training logs, and any crash
+    reporter that records exception strings.
+    """
+
+    @pytest.mark.parametrize(
+        ("uri", "host"),
+        [
+            ("postgres://alice:s3cret@db:5432", "db"),
+            ("postgres://alice:s3cret@db/a/b/c/d", "db"),
+            ("mysql://alice:s3cret@db/app/.events", "db"),
+            ("snowflake://alice:s3cret@acct", "acct"),
+            # Malformed authorities: urlsplit leaves netloc empty and puts
+            # the credentials in path, so a netloc-only redactor misses
+            # them. Both of these reach a raise site.
+            ("postgres:alice:s3cret@db/a/b/c/d", "db"),  # no "//"
+            ("postgres:/alice:s3cret@db/a/b/c/d", "db"),  # one "/"
+            ("postgres:///alice:s3cret@db/a/b/c/d", "db"),  # three "/"
+            ("://alice:s3cret@db/x", "db"),  # no scheme either
+        ],
+    )
+    def test_parse_error_redacts_password(self, uri, host):
+        with pytest.raises(ValueError) as exc:
+            parse_sql_uri(uri)
+        message = str(exc.value)
+        assert "s3cret" not in message, "password leaked into the error message"
+        assert "alice" not in message, "username leaked into the error message"
+        assert host in message, "message must keep the host to stay actionable"
+
+    def test_redact_uri_passthrough(self):
+        # No userinfo means nothing to strip, and the string is returned
+        # untouched rather than round-tripped through urlunsplit.
+        uri = "postgres://db:5432/app/events"
+        assert sql_mod._redact_uri(uri) is uri
+
+    def test_redact_uri_keeps_host_port_and_path(self):
+        assert (
+            sql_mod._redact_uri("postgres://alice:s3cret@db:5432/app/events")
+            == "postgres://db:5432/app/events"
+        )
+
+    def test_redact_uri_strips_userinfo_without_password(self):
+        assert sql_mod._redact_uri("mysql://alice@db/app/orders") == "mysql://db/app/orders"
+
+    def test_redact_uri_handles_at_sign_inside_password(self):
+        # rsplit on the last '@' is what makes this work: an unescaped '@'
+        # in the password would otherwise leave the tail of it behind.
+        assert (
+            sql_mod._redact_uri("postgres://alice:p@ss@db:5432/app/events")
+            == "postgres://db:5432/app/events"
+        )
+
+    @pytest.mark.parametrize(
+        ("uri", "expected"),
+        [
+            # Missing "//": the whole authority lands in path, not netloc.
+            ("postgres:alice:s3cret@db/a/b/c/d", "postgres:db/a/b/c/d"),
+            ("mysql:alice:s3cret@db/a/b/c/d", "mysql:db/a/b/c/d"),
+            ("postgres:alice@db/a/b/c/d", "postgres:db/a/b/c/d"),
+            ("postgres:alice:p@ss@db/a/b/c/d", "postgres:db/a/b/c/d"),
+            # Any other number of slashes before the authority, which also
+            # leaves netloc empty. The slashes the user typed are kept.
+            ("postgres:/alice:s3cret@db/a/b/c/d", "postgres:/db/a/b/c/d"),
+            ("postgres:///alice:s3cret@db/a/b/c/d", "postgres:///db/a/b/c/d"),
+            ("postgres:////alice:s3cret@db/a", "postgres:////db/a"),
+            # Missing scheme as well.
+            ("://alice:s3cret@db/x", "://db/x"),
+            ("//alice:s3cret@db/x", "//db/x"),
+            # Authority with no path after it.
+            ("postgres:alice:s3cret@db", "postgres:db"),
+        ],
+    )
+    def test_redact_uri_handles_malformed_authority(self, uri, expected):
+        assert sql_mod._redact_uri(uri) == expected
+
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            "postgres://db:5432/app/events",
+            "postgres:///a/b/c/d",
+            "host/table",
+            "postgres://db/app/events?sslmode=require",
+        ],
+    )
+    def test_redact_uri_leaves_credential_free_uris_alone(self, uri):
+        # The malformed-authority fallback must not rewrite URIs that
+        # carry no userinfo at all.
+        assert sql_mod._redact_uri(uri) is uri
+
+
 # query composition
 
 
@@ -245,7 +360,7 @@ class TestCredentialResolver:
 
         monkeypatch.setattr("cirron.data.sql.urllib.request.urlopen", _fake_urlopen)
         uri = parse_sql_uri("postgres://alice@db/app/events")
-        cirron = Cirron(api_key="TOKEN", api_endpoint="https://api.example.com")
+        cirron = ci.Cirron(api_key="TOKEN", api_endpoint="https://api.example.com")
         creds = CredentialResolver(cirron, uri).resolve()
         assert creds.password == "from-platform"
         assert creds.port == 5433
@@ -261,7 +376,7 @@ class TestCredentialResolver:
         monkeypatch.setattr("cirron.data.sql.urllib.request.urlopen", _fake_urlopen)
         monkeypatch.setenv("PGPASSWORD", "env-pass")
         uri = parse_sql_uri("postgres://alice@db/app/events")
-        cirron = Cirron(api_key="TOKEN", api_endpoint="https://api.example.com")
+        cirron = ci.Cirron(api_key="TOKEN", api_endpoint="https://api.example.com")
         creds = CredentialResolver(cirron, uri).resolve()
         assert creds.password == "env-pass"
 
@@ -272,7 +387,7 @@ class TestCredentialResolver:
         monkeypatch.setattr("cirron.data.sql.urllib.request.urlopen", _fake_urlopen)
         monkeypatch.setenv("PGPASSWORD", "env-pass")
         uri = parse_sql_uri("postgres://alice@db/app/events")
-        cirron = Cirron(api_key="TOKEN", api_endpoint="https://api.example.com")
+        cirron = ci.Cirron(api_key="TOKEN", api_endpoint="https://api.example.com")
         creds = CredentialResolver(cirron, uri).resolve()
         assert creds.password == "env-pass"
 
@@ -309,20 +424,32 @@ class _FakeCursor:
 
     def __init__(self, rows, description):
         self._rows = rows
+        self._pos = 0
         self.description = description
         self.executed: str | None = None
         self.closed = False
+        self.fetchall_called = False
+        self.fetchmany_sizes: list[int] = []
 
     def execute(self, query):
         self.executed = query
+        self._pos = 0
 
     def fetchall(self):
+        self.fetchall_called = True
         return self._rows
+
+    def fetchmany(self, size):
+        self.fetchmany_sizes.append(size)
+        chunk = self._rows[self._pos : self._pos + size]
+        self._pos += len(chunk)
+        return chunk
 
     def close(self):
         self.closed = True
 
 
+@pytest.mark.usefixtures("requires_pandas")
 class TestExecuteToPandas:
     def test_materializes_to_dataframe(self):
         cursor = _FakeCursor(
@@ -347,6 +474,7 @@ class TestExecuteToPandas:
 # driver
 
 
+@pytest.mark.usefixtures("requires_pandas")
 class TestRunSelect:
     """The shared connect/cursor/cleanup tail for all four driver shims."""
 
@@ -422,6 +550,7 @@ class TestDriver:
 
 
 class TestPostgresDataSource:
+    @pytest.mark.usefixtures("requires_pandas")
     def test_happy_path(self, monkeypatch):
         from cirron.data.sources.postgres import PostgresDataSource
 
@@ -476,6 +605,7 @@ class TestPostgresDataSource:
 
 
 class TestMySqlDataSource:
+    @pytest.mark.usefixtures("requires_pandas")
     def test_happy_path(self, monkeypatch):
         from cirron.data.sources.mysql import MySqlDataSource
 
@@ -550,6 +680,7 @@ class TestSnowflakeDataSource:
         monkeypatch.setitem(sys.modules, "snowflake", pkg)
         monkeypatch.setitem(sys.modules, "snowflake.connector", connector)
 
+    @pytest.mark.usefixtures("requires_pandas")
     def test_happy_path(self, monkeypatch):
         from cirron.data.sources.snowflake import SnowflakeDataSource
 
@@ -578,6 +709,7 @@ class TestSnowflakeDataSource:
         assert cursor.closed is True, "snowflake shim must close its cursor"
         assert connect_calls["conn_closed"] is True
 
+    @pytest.mark.usefixtures("requires_pandas")
     def test_token_auth(self, monkeypatch):
         """A token with no password switches the connector to OAuth."""
         from cirron.data.sources.snowflake import SnowflakeDataSource
@@ -609,7 +741,7 @@ class TestSnowflakeDataSource:
         uri = parse_sql_uri("snowflake://acct/DB.PUB.T")
         src = SnowflakeDataSource(
             uri,
-            Cirron(api_key="TOK", api_endpoint="https://api.example.com"),
+            ci.Cirron(api_key="TOK", api_endpoint="https://api.example.com"),
             _request(scheme="snowflake"),
         )
         # Force the resolver to supply a password so we fail at import,
@@ -643,6 +775,7 @@ class TestDatabricksDataSource:
         monkeypatch.setitem(sys.modules, "databricks", pkg)
         monkeypatch.setitem(sys.modules, "databricks.sql", sql_submodule)
 
+    @pytest.mark.usefixtures("requires_pandas")
     def test_happy_path(self, monkeypatch):
         from cirron.data.sources.databricks import DatabricksDataSource
 
@@ -669,6 +802,7 @@ class TestDatabricksDataSource:
         assert list(df["name"]) == ["acme"]
         assert connect_calls["conn_closed"] is True
 
+    @pytest.mark.usefixtures("requires_pandas")
     def test_http_path_from_platform_integration_beats_env(self, monkeypatch):
         """``extra.http_path`` from the resolver wins over the env var."""
         from cirron.data.sources.databricks import DatabricksDataSource
@@ -712,10 +846,8 @@ class TestDatabricksDataSource:
 
 
 class TestEndToEnd:
-    def test_where_passed_through_to_source(self, monkeypatch):
+    def test_where_passed_through_to_source(self, requires_pandas, monkeypatch):
         """``ci.load('postgres://...', where=...)`` reaches the driver cursor."""
-        import cirron as ci
-
         captured: dict[str, Any] = {}
         cursor = _FakeCursor([(1,)], [("id", None)])
 
@@ -740,7 +872,346 @@ class TestEndToEnd:
             where="created_at > '2025-01-01'",
         )
         assert "created_at > '2025-01-01'" in (cursor.executed or "")
-        assert isinstance(result, pd.DataFrame)
+        assert isinstance(result, requires_pandas.DataFrame)
+
+
+# streaming (as_='iter')
+
+
+_ROWS = [(i, f"n{i}") for i in range(5)]
+_DESC = [("id", None), ("name", None)]
+
+
+class TestExecuteToIter:
+    def test_yields_row_dict_batches_from_fetchmany(self):
+        cursor = _FakeCursor(_ROWS, _DESC)
+        batches = list(execute_to_iter(cursor, "SELECT * FROM t", 2))
+        assert cursor.executed == "SELECT * FROM t"
+        assert [len(b) for b in batches] == [2, 2, 1]
+        assert batches[0] == [{"id": 0, "name": "n0"}, {"id": 1, "name": "n1"}]
+        assert cursor.fetchall_called is False, "the streaming path must never fetchall"
+        assert set(cursor.fetchmany_sizes) == {2}
+
+    def test_empty_result_yields_nothing(self):
+        assert list(execute_to_iter(_FakeCursor([], _DESC), "SELECT 1", 10)) == []
+
+    def test_batch_size_below_one_fetches_one_row_at_a_time(self):
+        cursor = _FakeCursor(_ROWS[:2], _DESC)
+        assert len(list(execute_to_iter(cursor, "SELECT 1", 0))) == 2
+        assert set(cursor.fetchmany_sizes) == {1}
+
+
+class TestStreamSelect:
+    """Connection lifetime for the streaming tail."""
+
+    def _fake(self, events: list[str], rows=_ROWS):
+        cursor = _FakeCursor(list(rows), _DESC)
+        cursor.close = lambda: events.append("cursor")  # type: ignore[method-assign]
+
+        class _Conn:
+            def cursor(self, *args, **kwargs):
+                events.append(f"cursor-open{args}{kwargs}")
+                return cursor
+
+            def close(self):
+                events.append("conn")
+
+        def _connect(**kw):
+            events.append("connect")
+            return _Conn()
+
+        return _connect, cursor
+
+    def test_connects_and_executes_before_the_first_next(self):
+        # Bad credentials or a bad table should fail at ci.load(), not at
+        # the caller's first loop iteration somewhere downstream.
+        events: list[str] = []
+        connect, cursor = self._fake(events)
+        stream_select(connect, {}, "SELECT 1", 2)
+        assert events[0] == "connect"
+        assert cursor.executed == "SELECT 1"
+
+    def test_closes_the_connection_when_exhausted(self):
+        events: list[str] = []
+        connect, _ = self._fake(events)
+        assert sum(len(b) for b in stream_select(connect, {}, "SELECT 1", 2)) == 5
+        assert events[-1] == "conn"
+
+    def test_closes_the_connection_when_abandoned_early(self):
+        events: list[str] = []
+        connect, _ = self._fake(events)
+        it = stream_select(connect, {}, "SELECT 1", 2)
+        next(it)
+        it.close()
+        assert events[-1] == "conn"
+
+    def test_closes_the_connection_when_closed_before_iterating(self):
+        # The first batch is fetched before stream_select returns, so the
+        # connection is already open. close() must release it even though
+        # the caller never called next().
+        events: list[str] = []
+        connect, _ = self._fake(events)
+        it = stream_select(connect, {}, "SELECT 1", 2)
+        it.close()
+        assert events[-1] == "conn", "released by close(), not by garbage collection"
+
+    def test_closes_the_connection_on_an_empty_result(self):
+        events: list[str] = []
+        connect, _ = self._fake(events, rows=[])
+        assert list(stream_select(connect, {}, "SELECT 1", 2)) == []
+        assert events[-1] == "conn"
+
+    def test_closes_the_connection_when_the_query_raises(self):
+        events: list[str] = []
+
+        class _Cursor:
+            def execute(self, q):
+                raise RuntimeError("query blew up")
+
+        class _Conn:
+            def cursor(self):
+                return _Cursor()
+
+            def close(self):
+                events.append("conn")
+
+        with pytest.raises(RuntimeError, match="query blew up"):
+            stream_select(lambda **kw: _Conn(), {}, "SELECT 1", 2)
+        assert events == ["conn"]
+
+    def test_cursor_factory_and_cursor_close_order(self):
+        events: list[str] = []
+        connect, _ = self._fake(events)
+        list(
+            stream_select(
+                connect,
+                {},
+                "SELECT 1",
+                2,
+                cursor_factory=lambda conn: conn.cursor(name="srv"),
+                release_cursor=lambda cursor: cursor.close(),
+            )
+        )
+        assert "cursor-open(){'name': 'srv'}" in events
+        assert events[-2:] == ["cursor", "conn"]
+
+
+def _fake_psycopg(monkeypatch, cursor, opened: list[Any]):
+    class _FakeConn:
+        def cursor(self, *args, **kwargs):
+            opened.append((args, kwargs))
+            return cursor
+
+        def close(self):
+            opened.append("closed")
+
+    fake = types.ModuleType("psycopg")
+    fake.connect = lambda **kw: _FakeConn()  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "psycopg", fake)
+
+
+class TestDriverStreamCursors:
+    """Each shim asks its driver for a cursor that pages server-side."""
+
+    def test_postgres_uses_a_named_server_side_cursor(self, monkeypatch):
+        from cirron.data.sources.postgres import PostgresDataSource
+
+        opened: list[Any] = []
+        cursor = _FakeCursor(_ROWS, _DESC)
+        _fake_psycopg(monkeypatch, cursor, opened)
+        src = PostgresDataSource(
+            parse_sql_uri("postgres://u:pw@h/db/t"), _cirron(), _request(scheme="postgres")
+        )
+        assert sum(len(b) for b in src.stream(2)) == 5
+        assert opened[0] == ((), {"name": "cirron_stream"})
+        assert opened[-1] == "closed"
+
+    def test_mysql_uses_an_unbuffered_sscursor(self, monkeypatch):
+        from cirron.data.sources.mysql import MySqlDataSource
+
+        opened: list[Any] = []
+        cursor = _FakeCursor(_ROWS, _DESC)
+
+        class _FakeConn:
+            def cursor(self, *args, **kwargs):
+                opened.append(args)
+                return cursor
+
+            def close(self):
+                opened.append("closed")
+
+        fake = types.ModuleType("pymysql")
+        fake_cursors = types.ModuleType("pymysql.cursors")
+
+        class SSCursor:
+            pass
+
+        fake_cursors.SSCursor = SSCursor  # type: ignore[attr-defined]
+        fake.cursors = fake_cursors  # type: ignore[attr-defined]
+        fake.connect = lambda **kw: _FakeConn()  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "pymysql", fake)
+        monkeypatch.setitem(sys.modules, "pymysql.cursors", fake_cursors)
+
+        src = MySqlDataSource(
+            parse_sql_uri("mysql://u:pw@h/db/t"), _cirron(), _request(scheme="mysql")
+        )
+        assert sum(len(b) for b in src.stream(2)) == 5
+        assert opened[0] == (SSCursor,)
+        assert cursor.closed is False, "closing an SSCursor drains the rest of the result"
+        assert cursor.connection is None, "the cursor must be detached so PyMySQL can't drain it"
+        assert opened[-1] == "closed"
+
+    def test_snowflake_streams_and_closes_its_cursor(self, monkeypatch):
+        from cirron.data.sources.snowflake import SnowflakeDataSource
+
+        calls: dict[str, Any] = {}
+        cursor = _FakeCursor(_ROWS, _DESC)
+        TestSnowflakeDataSource._install_fake_driver(monkeypatch, calls, cursor)
+        monkeypatch.setenv("SNOWFLAKE_PASSWORD", "pw")
+        src = SnowflakeDataSource(
+            parse_sql_uri("snowflake://u@acct/db.sch.t"), _cirron(), _request(scheme="snowflake")
+        )
+        assert sum(len(b) for b in src.stream(2)) == 5
+        assert cursor.fetchall_called is False
+        assert cursor.closed is True
+        assert calls["conn_closed"] is True
+
+    def test_databricks_streams(self, monkeypatch):
+        from cirron.data.sources.databricks import DatabricksDataSource
+
+        calls: dict[str, Any] = {}
+        cursor = _FakeCursor(_ROWS, _DESC)
+        TestDatabricksDataSource._install_fake_driver(monkeypatch, calls, cursor)
+        monkeypatch.setenv("DATABRICKS_TOKEN", "dapi-xxx")
+        monkeypatch.setenv("DATABRICKS_HTTP_PATH", "/sql/1.0/warehouses/abc")
+        src = DatabricksDataSource(
+            parse_sql_uri("databricks://w/c.s.t"), _cirron(), _request(scheme="databricks")
+        )
+        assert sum(len(b) for b in src.stream(2)) == 5
+        assert cursor.fetchall_called is False
+        assert calls["conn_closed"] is True
+
+
+class TestStreamingLoad:
+    """``ci.load(..., as_='iter')`` on a SQL source streams end to end."""
+
+    @pytest.fixture
+    def pg(self, monkeypatch):
+        opened: list[Any] = []
+        cursor = _FakeCursor(_ROWS, _DESC)
+        _fake_psycopg(monkeypatch, cursor, opened)
+        return cursor, opened
+
+    def test_iter_streams_batches_without_fetchall(self, pg):
+        cursor, opened = pg
+        batches = list(ci.load("postgres://u:pw@h/db/t", as_="iter", batch_size=2))
+        assert [len(b) for b in batches] == [2, 2, 1]
+        assert batches[0][0] == {"id": 0, "name": "n0"}
+        assert cursor.fetchall_called is False
+        assert opened[-1] == "closed"
+
+    def test_batch_size_one_yields_single_rows(self, pg):
+        rows = list(ci.load("postgres://u:pw@h/db/t", as_="iter", batch_size=1))
+        assert rows[:2] == [{"id": 0, "name": "n0"}, {"id": 1, "name": "n1"}]
+        assert len(rows) == 5
+
+    def test_lazy_defers_the_query_until_collect(self, pg):
+        cursor, _ = pg
+        handle = ci.load("postgres://u:pw@h/db/t", as_="iter", batch_size=2, lazy=True)
+        assert cursor.executed is None
+        assert sum(len(b) for b in handle.collect()) == 5
+        assert cursor.fetchall_called is False
+
+    def test_rowwise_map_runs_per_batch_with_global_row_indices(self, pg):
+        from cirron.core.errors import CirronError
+
+        out = list(
+            ci.load(
+                "postgres://u:pw@h/db/t",
+                as_="iter",
+                batch_size=2,
+                map=lambda row: {**row, "double": row["id"] * 2},
+            )
+        )
+        assert [r["double"] for b in out for r in b] == [0, 2, 4, 6, 8]
+
+        def _boom(row):
+            if row["id"] == 3:
+                raise ValueError("bad row")
+            return row
+
+        it = ci.load("postgres://u:pw@h/db/t", as_="iter", batch_size=2, map=_boom)
+        with pytest.raises(CirronError, match="row 3"):
+            list(it)
+
+    def test_batch_map_is_rejected_before_connecting(self, pg):
+        from cirron.core.errors import CirronError
+
+        cursor, opened = pg
+
+        @ci.map
+        def _whole_frame(df):
+            return df
+
+        with pytest.raises(CirronError, match="as_='iter'"):
+            ci.load("postgres://u:pw@h/db/t", as_="iter", map=_whole_frame)
+        assert opened == [], "a rejected call must not open a connection"
+
+    def test_multiple_sql_sources_stream_in_order(self, pg):
+        batches = list(
+            ci.load(
+                ["postgres://u:pw@h/db/a", "postgres://u:pw@h/db/b"],
+                as_="iter",
+                batch_size=10,
+            )
+        )
+        # One batch per source: batches never span a source boundary.
+        assert [len(b) for b in batches] == [5, 5]
+
+    @pytest.mark.parametrize("iterate_first", [True, False], ids=["mid-stream", "unstarted"])
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"batch_size": 2},
+            {"batch_size": 2, "map": lambda row: row},
+            {"batch_size": 1},
+            {"batch_size": 2, "multi": True},
+            {"batch_size": 1, "multi": True},
+            {"batch_size": 2, "multi": True, "map": lambda row: row},
+        ],
+        ids=["single", "map", "rows", "multi", "multi-rows", "multi-map"],
+    )
+    def test_close_releases_every_open_connection(self, pg, kwargs, iterate_first):
+        # Every shape the streaming path can return honours close(), whether
+        # or not the caller started iterating. The first connection opens
+        # inside ci.load(), so "unstarted" still has one to release.
+        _, opened = pg
+        kwargs = dict(kwargs)
+        uri = "postgres://u:pw@h/db/t"
+        names = [uri, uri] if kwargs.pop("multi", False) else uri
+        it = ci.load(names, as_="iter", **kwargs)
+        if iterate_first:
+            next(it)
+        it.close()
+
+        cursors = [o for o in opened if o != "closed"]
+        assert len(cursors) == 1, "a later source must not connect before it is reached"
+        assert opened.count("closed") == 1
+
+    def test_closing_mid_second_source_releases_it(self, pg):
+        _, opened = pg
+        it = ci.load(["postgres://u:pw@h/db/a", "postgres://u:pw@h/db/b"], as_="iter", batch_size=3)
+        for _ in range(3):  # 3 + 2 rows from the first source, then into the second
+            next(it)
+        it.close()
+        assert len([o for o in opened if o != "closed"]) == 2
+        assert opened.count("closed") == 2
+
+    def test_pandas_path_still_materializes(self, requires_pandas, pg):
+        cursor, _ = pg
+        df = ci.load("postgres://u:pw@h/db/t")
+        assert isinstance(df, requires_pandas.DataFrame)
+        assert cursor.fetchall_called is True
 
 
 # test helpers
@@ -771,4 +1242,6 @@ def test_sql_module_surface():
     assert hasattr(sql_mod, "build_query")
     assert hasattr(sql_mod, "execute_to_pandas")
     assert hasattr(sql_mod, "run_select")
+    assert hasattr(sql_mod, "execute_to_iter")
+    assert hasattr(sql_mod, "stream_select")
     assert hasattr(sql_mod, "driver")

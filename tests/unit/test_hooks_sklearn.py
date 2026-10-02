@@ -86,6 +86,18 @@ def test_proxy_setattr_passes_through():
     assert est.max_iter == 500
 
 
+def test_proxy_delattr_passes_through():
+    # sklearn >= 1.9 sets ``_parent_callback_ctx`` on each Pipeline step
+    # and deletes it after the step runs. A delete that doesn't reach the
+    # estimator the set reached raises AttributeError mid-fit.
+    est = LogisticRegression(max_iter=200)
+    model = ci.wrap(est)
+    model._scratch = 1
+    assert est._scratch == 1
+    del model._scratch
+    assert not hasattr(est, "_scratch")
+
+
 def test_wrap_pipeline_produces_nested_scopes(xy):
     X, y = xy
     pipe = Pipeline(

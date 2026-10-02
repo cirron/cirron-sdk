@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import logging
 
-import numpy as np
 import pytest
 
 tf = pytest.importorskip("tensorflow")
 keras = tf.keras  # exposed for test readability
+
+import numpy as np  # noqa: E402  (arrives with tensorflow; import after the skip)
 
 from cirron.core.config import Cirron  # noqa: E402
 from cirron.core.mark import get_default_mark_buffer  # noqa: E402

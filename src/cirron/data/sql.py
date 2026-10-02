@@ -29,7 +29,7 @@ import logging
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Generator, Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -91,6 +91,65 @@ class SqlUri:
     raw: str
 
 
+def _redact_uri(uri: str) -> str:
+    """Strip any ``user:password@`` userinfo from ``uri``.
+
+    Every URI that reaches an error message goes through here first.
+    ``ci.load()`` accepts inline credentials, and the parse errors below
+    are raised on exactly the malformed input a user is most likely to
+    typo, so interpolating the raw URI writes a plaintext database
+    password into stdout, training logs, and any crash reporter that
+    records exception strings.
+
+    The whole userinfo goes, username included, since usernames are
+    sensitive too. Host, port and path stay, because those are what the
+    user needs in order to fix the URI.
+
+    Every input reaching this function is malformed by definition, which
+    is why ``urlsplit`` alone is not enough. It only populates ``netloc``
+    for a well-formed ``scheme://host`` URI. Drop the ``//``
+    (``postgres:alice:pw@db/a/b``, an easy typo, and one that lands on
+    the "too many path segments" error) or drop the scheme
+    (``://alice:pw@db/x``, which lands on "missing scheme") and
+    ``netloc`` comes back empty with the whole authority sitting in
+    ``path``, so keying on ``netloc`` alone passes the password straight
+    through. Any slash count other than two does the same
+    (``postgres:/alice:pw@db/a`` or ``postgres:///alice:pw@db/a``). The
+    fallback below locates the authority by hand instead.
+
+    Splitting on the *last* ``@`` matters in both branches: an unescaped
+    ``@`` inside a password would otherwise leave the tail of it behind.
+    Where the authority is ambiguous this errs toward over-redacting, on
+    the grounds that a slightly less informative message about an
+    already-invalid URI is much the cheaper mistake.
+
+    Args:
+        uri: A SQL-scheme URI, possibly carrying inline credentials, and
+            possibly malformed.
+
+    Returns:
+        str: ``uri`` without userinfo, or ``uri`` unchanged when it
+            carried none.
+    """
+    parsed = urllib.parse.urlsplit(uri)
+    if "@" in parsed.netloc:
+        host_port = parsed.netloc.rsplit("@", 1)[1]
+        return urllib.parse.urlunsplit(parsed._replace(netloc=host_port))
+    if "@" not in uri:
+        return uri
+    # urlsplit found no authority, so the URI is malformed. The authority
+    # is whatever sits between the scheme separator, plus however many
+    # slashes follow it, and the next path separator. Keep the text before
+    # it verbatim so the message still shows the user the shape they typed.
+    _, _, rest = uri.partition(":")
+    rest = rest.lstrip("/")
+    prefix = uri[: len(uri) - len(rest)]
+    authority, slash, path = rest.partition("/")
+    if "@" not in authority:
+        return uri
+    return prefix + authority.rsplit("@", 1)[1] + slash + path
+
+
 def parse_sql_uri(uri: str) -> SqlUri:
     """Parse a ``scheme://...`` SQL URI.
 
@@ -118,7 +177,7 @@ def parse_sql_uri(uri: str) -> SqlUri:
     parsed = urllib.parse.urlparse(uri)
     scheme = parsed.scheme.lower()
     if not scheme:
-        raise ValueError(f"SQL URI missing scheme: {uri}")
+        raise ValueError(f"SQL URI missing scheme: {_redact_uri(uri)}")
 
     path_parts = [p for p in (parsed.path or "").split("/") if p]
 
@@ -147,7 +206,7 @@ def parse_sql_uri(uri: str) -> SqlUri:
         if len(pieces) == 1:
             return None, None, pieces[0]
         raise ValueError(
-            f"{scheme}:// URI must include a table: {uri} "
+            f"{scheme}:// URI must include a table: {_redact_uri(uri)} "
             "(expected scheme://host/database[.schema].table)"
         )
 
@@ -205,8 +264,8 @@ def _parse_pg_mysql_path(
         scheme: ``"postgres"`` or ``"mysql"``, used in error
             messages.
         path_parts: Non-empty path segments split on ``/``.
-        uri: The original URI, included verbatim in error
-            messages.
+        uri: The original URI, included in error messages with its
+            userinfo stripped by :func:`_redact_uri`.
 
     Returns:
         tuple[str | None, str | None, str]: ``(database, schema, table)``.
@@ -217,7 +276,7 @@ def _parse_pg_mysql_path(
     """
     if not path_parts:
         raise ValueError(
-            f"{scheme}:// URI must include a table: {uri} "
+            f"{scheme}:// URI must include a table: {_redact_uri(uri)} "
             f"(expected {scheme}://host/database[/schema]/table)"
         )
     if len(path_parts) == 1:
@@ -225,7 +284,7 @@ def _parse_pg_mysql_path(
         if "." in path_parts[0]:
             schema_part, _, table = path_parts[0].partition(".")
             if not schema_part or not table:
-                raise ValueError(f"{scheme}:// URI has empty schema or table: {uri}")
+                raise ValueError(f"{scheme}:// URI has empty schema or table: {_redact_uri(uri)}")
             return None, schema_part, table
         return None, None, path_parts[0]
     if len(path_parts) == 2:
@@ -234,13 +293,13 @@ def _parse_pg_mysql_path(
         if "." in path_parts[1]:
             schema_part, _, table = path_parts[1].partition(".")
             if not schema_part or not table:
-                raise ValueError(f"{scheme}:// URI has empty schema or table: {uri}")
+                raise ValueError(f"{scheme}:// URI has empty schema or table: {_redact_uri(uri)}")
             return database, schema_part, table
         return database, None, path_parts[1]
     if len(path_parts) == 3:
         return path_parts[0], path_parts[1], path_parts[2]
     raise ValueError(
-        f"{scheme}:// URI has too many path segments: {uri} "
+        f"{scheme}:// URI has too many path segments: {_redact_uri(uri)} "
         f"(expected at most database/schema/table)"
     )
 
@@ -664,10 +723,10 @@ def execute_to_pandas(cursor: Any, query: str) -> Any:
     / ``"iter"`` / ``"tensor"`` / ``"hf"``, so SQL sources don't need
     their own conversion path.
 
-    This path does not stream. ``fetchall`` materializes the whole result
-    set before the adapter slices it, so ``as_='iter'`` and ``lazy=True``
-    on a SQL source peak at the size of the full table rather than one
-    batch. Bound large queries with ``LIMIT`` or a ``where=`` clause.
+    This path does not stream: ``fetchall`` materializes the whole result
+    set. ``as_='iter'`` takes :func:`stream_select` instead, so only the
+    single-object return types (pandas, polars, tensor, hf) come through
+    here, and those hold the full result in memory by definition.
 
     Args:
         cursor (Any): An open DB-API 2.0 cursor.
@@ -738,3 +797,124 @@ def run_select(
                 cursor.close()
     finally:
         conn.close()
+
+
+def execute_to_iter(cursor: Any, query: str, batch_size: int) -> Iterator[list[dict[str, Any]]]:
+    """Run ``query`` on ``cursor`` and yield the result in row-dict batches.
+
+    The streaming counterpart of :func:`execute_to_pandas`. Only
+    ``fetchmany`` is used, so peak memory is one batch as long as the
+    cursor pages server-side; :func:`stream_select` is where each driver
+    supplies such a cursor. Values are whatever the driver returns
+    (``None`` for SQL ``NULL``), with no pandas coercion, and pandas is
+    not required.
+
+    Args:
+        cursor (Any): An open DB-API 2.0 cursor.
+        query: The composed ``SELECT`` to execute.
+        batch_size: Rows per ``fetchmany`` call. Values below 1 fetch
+            one row at a time.
+
+    Yields:
+        list[dict[str, Any]]: Up to ``batch_size`` rows, keyed by the
+            column names in ``cursor.description``. Never empty.
+    """
+    cursor.execute(query)
+    columns = [col[0] for col in cursor.description or []]
+    size = max(batch_size, 1)
+    while True:
+        rows = cursor.fetchmany(size)
+        if not rows:
+            return
+        yield [dict(zip(columns, row, strict=False)) for row in rows]
+
+
+_DONE = object()
+
+
+def stream_select(
+    connect: Callable[..., Any],
+    conn_kwargs: dict[str, Any],
+    query: str,
+    batch_size: int,
+    *,
+    cursor_factory: Callable[[Any], Any] | None = None,
+    release_cursor: Callable[[Any], None] | None = None,
+) -> Iterator[list[dict[str, Any]]]:
+    """Connect, run ``query``, and return an iterator over its batches.
+
+    The streaming counterpart of :func:`run_select`. The connection
+    stays open while the caller iterates and closes when the iterator is
+    exhausted, closed, or garbage-collected.
+
+    The first batch is fetched before returning, so a connection failure
+    or a bad query raises from ``ci.load()`` itself, as it does on the
+    materializing path, rather than at the caller's first loop iteration.
+    That also means an unstarted iterator never holds a connection that
+    only a ``finally`` it never reached could release.
+
+    Args:
+        connect: The driver's ``connect`` callable.
+        conn_kwargs: Driver-specific connect keywords.
+        query: The composed ``SELECT``.
+        batch_size: Forwarded to :func:`execute_to_iter`.
+        cursor_factory: Opens the cursor from the connection. Shims pass
+            one that requests the driver's server-side cursor; the default
+            is ``conn.cursor()``.
+        release_cursor: Called with the cursor before the connection
+            closes. Snowflake passes one that closes it, as
+            :func:`run_select`'s ``cursor_close`` does; MySQL passes one
+            that detaches it without draining. The default leaves the
+            cursor to the connection.
+
+    Returns:
+        Iterator[list[dict[str, Any]]]: Row-dict batches. Its ``close()``
+            releases the connection whether or not iteration has started.
+    """
+
+    def _batches() -> Generator[list[dict[str, Any]]]:
+        conn = connect(**conn_kwargs)
+        try:
+            cursor = cursor_factory(conn) if cursor_factory else conn.cursor()
+            try:
+                yield from execute_to_iter(cursor, query, batch_size)
+            finally:
+                if release_cursor is not None:
+                    release_cursor(cursor)
+        finally:
+            conn.close()
+
+    batches = _batches()
+    first = next(batches, _DONE)
+    if first is _DONE:
+        return iter(())
+    return _PrimedStream(first, batches)
+
+
+class _PrimedStream:
+    """A started batch generator with its first batch already fetched.
+
+    A class rather than a wrapping generator because a generator that has
+    not started ignores ``close()``: its ``finally`` never runs. The
+    connection here is already open, so ``close()`` has to reach it in
+    every state, including before the caller's first ``next()``.
+    """
+
+    __slots__ = ("_first", "_rest")
+
+    def __init__(self, first: Any, rest: Generator[Any]) -> None:
+        self._first = first
+        self._rest = rest
+
+    def __iter__(self) -> _PrimedStream:
+        return self
+
+    def __next__(self) -> Any:
+        if self._first is not _DONE:
+            first, self._first = self._first, _DONE
+            return first
+        return next(self._rest)
+
+    def close(self) -> None:
+        self._first = _DONE
+        self._rest.close()

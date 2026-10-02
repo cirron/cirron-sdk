@@ -14,13 +14,14 @@ downstream code be written against the final shape.
 
 from __future__ import annotations
 
+import functools
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
-from cirron.core.errors import CirronDependencyError
+from cirron.core.errors import CirronDependencyError, CirronError
 from cirron.data.lazy import LazyHandle
 from cirron.data.match import MatchConfig
 from cirron.data.returns import create_adapter
@@ -162,9 +163,16 @@ def load(
 
     _enforce_size(sources, requests, cirron)
 
+    run: Callable[[], Any]
+    if _can_stream(sources, requests[0]):
+        _reject_batch_map_on_stream(requests[0])
+        run = functools.partial(_stream_and_convert, sources, requests[0])
+    else:
+        run = functools.partial(_run_and_convert, sources, requests)
+
     if lazy:
-        return LazyHandle(lambda: _run_and_convert(sources, requests))
-    return _run_and_convert(sources, requests)
+        return LazyHandle(run)
+    return run()
 
 
 def _default_cirron() -> Cirron:
@@ -511,6 +519,153 @@ def _run_and_convert(sources: list[DataSource], requests: list[LoadRequest]) -> 
 
         raw = apply_map(raw, req.map)
     return _convert(raw, req)
+
+
+def _can_stream(sources: list[DataSource], req: LoadRequest) -> bool:
+    """Return whether this load takes the streaming route.
+
+    Only ``as_='iter'`` can stream, since every other return type is a
+    single in-memory object, and only when every source can: SQL sources
+    expose ``stream``, while file sources read whole files and a mixed
+    multi-source load falls back to materializing all of them.
+
+    Args:
+        sources: Resolved backends.
+        req: The first request, which carries ``as_``.
+
+    Returns:
+        bool: ``True`` to stream.
+    """
+    return req.as_ == "iter" and all(callable(getattr(s, "stream", None)) for s in sources)
+
+
+def _reject_batch_map_on_stream(req: LoadRequest) -> None:
+    """Refuse a ``@ci.map`` batch function on a streaming load.
+
+    A batch function's contract is one call over the whole result, which a
+    streaming load never holds. Running it per batch would quietly change
+    what it means, so this raises before any connection opens.
+
+    Args:
+        req: The first request, which carries ``map``.
+
+    Raises:
+        CirronError: If ``req.map`` is batch-wise.
+    """
+    from cirron.data.transform import is_batch_map
+
+    if req.map is not None and is_batch_map(req.map):
+        raise CirronError(
+            "a @ci.map batch function runs once over the whole result, but "
+            "as_='iter' on a SQL source streams it without ever holding it all. "
+            "Use a plain row-wise map=, or a materializing as_= such as 'pandas'."
+        )
+
+
+def _stream_and_convert(sources: list[DataSource], req: LoadRequest) -> Iterator[Any]:
+    """Stream SQL sources batch by batch into the ``as_='iter'`` shape.
+
+    The first source connects and runs its query here, so failures surface
+    from ``ci.load()`` (or ``collect()``). Later sources of a multi-source
+    load connect in turn once the one before them is exhausted, so only
+    one connection is open at a time; batches never span two sources.
+
+    Every layer closes the one beneath it, and the returned
+    :class:`_StreamHandle` also closes the first source directly, so
+    ``close()`` releases whichever connection is open in every state.
+
+    Args:
+        sources: Resolved backends, all exposing ``stream``.
+        req: The first request, which carries ``map`` and ``batch_size``.
+
+    Returns:
+        Iterator[Any]: Lists of row dicts, or single row dicts when
+            ``batch_size <= 1``, matching the materializing iter path.
+    """
+    batch_size = req.batch_size
+    first: Iterator[list[Any]] = sources[0].stream(batch_size)  # type: ignore[attr-defined]
+    batches = first
+    if len(sources) > 1:
+        batches = _chain_streams(first, sources[1:], batch_size)
+    if req.map is not None:
+        from cirron.data.transform import map_batches
+
+        batches = map_batches(batches, req.map)
+    out: Iterator[Any] = _flatten(batches) if batch_size <= 1 else batches
+    return _StreamHandle(out, first)
+
+
+def _close(it: object) -> None:
+    close = getattr(it, "close", None)
+    if close is not None:
+        close()
+
+
+def _chain_streams(
+    first: Iterator[list[Any]], rest: list[DataSource], batch_size: int
+) -> Iterator[list[Any]]:
+    """Yield every source's batches in order, opening each in turn.
+
+    Args:
+        first: The already-open first stream.
+        rest: Remaining sources, opened only once reached.
+        batch_size: Forwarded to each source's ``stream``.
+
+    Yields:
+        list[Any]: Row-dict batches.
+    """
+    current = first
+    try:
+        yield from current
+        for source in rest:
+            current = source.stream(batch_size)  # type: ignore[attr-defined]
+            yield from current
+    finally:
+        _close(current)
+
+
+def _flatten(batches: Iterator[Iterable[Any]]) -> Iterator[Any]:
+    """Yield single rows out of row batches, closing ``batches`` on exit.
+
+    Args:
+        batches: Row-dict batches.
+
+    Yields:
+        Any: One row dict at a time.
+    """
+    try:
+        for batch in batches:
+            yield from batch
+    finally:
+        _close(batches)
+
+
+class _StreamHandle:
+    """The iterator ``ci.load()`` returns for a streaming load.
+
+    The wrapping layers are generators, and a generator that has not
+    started ignores ``close()``. The first source's connection opens
+    inside ``ci.load()``, before any iteration, so this handle closes the
+    first source itself as well as the outermost layer. Closing an
+    exhausted or already-closed stream is a no-op.
+    """
+
+    __slots__ = ("_it", "_first")
+
+    def __init__(self, it: Iterator[Any], first: Iterator[Any]) -> None:
+        self._it = it
+        self._first = first
+
+    def __iter__(self) -> _StreamHandle:
+        return self
+
+    def __next__(self) -> Any:
+        return next(self._it)
+
+    def close(self) -> None:
+        """Release whichever source connection is still open."""
+        _close(self._it)
+        _close(self._first)
 
 
 def _concat(parts: list[Any]) -> Any:
