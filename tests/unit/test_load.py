@@ -19,7 +19,6 @@ np = pytest.importorskip("numpy")
 pd = pytest.importorskip("pandas")
 
 import cirron as ci  # noqa: E402
-from cirron import Cirron  # noqa: E402
 from cirron.core import config as _config_mod  # noqa: E402
 from cirron.core import profiler as _profiler_mod  # noqa: E402
 from cirron.core.errors import (  # noqa: E402
@@ -178,7 +177,7 @@ def test_source_local_file_uri(tmp_path):
 
 
 def test_platform_without_api_key_raises(monkeypatch):
-    c = Cirron(api_key=None)
+    c = ci.Cirron(api_key=None)
     with pytest.raises(CirronPlatformRequired):
         c.load("training-data", source="platform")
 
@@ -246,7 +245,7 @@ def test_platform_bucket_lists_and_downloads(monkeypatch, tmp_path):
         raise AssertionError(f"unexpected URL in test: {url}")
 
     monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
-    c = Cirron(api_key="sk-test", api_endpoint="https://p.example", workspace_id="ws-1")
+    c = ci.Cirron(api_key="sk-test", api_endpoint="https://p.example", workspace_id="ws-1")
     df = c.load("training-data", source="platform")
     assert df.shape == (1, 1)
 
@@ -270,7 +269,7 @@ def test_platform_404_is_dataset_not_found(monkeypatch):
         raise urllib.error.HTTPError(req.full_url, 404, "not found", {}, None)  # type: ignore[arg-type]
 
     monkeypatch.setattr("urllib.request.urlopen", _fake)
-    c = Cirron(api_key="sk-test")
+    c = ci.Cirron(api_key="sk-test")
     with pytest.raises(CirronDatasetNotFound):
         c.load("nope", source="platform")
 
@@ -282,7 +281,7 @@ def test_platform_unavailable_is_platform_required(monkeypatch):
         raise urllib.error.URLError("connection refused")
 
     monkeypatch.setattr("urllib.request.urlopen", _fake)
-    c = Cirron(api_key="sk-test")
+    c = ci.Cirron(api_key="sk-test")
     with pytest.raises(CirronPlatformRequired, match="not reachable|not yet available"):
         c.load("training-data", source="platform")
 
@@ -688,7 +687,7 @@ def test_platform_match_and_ext_forwarded_as_query_params(monkeypatch, tmp_path)
         raise AssertionError(f"unexpected URL: {url}")
 
     monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
-    c = Cirron(api_key="sk-test", api_endpoint="https://p.example", workspace_id="ws-1")
+    c = ci.Cirron(api_key="sk-test", api_endpoint="https://p.example", workspace_id="ws-1")
     c.load(
         "bucket-a",
         source="platform",
@@ -755,7 +754,7 @@ def test_platform_regex_filename_is_post_filtered(monkeypatch, tmp_path):
         raise AssertionError(f"unexpected URL: {url}")
 
     monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
-    c = Cirron(api_key="sk-test", api_endpoint="https://p.example", workspace_id="ws-1")
+    c = ci.Cirron(api_key="sk-test", api_endpoint="https://p.example", workspace_id="ws-1")
     df = c.load(
         "bucket-a",
         source="platform",

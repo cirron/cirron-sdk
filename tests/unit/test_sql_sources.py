@@ -7,12 +7,13 @@ the underlying driver, so none of the four SQL extras need to be
 installed, and the "missing driver raises CirronDependencyError" path is
 exercised explicitly.
 
-``pandas`` is needed by exactly the 12 tests that materialize a
-DataFrame, out of 70. It is imported lazily inside
-``execute_to_pandas``, so the module itself imports fine without it.
-Those 12 take the ``requires_pandas`` fixture below; everything else,
-including URI parsing, query composition, credential resolution and
-credential redaction, runs on a clean ``uv sync`` with no extras.
+``pandas`` is needed only by the tests that materialize a DataFrame.
+It is imported lazily inside ``execute_to_pandas``, so the module
+itself imports fine without it. Those tests take the
+``requires_pandas`` fixture below; everything else, including URI
+parsing, query composition, credential resolution, credential
+redaction and the streaming path, runs on a clean ``uv sync`` with no
+extras.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from typing import Any
 
 import pytest
 
-from cirron import Cirron
+import cirron as ci
 from cirron.core import config as _config_mod
 from cirron.core.errors import CirronDependencyError, CirronPlatformRequired
 from cirron.data import sql as sql_mod
@@ -45,7 +46,7 @@ from cirron.data.sql import (
 
 @pytest.fixture(autouse=True)
 def _clean_singletons(monkeypatch):
-    """Match test_load.py's fixture so ``Cirron()`` starts from defaults."""
+    """Match test_load.py's fixture so ``ci.Cirron()`` starts from defaults."""
     monkeypatch.setattr(_config_mod, "_read_home_config_toml", lambda path=None: {})
     for env_name in _config_mod._ENV_MAP.values():
         monkeypatch.delenv(env_name, raising=False)
@@ -64,9 +65,9 @@ def _clean_singletons(monkeypatch):
     _config_mod._reset_default_for_tests()
 
 
-def _cirron() -> Cirron:
+def _cirron() -> ci.Cirron:
     """Unauthenticated Cirron, which forces the env-fallback credential path."""
-    return Cirron(api_key=None, api_endpoint="https://api.example.com")
+    return ci.Cirron(api_key=None, api_endpoint="https://api.example.com")
 
 
 def _request(**kwargs: Any) -> LoadRequest:
@@ -86,7 +87,7 @@ def requires_pandas():
     ``execute_to_pandas`` imports pandas lazily and raises
     ``CirronDependencyError`` without it, so the tests that reach it need
     the real thing. Requested by fixture rather than guarded at module
-    scope so the other 58 tests still run on a minimal install.
+    scope so every other test still runs on a minimal install.
     """
     return pytest.importorskip("pandas")
 
@@ -209,6 +210,8 @@ class TestParseErrorRedaction:
             # the credentials in path, so a netloc-only redactor misses
             # them. Both of these reach a raise site.
             ("postgres:alice:s3cret@db/a/b/c/d", "db"),  # no "//"
+            ("postgres:/alice:s3cret@db/a/b/c/d", "db"),  # one "/"
+            ("postgres:///alice:s3cret@db/a/b/c/d", "db"),  # three "/"
             ("://alice:s3cret@db/x", "db"),  # no scheme either
         ],
     )
@@ -251,6 +254,11 @@ class TestParseErrorRedaction:
             ("mysql:alice:s3cret@db/a/b/c/d", "mysql:db/a/b/c/d"),
             ("postgres:alice@db/a/b/c/d", "postgres:db/a/b/c/d"),
             ("postgres:alice:p@ss@db/a/b/c/d", "postgres:db/a/b/c/d"),
+            # Any other number of slashes before the authority, which also
+            # leaves netloc empty. The slashes the user typed are kept.
+            ("postgres:/alice:s3cret@db/a/b/c/d", "postgres:/db/a/b/c/d"),
+            ("postgres:///alice:s3cret@db/a/b/c/d", "postgres:///db/a/b/c/d"),
+            ("postgres:////alice:s3cret@db/a", "postgres:////db/a"),
             # Missing scheme as well.
             ("://alice:s3cret@db/x", "://db/x"),
             ("//alice:s3cret@db/x", "//db/x"),
@@ -352,7 +360,7 @@ class TestCredentialResolver:
 
         monkeypatch.setattr("cirron.data.sql.urllib.request.urlopen", _fake_urlopen)
         uri = parse_sql_uri("postgres://alice@db/app/events")
-        cirron = Cirron(api_key="TOKEN", api_endpoint="https://api.example.com")
+        cirron = ci.Cirron(api_key="TOKEN", api_endpoint="https://api.example.com")
         creds = CredentialResolver(cirron, uri).resolve()
         assert creds.password == "from-platform"
         assert creds.port == 5433
@@ -368,7 +376,7 @@ class TestCredentialResolver:
         monkeypatch.setattr("cirron.data.sql.urllib.request.urlopen", _fake_urlopen)
         monkeypatch.setenv("PGPASSWORD", "env-pass")
         uri = parse_sql_uri("postgres://alice@db/app/events")
-        cirron = Cirron(api_key="TOKEN", api_endpoint="https://api.example.com")
+        cirron = ci.Cirron(api_key="TOKEN", api_endpoint="https://api.example.com")
         creds = CredentialResolver(cirron, uri).resolve()
         assert creds.password == "env-pass"
 
@@ -379,7 +387,7 @@ class TestCredentialResolver:
         monkeypatch.setattr("cirron.data.sql.urllib.request.urlopen", _fake_urlopen)
         monkeypatch.setenv("PGPASSWORD", "env-pass")
         uri = parse_sql_uri("postgres://alice@db/app/events")
-        cirron = Cirron(api_key="TOKEN", api_endpoint="https://api.example.com")
+        cirron = ci.Cirron(api_key="TOKEN", api_endpoint="https://api.example.com")
         creds = CredentialResolver(cirron, uri).resolve()
         assert creds.password == "env-pass"
 
@@ -733,7 +741,7 @@ class TestSnowflakeDataSource:
         uri = parse_sql_uri("snowflake://acct/DB.PUB.T")
         src = SnowflakeDataSource(
             uri,
-            Cirron(api_key="TOK", api_endpoint="https://api.example.com"),
+            ci.Cirron(api_key="TOK", api_endpoint="https://api.example.com"),
             _request(scheme="snowflake"),
         )
         # Force the resolver to supply a password so we fail at import,
@@ -840,8 +848,6 @@ class TestDatabricksDataSource:
 class TestEndToEnd:
     def test_where_passed_through_to_source(self, requires_pandas, monkeypatch):
         """``ci.load('postgres://...', where=...)`` reaches the driver cursor."""
-        import cirron as ci
-
         captured: dict[str, Any] = {}
         cursor = _FakeCursor([(1,)], [("id", None)])
 
@@ -1097,8 +1103,6 @@ class TestStreamingLoad:
         return cursor, opened
 
     def test_iter_streams_batches_without_fetchall(self, pg):
-        import cirron as ci
-
         cursor, opened = pg
         batches = list(ci.load("postgres://u:pw@h/db/t", as_="iter", batch_size=2))
         assert [len(b) for b in batches] == [2, 2, 1]
@@ -1107,15 +1111,11 @@ class TestStreamingLoad:
         assert opened[-1] == "closed"
 
     def test_batch_size_one_yields_single_rows(self, pg):
-        import cirron as ci
-
         rows = list(ci.load("postgres://u:pw@h/db/t", as_="iter", batch_size=1))
         assert rows[:2] == [{"id": 0, "name": "n0"}, {"id": 1, "name": "n1"}]
         assert len(rows) == 5
 
     def test_lazy_defers_the_query_until_collect(self, pg):
-        import cirron as ci
-
         cursor, _ = pg
         handle = ci.load("postgres://u:pw@h/db/t", as_="iter", batch_size=2, lazy=True)
         assert cursor.executed is None
@@ -1123,7 +1123,6 @@ class TestStreamingLoad:
         assert cursor.fetchall_called is False
 
     def test_rowwise_map_runs_per_batch_with_global_row_indices(self, pg):
-        import cirron as ci
         from cirron.core.errors import CirronError
 
         out = list(
@@ -1146,7 +1145,6 @@ class TestStreamingLoad:
             list(it)
 
     def test_batch_map_is_rejected_before_connecting(self, pg):
-        import cirron as ci
         from cirron.core.errors import CirronError
 
         cursor, opened = pg
@@ -1160,8 +1158,6 @@ class TestStreamingLoad:
         assert opened == [], "a rejected call must not open a connection"
 
     def test_multiple_sql_sources_stream_in_order(self, pg):
-        import cirron as ci
-
         batches = list(
             ci.load(
                 ["postgres://u:pw@h/db/a", "postgres://u:pw@h/db/b"],
@@ -1189,8 +1185,6 @@ class TestStreamingLoad:
         # Every shape the streaming path can return honours close(), whether
         # or not the caller started iterating. The first connection opens
         # inside ci.load(), so "unstarted" still has one to release.
-        import cirron as ci
-
         _, opened = pg
         kwargs = dict(kwargs)
         uri = "postgres://u:pw@h/db/t"
@@ -1205,8 +1199,6 @@ class TestStreamingLoad:
         assert opened.count("closed") == 1
 
     def test_closing_mid_second_source_releases_it(self, pg):
-        import cirron as ci
-
         _, opened = pg
         it = ci.load(["postgres://u:pw@h/db/a", "postgres://u:pw@h/db/b"], as_="iter", batch_size=3)
         for _ in range(3):  # 3 + 2 rows from the first source, then into the second
@@ -1216,8 +1208,6 @@ class TestStreamingLoad:
         assert opened.count("closed") == 2
 
     def test_pandas_path_still_materializes(self, requires_pandas, pg):
-        import cirron as ci
-
         cursor, _ = pg
         df = ci.load("postgres://u:pw@h/db/t")
         assert isinstance(df, requires_pandas.DataFrame)

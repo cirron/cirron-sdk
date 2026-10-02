@@ -113,7 +113,9 @@ def _redact_uri(uri: str) -> str:
     (``://alice:pw@db/x``, which lands on "missing scheme") and
     ``netloc`` comes back empty with the whole authority sitting in
     ``path``, so keying on ``netloc`` alone passes the password straight
-    through. The fallback below locates the authority by hand instead.
+    through. Any slash count other than two does the same
+    (``postgres:/alice:pw@db/a`` or ``postgres:///alice:pw@db/a``). The
+    fallback below locates the authority by hand instead.
 
     Splitting on the *last* ``@`` matters in both branches: an unescaped
     ``@`` inside a password would otherwise leave the tail of it behind.
@@ -136,12 +138,11 @@ def _redact_uri(uri: str) -> str:
     if "@" not in uri:
         return uri
     # urlsplit found no authority, so the URI is malformed. The authority
-    # is whatever sits between the scheme separator and the first path
-    # separator; keep the text before it verbatim so the message still
-    # shows the user the shape they typed.
+    # is whatever sits between the scheme separator, plus however many
+    # slashes follow it, and the next path separator. Keep the text before
+    # it verbatim so the message still shows the user the shape they typed.
     _, _, rest = uri.partition(":")
-    if rest.startswith("//"):
-        rest = rest[2:]
+    rest = rest.lstrip("/")
     prefix = uri[: len(uri) - len(rest)]
     authority, slash, path = rest.partition("/")
     if "@" not in authority:
