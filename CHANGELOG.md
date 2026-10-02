@@ -1,3 +1,31 @@
+# v0.3.0 (Fri Oct 02 2026)
+
+#### 🚀 Enhancement
+
+- Stream SQL iter loads with server cursors [#120](https://github.com/cirron/cirron-sdk/pull/120) ([@dlynch42](https://github.com/dlynch42))
+- Release 0.3.0 [#121](https://github.com/cirron/cirron-sdk/pull/121) ([@dependabot[bot]](https://github.com/dependabot[bot]) [@dlynch42](https://github.com/dlynch42))
+
+#### 🐛 Bug Fix
+
+- Forward attribute deletes through the ci.wrap proxy so Pipelines fit on scikit-learn 1.9 [#110](https://github.com/cirron/cirron-sdk/pull/110) ([@dlynch42](https://github.com/dlynch42))
+- Clean-checkout test collection, real small-tensor histograms, and SQL URI credential redaction [#107](https://github.com/cirron/cirron-sdk/pull/107) ([@dlynch42](https://github.com/dlynch42))
+- Redact inline credentials from SQL URI error messages [#106](https://github.com/cirron/cirron-sdk/pull/106) ([@dlynch42](https://github.com/dlynch42))
+
+#### 🏠 Internal
+
+- Refresh uv.lock to current releases, clearing the open security advisories [#111](https://github.com/cirron/cirron-sdk/pull/111) ([@dlynch42](https://github.com/dlynch42))
+
+#### 🔩 Dependency Updates
+
+- Bump the github-actions group across 1 directory with 6 updates [#101](https://github.com/cirron/cirron-sdk/pull/101) ([@dependabot[bot]](https://github.com/dependabot[bot]))
+
+#### Authors: 2
+
+- [@dependabot[bot]](https://github.com/dependabot[bot])
+- Devin Lynch ([@dlynch42](https://github.com/dlynch42))
+
+---
+
 # v0.2.0 (Wed Aug 05 2026)
 
 #### 🚀 Enhancement
