@@ -9,11 +9,15 @@ batch mode; the absence of a decorator means row-wise.
 Applied post-concat, pre-adapter (see ``load._run_and_convert``). Heavy
 transforms belong in the pipeline, not here; this is for lightweight
 column renames, casts, and derivations.
+
+A streaming load (``as_='iter'`` on SQL sources) never holds the whole
+result, so a row-wise callable runs batch by batch through
+:func:`map_batches` and a batch-wise one is rejected up front.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any
 
 from cirron.core.errors import CirronError
@@ -51,9 +55,41 @@ def apply_map(raw: Any, fn: Callable[..., Any]) -> Any:
         Any: The transformed value (same type as ``raw`` for row-wise
             mode; whatever ``fn`` returns for batch mode).
     """
-    if getattr(fn, _BATCH_MAP_ATTR, False):
+    if is_batch_map(fn):
         return fn(raw)
     return _apply_rowwise(raw, fn)
+
+
+def is_batch_map(fn: Callable[..., Any]) -> bool:
+    """Return whether ``fn`` was decorated with :func:`map`.
+
+    Args:
+        fn: A ``map=`` callable.
+
+    Returns:
+        bool: ``True`` for a batch-wise callable.
+    """
+    return bool(getattr(fn, _BATCH_MAP_ATTR, False))
+
+
+def map_batches(batches: Iterator[list[Any]], fn: Callable[..., Any]) -> Iterator[list[Any]]:
+    """Apply a row-wise ``fn`` to each batch of a streaming load.
+
+    Row indices in error messages count across the whole stream, matching
+    what the same failure reports on a materialized load.
+
+    Args:
+        batches: Row-dict batches from a streaming source.
+        fn: The per-row callable. Must not be batch-wise; the dispatcher
+            rejects those before the stream opens.
+
+    Yields:
+        list[Any]: Each batch with ``fn`` applied to every row.
+    """
+    offset = 0
+    for batch in batches:
+        yield _map_with_index(batch, fn, start=offset)
+        offset += len(batch)
 
 
 def _apply_rowwise(raw: Any, fn: Callable[..., Any]) -> Any:
@@ -145,12 +181,13 @@ def _rowwise_list(raw: list[Any], fn: Callable[..., Any]) -> list[Any]:
     return _map_with_index(raw, fn)
 
 
-def _map_with_index(rows: list[Any], fn: Callable[..., Any]) -> list[Any]:
+def _map_with_index(rows: list[Any], fn: Callable[..., Any], start: int = 0) -> list[Any]:
     """Apply ``fn`` per element, wrapping any exception with row context.
 
     Args:
         rows: Rows to transform.
         fn: The per-row callable.
+        start: Index of ``rows[0]`` in the whole result, for messages.
 
     Returns:
         list[Any]: The transformed rows.
@@ -161,7 +198,7 @@ def _map_with_index(rows: list[Any], fn: Callable[..., Any]) -> list[Any]:
             ``repr`` are included in the message.
     """
     out: list[Any] = []
-    for i, row in enumerate(rows):
+    for i, row in enumerate(rows, start):
         try:
             out.append(fn(row))
         except Exception as e:

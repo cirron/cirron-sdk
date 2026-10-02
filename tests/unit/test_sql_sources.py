@@ -35,9 +35,11 @@ from cirron.data.sql import (
     SqlUri,
     build_query,
     driver,
+    execute_to_iter,
     execute_to_pandas,
     parse_sql_uri,
     run_select,
+    stream_select,
 )
 
 
@@ -414,15 +416,26 @@ class _FakeCursor:
 
     def __init__(self, rows, description):
         self._rows = rows
+        self._pos = 0
         self.description = description
         self.executed: str | None = None
         self.closed = False
+        self.fetchall_called = False
+        self.fetchmany_sizes: list[int] = []
 
     def execute(self, query):
         self.executed = query
+        self._pos = 0
 
     def fetchall(self):
+        self.fetchall_called = True
         return self._rows
+
+    def fetchmany(self, size):
+        self.fetchmany_sizes.append(size)
+        chunk = self._rows[self._pos : self._pos + size]
+        self._pos += len(chunk)
+        return chunk
 
     def close(self):
         self.closed = True
@@ -856,6 +869,308 @@ class TestEndToEnd:
         assert isinstance(result, requires_pandas.DataFrame)
 
 
+# streaming (as_='iter')
+
+
+_ROWS = [(i, f"n{i}") for i in range(5)]
+_DESC = [("id", None), ("name", None)]
+
+
+class TestExecuteToIter:
+    def test_yields_row_dict_batches_from_fetchmany(self):
+        cursor = _FakeCursor(_ROWS, _DESC)
+        batches = list(execute_to_iter(cursor, "SELECT * FROM t", 2))
+        assert cursor.executed == "SELECT * FROM t"
+        assert [len(b) for b in batches] == [2, 2, 1]
+        assert batches[0] == [{"id": 0, "name": "n0"}, {"id": 1, "name": "n1"}]
+        assert cursor.fetchall_called is False, "the streaming path must never fetchall"
+        assert set(cursor.fetchmany_sizes) == {2}
+
+    def test_empty_result_yields_nothing(self):
+        assert list(execute_to_iter(_FakeCursor([], _DESC), "SELECT 1", 10)) == []
+
+    def test_batch_size_below_one_fetches_one_row_at_a_time(self):
+        cursor = _FakeCursor(_ROWS[:2], _DESC)
+        assert len(list(execute_to_iter(cursor, "SELECT 1", 0))) == 2
+        assert set(cursor.fetchmany_sizes) == {1}
+
+
+class TestStreamSelect:
+    """Connection lifetime for the streaming tail."""
+
+    def _fake(self, events: list[str], rows=_ROWS):
+        cursor = _FakeCursor(list(rows), _DESC)
+        cursor.close = lambda: events.append("cursor")  # type: ignore[method-assign]
+
+        class _Conn:
+            def cursor(self, *args, **kwargs):
+                events.append(f"cursor-open{args}{kwargs}")
+                return cursor
+
+            def close(self):
+                events.append("conn")
+
+        def _connect(**kw):
+            events.append("connect")
+            return _Conn()
+
+        return _connect, cursor
+
+    def test_connects_and_executes_before_the_first_next(self):
+        # Bad credentials or a bad table should fail at ci.load(), not at
+        # the caller's first loop iteration somewhere downstream.
+        events: list[str] = []
+        connect, cursor = self._fake(events)
+        stream_select(connect, {}, "SELECT 1", 2)
+        assert events[0] == "connect"
+        assert cursor.executed == "SELECT 1"
+
+    def test_closes_the_connection_when_exhausted(self):
+        events: list[str] = []
+        connect, _ = self._fake(events)
+        assert sum(len(b) for b in stream_select(connect, {}, "SELECT 1", 2)) == 5
+        assert events[-1] == "conn"
+
+    def test_closes_the_connection_when_abandoned_early(self):
+        events: list[str] = []
+        connect, _ = self._fake(events)
+        it = stream_select(connect, {}, "SELECT 1", 2)
+        next(it)
+        it.close()
+        assert events[-1] == "conn"
+
+    def test_closes_the_connection_on_an_empty_result(self):
+        events: list[str] = []
+        connect, _ = self._fake(events, rows=[])
+        assert list(stream_select(connect, {}, "SELECT 1", 2)) == []
+        assert events[-1] == "conn"
+
+    def test_closes_the_connection_when_the_query_raises(self):
+        events: list[str] = []
+
+        class _Cursor:
+            def execute(self, q):
+                raise RuntimeError("query blew up")
+
+        class _Conn:
+            def cursor(self):
+                return _Cursor()
+
+            def close(self):
+                events.append("conn")
+
+        with pytest.raises(RuntimeError, match="query blew up"):
+            stream_select(lambda **kw: _Conn(), {}, "SELECT 1", 2)
+        assert events == ["conn"]
+
+    def test_cursor_factory_and_cursor_close_order(self):
+        events: list[str] = []
+        connect, _ = self._fake(events)
+        list(
+            stream_select(
+                connect,
+                {},
+                "SELECT 1",
+                2,
+                cursor_factory=lambda conn: conn.cursor(name="srv"),
+                release_cursor=lambda cursor: cursor.close(),
+            )
+        )
+        assert "cursor-open(){'name': 'srv'}" in events
+        assert events[-2:] == ["cursor", "conn"]
+
+
+def _fake_psycopg(monkeypatch, cursor, opened: list[Any]):
+    class _FakeConn:
+        def cursor(self, *args, **kwargs):
+            opened.append((args, kwargs))
+            return cursor
+
+        def close(self):
+            opened.append("closed")
+
+    fake = types.ModuleType("psycopg")
+    fake.connect = lambda **kw: _FakeConn()  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "psycopg", fake)
+
+
+class TestDriverStreamCursors:
+    """Each shim asks its driver for a cursor that pages server-side."""
+
+    def test_postgres_uses_a_named_server_side_cursor(self, monkeypatch):
+        from cirron.data.sources.postgres import PostgresDataSource
+
+        opened: list[Any] = []
+        cursor = _FakeCursor(_ROWS, _DESC)
+        _fake_psycopg(monkeypatch, cursor, opened)
+        src = PostgresDataSource(
+            parse_sql_uri("postgres://u:pw@h/db/t"), _cirron(), _request(scheme="postgres")
+        )
+        assert sum(len(b) for b in src.stream(2)) == 5
+        assert opened[0] == ((), {"name": "cirron_stream"})
+        assert opened[-1] == "closed"
+
+    def test_mysql_uses_an_unbuffered_sscursor(self, monkeypatch):
+        from cirron.data.sources.mysql import MySqlDataSource
+
+        opened: list[Any] = []
+        cursor = _FakeCursor(_ROWS, _DESC)
+
+        class _FakeConn:
+            def cursor(self, *args, **kwargs):
+                opened.append(args)
+                return cursor
+
+            def close(self):
+                opened.append("closed")
+
+        fake = types.ModuleType("pymysql")
+        fake_cursors = types.ModuleType("pymysql.cursors")
+
+        class SSCursor:
+            pass
+
+        fake_cursors.SSCursor = SSCursor  # type: ignore[attr-defined]
+        fake.cursors = fake_cursors  # type: ignore[attr-defined]
+        fake.connect = lambda **kw: _FakeConn()  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "pymysql", fake)
+        monkeypatch.setitem(sys.modules, "pymysql.cursors", fake_cursors)
+
+        src = MySqlDataSource(
+            parse_sql_uri("mysql://u:pw@h/db/t"), _cirron(), _request(scheme="mysql")
+        )
+        assert sum(len(b) for b in src.stream(2)) == 5
+        assert opened[0] == (SSCursor,)
+        assert cursor.closed is False, "closing an SSCursor drains the rest of the result"
+        assert cursor.connection is None, "the cursor must be detached so PyMySQL can't drain it"
+        assert opened[-1] == "closed"
+
+    def test_snowflake_streams_and_closes_its_cursor(self, monkeypatch):
+        from cirron.data.sources.snowflake import SnowflakeDataSource
+
+        calls: dict[str, Any] = {}
+        cursor = _FakeCursor(_ROWS, _DESC)
+        TestSnowflakeDataSource._install_fake_driver(monkeypatch, calls, cursor)
+        monkeypatch.setenv("SNOWFLAKE_PASSWORD", "pw")
+        src = SnowflakeDataSource(
+            parse_sql_uri("snowflake://u@acct/db.sch.t"), _cirron(), _request(scheme="snowflake")
+        )
+        assert sum(len(b) for b in src.stream(2)) == 5
+        assert cursor.fetchall_called is False
+        assert cursor.closed is True
+        assert calls["conn_closed"] is True
+
+    def test_databricks_streams(self, monkeypatch):
+        from cirron.data.sources.databricks import DatabricksDataSource
+
+        calls: dict[str, Any] = {}
+        cursor = _FakeCursor(_ROWS, _DESC)
+        TestDatabricksDataSource._install_fake_driver(monkeypatch, calls, cursor)
+        monkeypatch.setenv("DATABRICKS_TOKEN", "dapi-xxx")
+        monkeypatch.setenv("DATABRICKS_HTTP_PATH", "/sql/1.0/warehouses/abc")
+        src = DatabricksDataSource(
+            parse_sql_uri("databricks://w/c.s.t"), _cirron(), _request(scheme="databricks")
+        )
+        assert sum(len(b) for b in src.stream(2)) == 5
+        assert cursor.fetchall_called is False
+        assert calls["conn_closed"] is True
+
+
+class TestStreamingLoad:
+    """``ci.load(..., as_='iter')`` on a SQL source streams end to end."""
+
+    @pytest.fixture
+    def pg(self, monkeypatch):
+        opened: list[Any] = []
+        cursor = _FakeCursor(_ROWS, _DESC)
+        _fake_psycopg(monkeypatch, cursor, opened)
+        return cursor, opened
+
+    def test_iter_streams_batches_without_fetchall(self, pg):
+        import cirron as ci
+
+        cursor, opened = pg
+        batches = list(ci.load("postgres://u:pw@h/db/t", as_="iter", batch_size=2))
+        assert [len(b) for b in batches] == [2, 2, 1]
+        assert batches[0][0] == {"id": 0, "name": "n0"}
+        assert cursor.fetchall_called is False
+        assert opened[-1] == "closed"
+
+    def test_batch_size_one_yields_single_rows(self, pg):
+        import cirron as ci
+
+        rows = list(ci.load("postgres://u:pw@h/db/t", as_="iter", batch_size=1))
+        assert rows[:2] == [{"id": 0, "name": "n0"}, {"id": 1, "name": "n1"}]
+        assert len(rows) == 5
+
+    def test_lazy_defers_the_query_until_collect(self, pg):
+        import cirron as ci
+
+        cursor, _ = pg
+        handle = ci.load("postgres://u:pw@h/db/t", as_="iter", batch_size=2, lazy=True)
+        assert cursor.executed is None
+        assert sum(len(b) for b in handle.collect()) == 5
+        assert cursor.fetchall_called is False
+
+    def test_rowwise_map_runs_per_batch_with_global_row_indices(self, pg):
+        import cirron as ci
+        from cirron.core.errors import CirronError
+
+        out = list(
+            ci.load(
+                "postgres://u:pw@h/db/t",
+                as_="iter",
+                batch_size=2,
+                map=lambda row: {**row, "double": row["id"] * 2},
+            )
+        )
+        assert [r["double"] for b in out for r in b] == [0, 2, 4, 6, 8]
+
+        def _boom(row):
+            if row["id"] == 3:
+                raise ValueError("bad row")
+            return row
+
+        it = ci.load("postgres://u:pw@h/db/t", as_="iter", batch_size=2, map=_boom)
+        with pytest.raises(CirronError, match="row 3"):
+            list(it)
+
+    def test_batch_map_is_rejected_before_connecting(self, pg):
+        import cirron as ci
+        from cirron.core.errors import CirronError
+
+        cursor, opened = pg
+
+        @ci.map
+        def _whole_frame(df):
+            return df
+
+        with pytest.raises(CirronError, match="as_='iter'"):
+            ci.load("postgres://u:pw@h/db/t", as_="iter", map=_whole_frame)
+        assert opened == [], "a rejected call must not open a connection"
+
+    def test_multiple_sql_sources_stream_in_order(self, pg):
+        import cirron as ci
+
+        batches = list(
+            ci.load(
+                ["postgres://u:pw@h/db/a", "postgres://u:pw@h/db/b"],
+                as_="iter",
+                batch_size=10,
+            )
+        )
+        # One batch per source: batches never span a source boundary.
+        assert [len(b) for b in batches] == [5, 5]
+
+    def test_pandas_path_still_materializes(self, requires_pandas, pg):
+        import cirron as ci
+
+        cursor, _ = pg
+        df = ci.load("postgres://u:pw@h/db/t")
+        assert isinstance(df, requires_pandas.DataFrame)
+        assert cursor.fetchall_called is True
+
+
 # test helpers
 
 
@@ -884,4 +1199,6 @@ def test_sql_module_surface():
     assert hasattr(sql_mod, "build_query")
     assert hasattr(sql_mod, "execute_to_pandas")
     assert hasattr(sql_mod, "run_select")
+    assert hasattr(sql_mod, "execute_to_iter")
+    assert hasattr(sql_mod, "stream_select")
     assert hasattr(sql_mod, "driver")

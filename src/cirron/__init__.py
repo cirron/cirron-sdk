@@ -259,7 +259,9 @@ def load(
         columns: Project to a subset of columns. Pushed to Parquet and SQL
             readers when supported, applied as a post-load slice otherwise.
         map: Per-row callable applied post-concat, pre-adapter. Decorate with
-            :func:`cirron.map` to flip to batch-wise.
+            :func:`cirron.map` to flip to batch-wise. A streaming load
+            applies a per-row callable batch by batch and rejects a
+            batch-wise one.
         where: SQL ``WHERE`` clause for SQL-scheme sources. Passed through
             unescaped, since the caller is querying their own data.
         search: Vector-search query. Accepted for forward compatibility but
@@ -269,7 +271,12 @@ def load(
         as_: Return type. One of ``"pandas"`` (default), ``"polars"``,
             ``"iter"``, ``"tensor"``, or ``"hf"``.
         lazy: Return a ``LazyHandle`` whose ``.collect()`` performs the load.
-        batch_size: Iterator batch size when ``as_="iter"``.
+        batch_size: Iterator batch size when ``as_="iter"``. On SQL
+            sources ``as_="iter"`` streams: rows are fetched from the
+            server ``batch_size`` at a time through a server-side cursor,
+            so peak memory is one batch rather than the whole result.
+            Row values are the driver's own types, with ``None`` for
+            ``NULL``.
         confirm_large: Bypass the ``load_max_bytes`` guard for the largest
             size tier.
 

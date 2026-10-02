@@ -14,13 +14,15 @@ downstream code be written against the final shape.
 
 from __future__ import annotations
 
+import functools
+import itertools
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
-from cirron.core.errors import CirronDependencyError
+from cirron.core.errors import CirronDependencyError, CirronError
 from cirron.data.lazy import LazyHandle
 from cirron.data.match import MatchConfig
 from cirron.data.returns import create_adapter
@@ -162,9 +164,16 @@ def load(
 
     _enforce_size(sources, requests, cirron)
 
+    run: Callable[[], Any]
+    if _can_stream(sources, requests[0]):
+        _reject_batch_map_on_stream(requests[0])
+        run = functools.partial(_stream_and_convert, sources, requests[0])
+    else:
+        run = functools.partial(_run_and_convert, sources, requests)
+
     if lazy:
-        return LazyHandle(lambda: _run_and_convert(sources, requests))
-    return _run_and_convert(sources, requests)
+        return LazyHandle(run)
+    return run()
 
 
 def _default_cirron() -> Cirron:
@@ -511,6 +520,77 @@ def _run_and_convert(sources: list[DataSource], requests: list[LoadRequest]) -> 
 
         raw = apply_map(raw, req.map)
     return _convert(raw, req)
+
+
+def _can_stream(sources: list[DataSource], req: LoadRequest) -> bool:
+    """Return whether this load takes the streaming route.
+
+    Only ``as_='iter'`` can stream, since every other return type is a
+    single in-memory object, and only when every source can: SQL sources
+    expose ``stream``, while file sources read whole files and a mixed
+    multi-source load falls back to materializing all of them.
+
+    Args:
+        sources: Resolved backends.
+        req: The first request, which carries ``as_``.
+
+    Returns:
+        bool: ``True`` to stream.
+    """
+    return req.as_ == "iter" and all(callable(getattr(s, "stream", None)) for s in sources)
+
+
+def _reject_batch_map_on_stream(req: LoadRequest) -> None:
+    """Refuse a ``@ci.map`` batch function on a streaming load.
+
+    A batch function's contract is one call over the whole result, which a
+    streaming load never holds. Running it per batch would quietly change
+    what it means, so this raises before any connection opens.
+
+    Args:
+        req: The first request, which carries ``map``.
+
+    Raises:
+        CirronError: If ``req.map`` is batch-wise.
+    """
+    from cirron.data.transform import is_batch_map
+
+    if req.map is not None and is_batch_map(req.map):
+        raise CirronError(
+            "a @ci.map batch function runs once over the whole result, but "
+            "as_='iter' on a SQL source streams it without ever holding it all. "
+            "Use a plain row-wise map=, or a materializing as_= such as 'pandas'."
+        )
+
+
+def _stream_and_convert(sources: list[DataSource], req: LoadRequest) -> Iterator[Any]:
+    """Stream SQL sources batch by batch into the ``as_='iter'`` shape.
+
+    The first source connects and runs its query here, so failures surface
+    from ``ci.load()`` (or ``collect()``). Later sources of a multi-source
+    load connect in turn once the one before them is exhausted, so only
+    one connection is open at a time; batches never span two sources.
+
+    Args:
+        sources: Resolved backends, all exposing ``stream``.
+        req: The first request, which carries ``map`` and ``batch_size``.
+
+    Returns:
+        Iterator[Any]: Lists of row dicts, or single row dicts when
+            ``batch_size <= 1``, matching the materializing iter path.
+    """
+    batch_size = req.batch_size
+    batches: Iterator[list[Any]] = sources[0].stream(batch_size)  # type: ignore[attr-defined]
+    if len(sources) > 1:
+        rest = (b for s in sources[1:] for b in s.stream(batch_size))  # type: ignore[attr-defined]
+        batches = itertools.chain(batches, rest)
+    if req.map is not None:
+        from cirron.data.transform import map_batches
+
+        batches = map_batches(batches, req.map)
+    if batch_size <= 1:
+        return (row for batch in batches for row in batch)
+    return batches
 
 
 def _concat(parts: list[Any]) -> Any:

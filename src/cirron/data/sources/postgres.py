@@ -3,11 +3,13 @@
 Thin shim over :mod:`cirron.data.sql`: parse the ``postgres://`` URI,
 resolve credentials, connect via ``psycopg`` (v3), run the composed
 ``SELECT`` through :func:`run_select`, and return the DataFrame
-to the dispatcher.
+to the dispatcher. ``as_='iter'`` streams through a named server-side
+cursor instead.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
 from cirron.data.sources import DataSource, SourceConfig
@@ -18,6 +20,7 @@ from cirron.data.sql import (
     driver,
     parse_sql_uri,
     run_select,
+    stream_select,
 )
 
 if TYPE_CHECKING:
@@ -51,6 +54,36 @@ class PostgresDataSource(DataSource):
             CirronDependencyError: If ``psycopg`` is not installed.
             CirronPlatformRequired: If credential resolution fails.
         """
+        psycopg, conn_kwargs, query = self._prepare()
+        return run_select(psycopg.connect, conn_kwargs, query)
+
+    def stream(self, batch_size: int) -> Iterator[list[dict[str, Any]]]:
+        """Stream the composed ``SELECT`` in row-dict batches.
+
+        A named cursor makes psycopg declare a server-side cursor, so each
+        ``fetchmany`` pulls one batch from the server instead of the whole
+        result arriving with ``execute``.
+
+        Args:
+            batch_size: Rows per batch.
+
+        Returns:
+            Iterator[list[dict[str, Any]]]: From :func:`stream_select`.
+
+        Raises:
+            CirronDependencyError: If ``psycopg`` is not installed.
+            CirronPlatformRequired: If credential resolution fails.
+        """
+        psycopg, conn_kwargs, query = self._prepare()
+        return stream_select(
+            psycopg.connect,
+            conn_kwargs,
+            query,
+            batch_size,
+            cursor_factory=lambda conn: conn.cursor(name="cirron_stream"),
+        )
+
+    def _prepare(self) -> tuple[Any, dict[str, Any], str]:
         psycopg = driver("psycopg", "postgres")
         creds = CredentialResolver(self.cirron, self.uri).resolve()
         query = build_query(
@@ -68,8 +101,7 @@ class PostgresDataSource(DataSource):
             conn_kwargs["port"] = creds.port
         if creds.database:
             conn_kwargs["dbname"] = creds.database
-
-        return run_select(psycopg.connect, conn_kwargs, query)
+        return psycopg, conn_kwargs, query
 
 
 def build_source(uri_str: str, cirron: Cirron, request: LoadRequest | None) -> PostgresDataSource:

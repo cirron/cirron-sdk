@@ -10,6 +10,7 @@ runs MySQL here, so first-class MySQL support is consistent with
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
 from cirron.data.sources import DataSource, SourceConfig
@@ -20,6 +21,7 @@ from cirron.data.sql import (
     driver,
     parse_sql_uri,
     run_select,
+    stream_select,
 )
 
 if TYPE_CHECKING:
@@ -53,6 +55,39 @@ class MySqlDataSource(DataSource):
             CirronDependencyError: If ``pymysql`` is not installed.
             CirronPlatformRequired: If credential resolution fails.
         """
+        pymysql, conn_kwargs, query = self._prepare()
+        return run_select(pymysql.connect, conn_kwargs, query)
+
+    def stream(self, batch_size: int) -> Iterator[list[dict[str, Any]]]:
+        """Stream the composed ``SELECT`` in row-dict batches.
+
+        ``SSCursor`` is PyMySQL's unbuffered cursor: rows are read off the
+        socket as ``fetchmany`` asks for them rather than all at once in
+        ``execute``. On the way out the cursor is detached rather than
+        closed (see :func:`_detach_sscursor`).
+
+        Args:
+            batch_size: Rows per batch.
+
+        Returns:
+            Iterator[list[dict[str, Any]]]: From :func:`stream_select`.
+
+        Raises:
+            CirronDependencyError: If ``pymysql`` is not installed.
+            CirronPlatformRequired: If credential resolution fails.
+        """
+        pymysql, conn_kwargs, query = self._prepare()
+        sscursor = pymysql.cursors.SSCursor
+        return stream_select(
+            pymysql.connect,
+            conn_kwargs,
+            query,
+            batch_size,
+            cursor_factory=lambda conn: conn.cursor(sscursor),
+            release_cursor=_detach_sscursor,
+        )
+
+    def _prepare(self) -> tuple[Any, dict[str, Any], str]:
         pymysql = driver("pymysql", "mysql")
         creds = CredentialResolver(self.cirron, self.uri).resolve()
         query = build_query(
@@ -70,8 +105,29 @@ class MySqlDataSource(DataSource):
             conn_kwargs["port"] = creds.port
         if creds.database:
             conn_kwargs["database"] = creds.database
+        return pymysql, conn_kwargs, query
 
-        return run_select(pymysql.connect, conn_kwargs, query)
+
+def _detach_sscursor(cursor: Any) -> None:
+    """Let go of an ``SSCursor`` without reading the rest of its result.
+
+    MySQL offers no way to stop a result mid-stream short of dropping the
+    connection, so PyMySQL's ``SSCursor.close()`` reads and discards every
+    remaining row, which on an abandoned stream is the rest of the table.
+    Closing the connection instead is the cheap exit, but PyMySQL's
+    ``__del__`` hooks on the cursor and its result then try the same drain
+    against the closed socket and print an ignored ``AttributeError``.
+    Marking the result finished and unlinking the cursor first makes both
+    hooks no-ops. A stream read to the end has already finished its
+    result, so this only changes anything on early exit.
+
+    Args:
+        cursor (Any): The ``pymysql.cursors.SSCursor`` being released.
+    """
+    result = getattr(cursor, "_result", None)
+    if result is not None:
+        result.unbuffered_active = False
+    cursor.connection = None
 
 
 def build_source(uri_str: str, cirron: Cirron, request: LoadRequest | None) -> MySqlDataSource:

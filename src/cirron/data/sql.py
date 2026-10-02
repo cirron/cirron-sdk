@@ -29,7 +29,7 @@ import logging
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Generator, Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -722,10 +722,10 @@ def execute_to_pandas(cursor: Any, query: str) -> Any:
     / ``"iter"`` / ``"tensor"`` / ``"hf"``, so SQL sources don't need
     their own conversion path.
 
-    This path does not stream. ``fetchall`` materializes the whole result
-    set before the adapter slices it, so ``as_='iter'`` and ``lazy=True``
-    on a SQL source peak at the size of the full table rather than one
-    batch. Bound large queries with ``LIMIT`` or a ``where=`` clause.
+    This path does not stream: ``fetchall`` materializes the whole result
+    set. ``as_='iter'`` takes :func:`stream_select` instead, so only the
+    single-object return types (pandas, polars, tensor, hf) come through
+    here, and those hold the full result in memory by definition.
 
     Args:
         cursor (Any): An open DB-API 2.0 cursor.
@@ -796,3 +796,102 @@ def run_select(
                 cursor.close()
     finally:
         conn.close()
+
+
+def execute_to_iter(cursor: Any, query: str, batch_size: int) -> Iterator[list[dict[str, Any]]]:
+    """Run ``query`` on ``cursor`` and yield the result in row-dict batches.
+
+    The streaming counterpart of :func:`execute_to_pandas`. Only
+    ``fetchmany`` is used, so peak memory is one batch as long as the
+    cursor pages server-side; :func:`stream_select` is where each driver
+    supplies such a cursor. Values are whatever the driver returns
+    (``None`` for SQL ``NULL``), with no pandas coercion, and pandas is
+    not required.
+
+    Args:
+        cursor (Any): An open DB-API 2.0 cursor.
+        query: The composed ``SELECT`` to execute.
+        batch_size: Rows per ``fetchmany`` call. Values below 1 fetch
+            one row at a time.
+
+    Yields:
+        list[dict[str, Any]]: Up to ``batch_size`` rows, keyed by the
+            column names in ``cursor.description``. Never empty.
+    """
+    cursor.execute(query)
+    columns = [col[0] for col in cursor.description or []]
+    size = max(batch_size, 1)
+    while True:
+        rows = cursor.fetchmany(size)
+        if not rows:
+            return
+        yield [dict(zip(columns, row, strict=False)) for row in rows]
+
+
+_DONE = object()
+
+
+def stream_select(
+    connect: Callable[..., Any],
+    conn_kwargs: dict[str, Any],
+    query: str,
+    batch_size: int,
+    *,
+    cursor_factory: Callable[[Any], Any] | None = None,
+    release_cursor: Callable[[Any], None] | None = None,
+) -> Iterator[list[dict[str, Any]]]:
+    """Connect, run ``query``, and return an iterator over its batches.
+
+    The streaming counterpart of :func:`run_select`. The connection
+    stays open while the caller iterates and closes when the iterator is
+    exhausted, closed, or garbage-collected.
+
+    The first batch is fetched before returning, so a connection failure
+    or a bad query raises from ``ci.load()`` itself, as it does on the
+    materializing path, rather than at the caller's first loop iteration.
+    That also means an unstarted iterator never holds a connection that
+    only a ``finally`` it never reached could release.
+
+    Args:
+        connect: The driver's ``connect`` callable.
+        conn_kwargs: Driver-specific connect keywords.
+        query: The composed ``SELECT``.
+        batch_size: Forwarded to :func:`execute_to_iter`.
+        cursor_factory: Opens the cursor from the connection. Shims pass
+            one that requests the driver's server-side cursor; the default
+            is ``conn.cursor()``.
+        release_cursor: Called with the cursor before the connection
+            closes. Snowflake passes one that closes it, as
+            :func:`run_select`'s ``cursor_close`` does; MySQL passes one
+            that detaches it without draining. The default leaves the
+            cursor to the connection.
+
+    Returns:
+        Iterator[list[dict[str, Any]]]: Row-dict batches.
+    """
+
+    def _batches() -> Generator[list[dict[str, Any]]]:
+        conn = connect(**conn_kwargs)
+        try:
+            cursor = cursor_factory(conn) if cursor_factory else conn.cursor()
+            try:
+                yield from execute_to_iter(cursor, query, batch_size)
+            finally:
+                if release_cursor is not None:
+                    release_cursor(cursor)
+        finally:
+            conn.close()
+
+    batches = _batches()
+    first = next(batches, _DONE)
+    if first is _DONE:
+        return iter(())
+    return _resume(first, batches)
+
+
+def _resume(first: Any, rest: Generator[Any]) -> Iterator[Any]:
+    try:
+        yield first
+        yield from rest
+    finally:
+        rest.close()
