@@ -31,12 +31,7 @@ Feature requests go in the issue tracker too, via the [feature request template]
 4. **Test**: `uv run pytest tests/unit tests/integration -v` (what CI's test job runs) and `uv run ruff check src tests && uv run ruff format --check src tests && uv run mypy src` must all pass locally before you push.
 5. **Submit** a PR against `release` using the [PR template](.github/pull_request_template.md). Fill out every section, especially **New dependencies**.
 
-> **Why `release` and not `main`?** `release` is the integration trunk where work lands.
-> `main` is the published branch: merging to it ships a stable version to PyPI (see
-> [Releases](#releases)). GitHub shows `main` as the default branch, so target `release`
-> deliberately rather than accepting the default. The two branches are gated differently:
-> `release` requires lint, typecheck, the unit matrix and the three framework matrices,
-> while `main` additionally requires the `overhead` job and that your branch be up to date.
+> **Why `release` and not `main`?** `release` is the integration trunk where work lands, and it is the repository's default branch, so new PRs target it automatically and `Closes #N` closes the issue as soon as the PR merges. `main` is the published branch: merging to it ships a stable version to PyPI (see [Releases](#releases)), and the only PRs that should target it are `release` to `main` promotions. The two branches are gated differently: `release` requires lint, typecheck, the unit matrix and the three framework matrices, while `main` additionally requires the `overhead` job and that your branch be up to date.
 
 A maintainer will apply the appropriate release label (`enhancement` / `bug` / `internal` / `documentation`, or a `release: *` override) during review — see [Releases](#releases) for what they mean. You don't need to label the PR yourself.
 
