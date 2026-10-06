@@ -400,54 +400,131 @@ def test_event_stream_upload_blob_emits_sentinel(tmp_path) -> None:
     assert envelope["payload"]["local_path"].endswith("weights.safetensors")
 
 
-def test_http_upload_blob_puts_bytes(tmp_path) -> None:
+def _presigned(url: str = "https://s3.example/put?sig=1", uri: str = "s3://bucket/key") -> _Resp:
+    return _Resp(200, text=json.dumps({"url": url, "uri": uri, "expires_at": "x"}))
+
+
+def test_http_upload_blob_presigns_then_puts_to_storage(tmp_path) -> None:
     from cirron.core.ingest import BLOB_KEY_HEADER
 
-    session = _FakeSession([_Resp(200, text="https://blobs.example/span/weights")])
-    client = _make_client(session)
-    transport = HttpTransport(client)
+    session = _FakeSession(
+        [_presigned(uri="s3://platform/traces/org-1/snapshots/span/w"), _Resp(200)]
+    )
+    transport = HttpTransport(_make_client(session))
 
     blob = tmp_path / "weights.safetensors"
     blob.write_bytes(b"hello world")
     uri = transport.upload_blob(blob, "snapshots/span/weights.safetensors")
 
-    assert uri == "https://blobs.example/span/weights"
+    assert uri == "s3://platform/traces/org-1/snapshots/span/w"
+    assert len(session.calls) == 1
+    presign = session.calls[0]
+    assert presign["url"].endswith("/api/traces/blobs/snapshots/span/weights.safetensors")
+    assert json.loads(presign["data"]) == {"size_bytes": 11}
+    assert presign["headers"][AUTH_HEADER] == "Bearer secret-key"
+    assert presign["headers"][BLOB_KEY_HEADER] == "snapshots/span/weights.safetensors"
+    assert presign["headers"]["Content-Type"] == "application/json"
+
     assert len(session.put_calls) == 1
-    call = session.put_calls[0]
-    assert call["url"].endswith("/api/traces/blobs/snapshots/span/weights.safetensors")
-    assert call["data"] == b"hello world"
-    assert call["headers"][AUTH_HEADER] == "Bearer secret-key"
-    assert call["headers"][BLOB_KEY_HEADER] == "snapshots/span/weights.safetensors"
-    assert call["headers"]["Content-Type"] == "application/octet-stream"
+    put = session.put_calls[0]
+    assert put["url"] == "https://s3.example/put?sig=1"
+    assert put["data"] == b"hello world"
+    assert put["headers"] == {
+        "Content-Length": "11",
+        "Content-Type": "application/octet-stream",
+    }
 
 
-def test_http_upload_blob_location_header_preferred(tmp_path) -> None:
-    session = _FakeSession([_Resp(201, headers={"Location": "s3://bucket/key"}, text="ignored")])
+@pytest.mark.parametrize(
+    "text",
+    ["not json", json.dumps(["url"]), json.dumps({"url": "https://s3/x"})],
+)
+def test_http_upload_blob_malformed_presign_response_is_terminal(tmp_path, text: str) -> None:
+    session = _FakeSession([_Resp(200, text=text)])
     transport = HttpTransport(_make_client(session))
 
     blob = tmp_path / "weights.safetensors"
     blob.write_bytes(b"x")
-    assert transport.upload_blob(blob, "snapshots/span/weights.safetensors") == "s3://bucket/key"
+    assert transport.upload_blob(blob, "snapshots/span/weights.safetensors") is None
+    assert len(session.put_calls) == 0
 
 
-def test_http_upload_blob_retries_on_5xx(tmp_path) -> None:
-    session = _FakeSession([_Resp(500), _Resp(200, text="ok-uri")])
-    client = _make_client(session)
-    transport = HttpTransport(client)
+def test_http_upload_blob_retries_presign_on_5xx(tmp_path) -> None:
+    session = _FakeSession([_Resp(500), _presigned(uri="ok-uri"), _Resp(200)])
+    transport = HttpTransport(_make_client(session))
 
     blob = tmp_path / "weights.safetensors"
     blob.write_bytes(b"d")
     assert transport.upload_blob(blob, "snapshots/span/weights.safetensors") == "ok-uri"
+    assert len(session.calls) == 2
+    assert len(session.put_calls) == 1
+
+
+@pytest.mark.parametrize("status", [403, 429, 503])
+def test_http_upload_blob_represigns_after_retryable_storage_failure(tmp_path, status: int) -> None:
+    session = _FakeSession([_presigned(), _Resp(status), _presigned(uri="second-uri"), _Resp(200)])
+    transport = HttpTransport(_make_client(session))
+
+    blob = tmp_path / "weights.safetensors"
+    blob.write_bytes(b"d")
+    assert transport.upload_blob(blob, "snapshots/span/weights.safetensors") == "second-uri"
+    assert len(session.calls) == 2
     assert len(session.put_calls) == 2
 
 
-def test_http_upload_blob_returns_none_on_terminal_failure(tmp_path) -> None:
-    session = _FakeSession([_Resp(400, text="bad")])
+def test_http_upload_blob_retries_storage_network_error(tmp_path) -> None:
+    session = _FakeSession(
+        [_presigned(), requests.ConnectionError("reset"), _presigned(uri="u"), _Resp(200)]
+    )
+    transport = HttpTransport(_make_client(session))
+
+    blob = tmp_path / "weights.safetensors"
+    blob.write_bytes(b"d")
+    assert transport.upload_blob(blob, "snapshots/span/weights.safetensors") == "u"
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 413])
+def test_http_upload_blob_platform_4xx_is_terminal(tmp_path, status: int) -> None:
+    session = _FakeSession([_Resp(status, text="bad")])
     transport = HttpTransport(_make_client(session))
 
     blob = tmp_path / "weights.safetensors"
     blob.write_bytes(b"d")
     assert transport.upload_blob(blob, "snapshots/span/weights.safetensors") is None
+    assert len(session.calls) == 1
+    assert len(session.put_calls) == 0
+
+
+def test_http_upload_blob_storage_4xx_is_terminal(tmp_path) -> None:
+    session = _FakeSession([_presigned(), _Resp(400)])
+    transport = HttpTransport(_make_client(session))
+
+    blob = tmp_path / "weights.safetensors"
+    blob.write_bytes(b"d")
+    assert transport.upload_blob(blob, "snapshots/span/weights.safetensors") is None
+    assert len(session.put_calls) == 1
+
+
+def test_http_upload_blob_storage_401_skips_platform_auth_warning(
+    tmp_path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A storage 401 says nothing about the platform API key, so it must not
+    log the auth warning or use up its one-shot flag."""
+    session = _FakeSession([_presigned(), _Resp(401), _Resp(401)])
+    transport = HttpTransport(_make_client(session))
+
+    blob = tmp_path / "weights.safetensors"
+    blob.write_bytes(b"d")
+    with caplog.at_level("WARNING", logger="cirron.ingest"):
+        assert transport.upload_blob(blob, "snapshots/span/weights.safetensors") is None
+        assert len(session.put_calls) == 1
+        assert not [r for r in caplog.records if "auth failed" in r.getMessage()]
+
+        # A later platform 401 still gets the warning.
+        assert transport.upload_blob(blob, "snapshots/span/weights.safetensors") is None
+    auth_warnings = [r for r in caplog.records if "auth failed" in r.getMessage()]
+    assert len(auth_warnings) == 1
+    assert "401" in auth_warnings[0].getMessage()
 
 
 def test_http_upload_blob_missing_local_file_returns_none(tmp_path) -> None:
@@ -456,14 +533,15 @@ def test_http_upload_blob_missing_local_file_returns_none(tmp_path) -> None:
 
     missing = tmp_path / "nope.safetensors"
     assert transport.upload_blob(missing, "snapshots/span/weights.safetensors") is None
+    assert len(session.calls) == 0
     assert len(session.put_calls) == 0
 
 
 def test_blob_path_derived_from_custom_ingest_path(tmp_path) -> None:
     """When a user overrides ``ingest_path`` (self-hosted endpoint with a
     non-default API prefix), the blob route must follow the same prefix,
-    or blob PUTs 404. No explicit ``blob_path`` needed."""
-    session = _FakeSession([_Resp(200, text="https://blobs.example/x")])
+    or blob presign requests 404. No explicit ``blob_path`` needed."""
+    session = _FakeSession([_presigned(), _Resp(200)])
     client = IngestClient(
         api_endpoint="https://api.example.test",
         api_key="secret-key",
@@ -476,7 +554,7 @@ def test_blob_path_derived_from_custom_ingest_path(tmp_path) -> None:
     blob.write_bytes(b"x")
 
     transport.upload_blob(blob, "snapshots/span/weights.safetensors")
-    call = session.put_calls[0]
+    call = session.calls[0]
     assert call["url"] == (
         "https://api.example.test/api/v2/traces/blobs/snapshots/span/weights.safetensors"
     )
@@ -484,7 +562,7 @@ def test_blob_path_derived_from_custom_ingest_path(tmp_path) -> None:
 
 def test_blob_path_explicit_override_wins(tmp_path) -> None:
     """Explicit ``blob_path`` beats the derivation."""
-    session = _FakeSession([_Resp(200, text="ok")])
+    session = _FakeSession([_presigned(), _Resp(200)])
     client = IngestClient(
         api_endpoint="https://api.example.test",
         api_key="secret-key",
@@ -498,7 +576,7 @@ def test_blob_path_explicit_override_wins(tmp_path) -> None:
     blob.write_bytes(b"x")
 
     transport.upload_blob(blob, "snapshots/span/weights.safetensors")
-    assert session.put_calls[0]["url"].startswith("https://api.example.test/custom/blob/")
+    assert session.calls[0]["url"].startswith("https://api.example.test/custom/blob/")
 
 
 # strict JSON output

@@ -187,7 +187,7 @@ class HttpTransport:
         return result.ok
 
     def upload_blob(self, local_path: str | Path, remote_key: str) -> str | None:
-        """PUT a blob through :class:`IngestClient`.
+        """Upload a blob through :class:`IngestClient`'s presigned handshake.
 
         Args:
             local_path: Local blob path.

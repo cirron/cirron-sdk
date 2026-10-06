@@ -1,13 +1,17 @@
-"""end-to-end sampled/full blob upload against a mock object store.
+"""end-to-end sampled/full blob upload against a mock platform and object store.
 
-Stands up a ``ThreadingHTTPServer`` on an ephemeral port that accepts PUTs
-under ``/api/traces/blob/...`` and records them. Runs a full capture →
-serialize → enqueue → flush_tick → PUT cycle and verifies the JSON batch's
-``blob_uri`` matches what the server received.
+Stands up a ``ThreadingHTTPServer`` on an ephemeral port that plays both
+sides of the presigned upload: a POST under ``/api/traces/blob/...``
+answers with a presigned ``/storage/...`` URL on the same server and the
+blob URI to record, and a PUT under ``/storage/...`` stands in for the
+object store. Runs a full capture, serialize, enqueue, flush_tick,
+presign, PUT cycle and verifies the JSON batch's ``blob_uri`` is the URI
+the presign handed out.
 """
 
 from __future__ import annotations
 
+import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -33,27 +37,45 @@ class _BlobServer(ThreadingHTTPServer):
 class _BlobHandler(BaseHTTPRequestHandler):
     server: _BlobServer
 
-    def _record_and_respond(self, status: int, location: str | None) -> None:
+    def _record(self) -> bytes:
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length) if length else b""
         self.server.received.append(
             {
+                "method": self.command,
                 "path": self.path,
                 "body": body,
                 "headers": {k: v for k, v in self.headers.items()},
             }
         )
+        return body
+
+    def _respond(self, status: int, body: bytes = b"") -> None:
         self.send_response(status)
-        if location:
-            self.send_header("Location", location)
-        self.send_header("Content-Length", "0")
+        if body:
+            self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
+        self.wfile.write(body)
 
     def do_PUT(self) -> None:
-        self._record_and_respond(201, f"https://blobs.test{self.path}")
+        self._record()
+        self._respond(200 if self.path.startswith("/storage/") else 404)
 
     def do_POST(self) -> None:
-        self._record_and_respond(202, None)
+        self._record()
+        prefix = "/api/traces/blob/"
+        if not self.path.startswith(prefix):
+            self._respond(202)
+            return
+        key = self.path[len(prefix) :]
+        host, port = self.server.server_address[:2]
+        presigned = {
+            "url": f"http://{host}:{port}/storage/{key}?signature=test",
+            "uri": f"s3://platform-bucket/traces/org-test/{key}",
+            "expires_at": "2026-01-01T00:15:00.000Z",
+        }
+        self._respond(200, json.dumps(presigned).encode("utf-8"))
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         return None
@@ -160,35 +182,45 @@ def test_blob_uploads_to_mock_object_storage(server, tmp_path):
         blob_queue=blob_queue.get_default_blob_queue(),
     )
 
-    # 3. One tick should drain the blob queue (→ PUT) and then produce a JSON
-    # batch (which the /api/traces POST will record but we ignore, since the
-    # ticket criterion is "blob uploads to mock object storage").
+    # 3. One tick should drain the blob queue (presign, then PUT to storage)
+    # and then produce a JSON batch carrying the presigned blob URI.
     ft._tick()  # type: ignore[attr-defined]
 
-    blob_puts = [r for r in srv.received if r["path"].startswith("/api/traces/blob/")]
-    assert len(blob_puts) == 1
-    put = blob_puts[0]
-    assert put["path"] == "/api/traces/blob/snapshots/span-int-1/weights.safetensors"
-    # Bytes actually made it over the wire
-    assert len(put["body"]) > 0
-    # Local safetensors file still on disk
     local = tmp_path / "snapshots" / "span-int-1" / "weights.safetensors"
     assert local.exists()
-    assert put["body"] == local.read_bytes()
 
-    # The JSON batch sent after the blob upload should carry the remote
-    # URI (the Location header from our mock server), not the local URI.
+    presigns = [
+        r
+        for r in srv.received
+        if r["method"] == "POST" and r["path"].startswith("/api/traces/blob/")
+    ]
+    assert len(presigns) == 1
+    presign = presigns[0]
+    assert presign["path"] == "/api/traces/blob/snapshots/span-int-1/weights.safetensors"
+    assert json.loads(presign["body"]) == {"size_bytes": local.stat().st_size}
+    assert presign["headers"]["Authorization"] == "Bearer test-key"
+
+    uploads = [r for r in srv.received if r["method"] == "PUT"]
+    assert len(uploads) == 1
+    upload = uploads[0]
+    assert upload["path"] == "/storage/snapshots/span-int-1/weights.safetensors?signature=test"
+    # Bytes actually made it to storage, without platform credentials.
+    assert upload["body"] == local.read_bytes()
+    assert "Authorization" not in upload["headers"]
+
+    # The JSON batch sent after the blob upload should carry the URI the
+    # presign handed out, not the local file:// URI.
     batch_posts = [r for r in srv.received if r["path"] == "/api/traces"]
     assert len(batch_posts) == 1
     import gzip as _gzip
-    import json as _json
 
     raw = batch_posts[0]["body"]
     if batch_posts[0]["headers"].get("Content-Encoding") == "gzip":
         raw = _gzip.decompress(raw)
-    batch_body = _json.loads(raw.decode("utf-8"))
+    batch_body = json.loads(raw.decode("utf-8"))
     snaps = batch_body["snapshots"]
-    assert all(s["blob_uri"].startswith("https://blobs.test/") for s in snaps), snaps
+    expected = "s3://platform-bucket/traces/org-test/snapshots/span-int-1/weights.safetensors"
+    assert all(s["blob_uri"] == expected for s in snaps), snaps
 
 
 def test_blob_queue_drains_without_transport(tmp_path):

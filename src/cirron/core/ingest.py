@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import email.utils
 import gzip
+import json
 import logging
 import random
 import time
@@ -49,6 +50,28 @@ def _bearer(api_key: str) -> str:
         str: ``"Bearer <api_key>"``.
     """
     return f"Bearer {api_key}"
+
+
+def _parse_presigned_upload(resp: Any) -> tuple[str, str] | None:
+    """Read ``(url, uri)`` from the platform's presign response.
+
+    Args:
+        resp: The ``requests`` response.
+
+    Returns:
+        tuple[str, str] | None: The presigned upload URL and the blob URI to
+            record, or ``None`` when the body is not the expected JSON.
+    """
+    try:
+        payload = json.loads(resp.text or "")
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    url, uri = payload.get("url"), payload.get("uri")
+    if isinstance(url, str) and url and isinstance(uri, str) and uri:
+        return url, uri
+    return None
 
 
 @dataclass(frozen=True)
@@ -313,19 +336,22 @@ class IngestClient:
     def post_blob(self, local_path: Path, remote_key: str) -> BlobUploadResult:
         """Upload a safetensors blob to the platform blob store.
 
-        Streams the file bytes to ``{blob_base}/{remote_key}`` with
-        ``application/octet-stream`` and the same auth + SDK-version
-        headers as ``post_batch``. The server is expected to return the
-        remote URI (S3 path, CDN URL, etc.) in the response body or a
-        ``Location`` header; for now we treat a 2xx with a non-empty
-        body as success and use the response text as ``remote_uri``.
+        Two steps, so blob bytes never pass through the platform API (its
+        request bodies are capped far below snapshot sizes):
 
-        The file is streamed via a fresh open handle on each attempt, since
-        ``requests`` uses chunked transfer when ``data`` is a file-like, so a
-        1 GB blob doesn't balloon the flush thread's resident set. Retries
-        network errors and 5xx / 429 with exponential backoff like
-        ``post_batch``. 4xx (other than 429) is non-retryable, usually a
-        quota or permissions issue the flush thread can't resolve by itself.
+        1. ``POST {blob_base}/{remote_key}`` with ``{"size_bytes": N}`` and
+           the same auth + SDK-version headers as ``post_batch``. The
+           platform answers ``{"url": ..., "uri": ...}``: a presigned
+           storage PUT bound to exactly ``N`` bytes, and the URI to record
+           as the snapshot's ``blob_uri``.
+        2. ``PUT`` the file to ``url`` with no platform credentials.
+
+        The file is streamed via a fresh open handle on each attempt, so a
+        1 GB blob doesn't balloon the flush thread's resident set. Network
+        errors, 429 and 5xx from either step retry the whole handshake with
+        exponential backoff, as does a 403 from storage (an expired
+        signature). Other 4xx are non-retryable: usually a size cap or a
+        permissions issue the flush thread can't resolve by itself.
 
         Args:
             local_path: Local safetensors file.
@@ -344,13 +370,13 @@ class IngestClient:
         url = f"{self._blob_base_url.rstrip('/')}/{remote_key.lstrip('/')}"
         headers = {
             AUTH_HEADER: _bearer(self._api_key),
-            "Content-Type": "application/octet-stream",
-            "Content-Length": str(size),
+            "Content-Type": "application/json",
             SDK_VERSION_HEADER: self._sdk_version,
             BLOB_KEY_HEADER: remote_key,
         }
+        body = dumps_utf8({"size_bytes": size})
         for attempt in range(self._max_retries + 1):
-            result = self._blob_attempt(url, local_path, headers, attempt)
+            result = self._blob_attempt(url, body, headers, local_path, size, attempt)
             if result is not None:
                 return result
         return BlobUploadResult(ok=False, retryable=True)
@@ -358,16 +384,21 @@ class IngestClient:
     def _blob_attempt(
         self,
         url: str,
-        local_path: Path,
+        body: bytes,
         headers: dict[str, str],
+        local_path: Path,
+        size: int,
         attempt: int,
     ) -> BlobUploadResult | None:
-        """Issue one PUT attempt for a blob and classify the outcome.
+        """Run one presign + upload round and classify the outcome.
 
         Args:
-            url: Fully-formed upload URL.
+            url: Platform presign URL for this blob.
+            body: Encoded ``{"size_bytes": N}`` request body.
+            headers: Platform request headers.
             local_path: Local file to stream.
-            headers: Request headers.
+            size: The file's byte count, which the presigned PUT is
+                bound to.
             attempt: Zero-based attempt index.
 
         Returns:
@@ -376,60 +407,104 @@ class IngestClient:
         """
         last_attempt = attempt >= self._max_retries
         try:
-            with local_path.open("rb") as fh:
-                resp = self._session.put(url, data=fh, headers=headers, timeout=self._timeout)
+            resp = self._session.post(url, data=body, headers=headers, timeout=self._timeout)
         except (requests.RequestException, OSError) as e:
-            log.debug("cirron ingest blob network error: %s", e)
-            if last_attempt:
-                return BlobUploadResult(ok=False, retryable=True)
-            self._sleep(self._backoff(attempt))
-            return None
+            log.debug("cirron ingest blob presign network error: %s", e)
+            return self._blob_retry(attempt, last_attempt)
 
+        if not 200 <= resp.status_code < 300:
+            return self._blob_failure(resp, attempt, last_attempt, from_storage=False)
+        target = _parse_presigned_upload(resp)
+        if target is None:
+            log.warning("cirron ingest blob presign response missing url/uri; not retrying")
+            return BlobUploadResult(ok=False, retryable=False, status=resp.status_code)
+        upload_url, remote_uri = target
+
+        try:
+            with local_path.open("rb") as fh:
+                put = self._session.put(
+                    upload_url,
+                    data=fh,
+                    headers={
+                        "Content-Length": str(size),
+                        "Content-Type": "application/octet-stream",
+                    },
+                    timeout=self._timeout,
+                )
+        except (requests.RequestException, OSError) as e:
+            log.debug("cirron ingest blob upload network error: %s", e)
+            return self._blob_retry(attempt, last_attempt)
+
+        if 200 <= put.status_code < 300:
+            return BlobUploadResult(ok=True, status=put.status_code, remote_uri=remote_uri)
+        return self._blob_failure(put, attempt, last_attempt, from_storage=True)
+
+    def _blob_failure(
+        self,
+        resp: Any,
+        attempt: int,
+        last_attempt: bool,
+        *,
+        from_storage: bool,
+    ) -> BlobUploadResult | None:
+        """Classify a non-2xx response from either blob upload step.
+
+        Args:
+            resp: The ``requests`` response.
+            attempt: Zero-based attempt index.
+            last_attempt: ``True`` if no further retries remain.
+            from_storage: The response came from the presigned
+                storage PUT rather than the platform. Storage answers an
+                expired signature with 403, which a fresh presign fixes,
+                and its 401 says nothing about the platform API key.
+
+        Returns:
+            BlobUploadResult | None: A terminal result, or ``None`` to
+                signal "retry after sleeping".
+        """
         status = resp.status_code
-        if 200 <= status < 300:
-            remote_uri = self._parse_blob_response(resp, url)
-            return BlobUploadResult(ok=True, status=status, remote_uri=remote_uri)
-        if status in (401, 403):
+        if status == 403 and from_storage:
+            return self._blob_retry(attempt, last_attempt, status)
+        if status in (401, 403) and not from_storage:
             self._warn_auth_once(status)
             return BlobUploadResult(ok=False, retryable=False, status=status)
         if status == 429:
-            if last_attempt:
-                return BlobUploadResult(ok=False, retryable=True, status=status)
             wait = _parse_retry_after(resp.headers.get("Retry-After"))
-            self._sleep(
-                min(wait, MAX_RETRY_AFTER_SEC) if wait is not None else self._backoff(attempt)
+            return self._blob_retry(
+                attempt,
+                last_attempt,
+                status,
+                wait=min(wait, MAX_RETRY_AFTER_SEC) if wait is not None else None,
             )
-            return None
         if 500 <= status < 600:
-            if last_attempt:
-                return BlobUploadResult(ok=False, retryable=True, status=status)
-            self._sleep(self._backoff(attempt))
-            return None
+            return self._blob_retry(attempt, last_attempt, status)
         log.warning("cirron ingest blob unexpected status %d; not retrying", status)
         return BlobUploadResult(ok=False, retryable=False, status=status)
 
-    @staticmethod
-    def _parse_blob_response(resp: Any, fallback_url: str) -> str:
-        """Resolve the remote URI of an uploaded blob from its response.
-
-        Prefer a ``Location`` header or trimmed response body; fall back to
-        the URL we PUT to so the record always has *some* pointer.
+    def _blob_retry(
+        self,
+        attempt: int,
+        last_attempt: bool,
+        status: int | None = None,
+        *,
+        wait: float | None = None,
+    ) -> BlobUploadResult | None:
+        """Sleep before the next blob attempt, or give up retryably.
 
         Args:
-            resp (Any): The ``requests`` response.
-            fallback_url: The URL the PUT was issued against.
+            attempt: Zero-based attempt index.
+            last_attempt: ``True`` if no further retries remain.
+            status: HTTP status that triggered the retry.
+            wait: Server-directed delay; backoff when ``None``.
 
         Returns:
-            str: A resolvable remote URI.
+            BlobUploadResult | None: The retryable terminal result on the
+                last attempt, otherwise ``None`` after sleeping.
         """
-        loc = resp.headers.get("Location")
-        if loc:
-            return str(loc)
-        text = getattr(resp, "text", "") or ""
-        body = text.strip()
-        if body and len(body) < 2048 and "\n" not in body:
-            return body
-        return fallback_url
+        if last_attempt:
+            return BlobUploadResult(ok=False, retryable=True, status=status)
+        self._sleep(wait if wait is not None else self._backoff(attempt))
+        return None
 
     @staticmethod
     def _backoff(attempt: int) -> float:
