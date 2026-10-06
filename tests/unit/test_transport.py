@@ -505,6 +505,28 @@ def test_http_upload_blob_storage_4xx_is_terminal(tmp_path) -> None:
     assert len(session.put_calls) == 1
 
 
+def test_http_upload_blob_storage_401_skips_platform_auth_warning(
+    tmp_path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A storage 401 says nothing about the platform API key, so it must not
+    log the auth warning or use up its one-shot flag."""
+    session = _FakeSession([_presigned(), _Resp(401), _Resp(401)])
+    transport = HttpTransport(_make_client(session))
+
+    blob = tmp_path / "weights.safetensors"
+    blob.write_bytes(b"d")
+    with caplog.at_level("WARNING", logger="cirron.ingest"):
+        assert transport.upload_blob(blob, "snapshots/span/weights.safetensors") is None
+        assert len(session.put_calls) == 1
+        assert not [r for r in caplog.records if "auth failed" in r.getMessage()]
+
+        # A later platform 401 still gets the warning.
+        assert transport.upload_blob(blob, "snapshots/span/weights.safetensors") is None
+    auth_warnings = [r for r in caplog.records if "auth failed" in r.getMessage()]
+    assert len(auth_warnings) == 1
+    assert "401" in auth_warnings[0].getMessage()
+
+
 def test_http_upload_blob_missing_local_file_returns_none(tmp_path) -> None:
     session = _FakeSession([])
     transport = HttpTransport(_make_client(session))

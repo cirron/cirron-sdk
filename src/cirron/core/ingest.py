@@ -455,7 +455,8 @@ class IngestClient:
             last_attempt: ``True`` if no further retries remain.
             from_storage: The response came from the presigned
                 storage PUT rather than the platform. Storage answers an
-                expired signature with 403, which a fresh presign fixes.
+                expired signature with 403, which a fresh presign fixes,
+                and its 401 says nothing about the platform API key.
 
         Returns:
             BlobUploadResult | None: A terminal result, or ``None`` to
@@ -464,7 +465,7 @@ class IngestClient:
         status = resp.status_code
         if status == 403 and from_storage:
             return self._blob_retry(attempt, last_attempt, status)
-        if status in (401, 403):
+        if status in (401, 403) and not from_storage:
             self._warn_auth_once(status)
             return BlobUploadResult(ok=False, retryable=False, status=status)
         if status == 429:
